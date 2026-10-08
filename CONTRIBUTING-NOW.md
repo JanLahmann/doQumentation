@@ -1,6 +1,6 @@
 # What we need right now
 
-*Auto-generated on 2026-10-07 by `translation/scripts/contributing-status.py`.*
+*Auto-generated on 2026-10-08 by `translation/scripts/contributing-status.py`.*
 *Do not edit by hand — it will be overwritten. Regenerate with:*
 
 ```bash
@@ -53,23 +53,23 @@ re-read), then pages never read, then the oldest verdicts.
 
 | Locale | Last verdict FAIL | Never read | Oldest verdict |
 |---|---|---|---|
-| `fr` | **1** | 0 | 2026-07-05 |
-| `ar` | **1** | 0 | 2026-08-29 |
-| `de` | **1** | 0 | 2026-09-29 |
-| `es` | **0** | 0 | 2026-06-26 |
-| `pl` | **0** | 0 | 2026-06-28 |
-| `pt` | **0** | 0 | 2026-07-05 |
-| `id` | **0** | 0 | 2026-09-12 |
-| `ja` | **0** | 0 | 2026-09-28 |
-| `it` | **0** | 0 | 2026-09-28 |
-| `ko` | **0** | 0 | 2026-09-28 |
-| `uk` | **0** | 0 | 2026-09-29 |
-| `tl` | **0** | 0 | 2026-09-29 |
-| `he` | **0** | 0 | 2026-09-29 |
-| `ms` | **0** | 0 | 2026-09-29 |
-| `th` | **0** | 0 | 2026-09-29 |
-| `ro` | **0** | 0 | 2026-09-29 |
-| `cs` | **0** | 0 | 2026-09-29 |
+| `fr` | **1** | 24 | 2026-07-05 |
+| `ar` | **1** | 24 | 2026-08-29 |
+| `de` | **1** | 24 | 2026-09-29 |
+| `es` | **0** | 24 | 2026-06-26 |
+| `pl` | **0** | 24 | 2026-06-28 |
+| `pt` | **0** | 24 | 2026-07-05 |
+| `id` | **0** | 24 | 2026-09-12 |
+| `ja` | **0** | 24 | 2026-09-28 |
+| `it` | **0** | 24 | 2026-09-28 |
+| `ko` | **0** | 24 | 2026-09-28 |
+| `uk` | **0** | 24 | 2026-09-29 |
+| `tl` | **0** | 24 | 2026-09-29 |
+| `he` | **0** | 24 | 2026-09-29 |
+| `ms` | **0** | 24 | 2026-09-29 |
+| `th` | **0** | 24 | 2026-09-29 |
+| `ro` | **0** | 24 | 2026-09-29 |
+| `cs` | **0** | 24 | 2026-09-29 |
 
 **`--max-leaks` currently filters nothing, and that is expected.** A
 leak is a term the locale's `translation/glossary/<loc>.json` records
@@ -83,23 +83,23 @@ reviewed with nothing written since, not leakage.
 a short round, but expect to re-sweep files that already carry a
 verdict, or to accept a round smaller than 25:
 
-- `ar` — 0 never read, 0 delta (449/449 reviewed)
-- `cs` — 0 never read, 0 delta (449/449 reviewed)
-- `de` — 0 never read, 0 delta (449/449 reviewed)
-- `es` — 0 never read, 0 delta (449/449 reviewed)
-- `fr` — 0 never read, 0 delta (449/449 reviewed)
-- `he` — 0 never read, 0 delta (449/449 reviewed)
-- `id` — 0 never read, 0 delta (449/449 reviewed)
-- `it` — 0 never read, 0 delta (449/449 reviewed)
-- `ja` — 0 never read, 0 delta (449/449 reviewed)
-- `ko` — 0 never read, 0 delta (449/449 reviewed)
-- `ms` — 0 never read, 0 delta (449/449 reviewed)
-- `pl` — 0 never read, 0 delta (449/449 reviewed)
-- `pt` — 0 never read, 0 delta (449/449 reviewed)
-- `ro` — 0 never read, 0 delta (449/449 reviewed)
-- `th` — 0 never read, 0 delta (449/449 reviewed)
-- `tl` — 0 never read, 0 delta (449/449 reviewed)
-- `uk` — 0 never read, 0 delta (449/449 reviewed)
+- `ar` — 4 never read, 20 delta (429/453 reviewed)
+- `cs` — 4 never read, 20 delta (429/453 reviewed)
+- `de` — 4 never read, 20 delta (429/453 reviewed)
+- `es` — 4 never read, 20 delta (429/453 reviewed)
+- `fr` — 4 never read, 20 delta (429/453 reviewed)
+- `he` — 4 never read, 20 delta (429/453 reviewed)
+- `id` — 4 never read, 20 delta (429/453 reviewed)
+- `it` — 4 never read, 20 delta (429/453 reviewed)
+- `ja` — 4 never read, 20 delta (429/453 reviewed)
+- `ko` — 4 never read, 20 delta (429/453 reviewed)
+- `ms` — 4 never read, 20 delta (429/453 reviewed)
+- `pl` — 4 never read, 20 delta (429/453 reviewed)
+- `pt` — 4 never read, 20 delta (429/453 reviewed)
+- `ro` — 4 never read, 20 delta (429/453 reviewed)
+- `th` — 4 never read, 20 delta (429/453 reviewed)
+- `tl` — 5 never read, 19 delta (429/453 reviewed)
+- `uk` — 4 never read, 20 delta (429/453 reviewed)
 
 ---
 
