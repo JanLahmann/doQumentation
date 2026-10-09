@@ -1901,14 +1901,16 @@ export default function ExecutableCode({
   // Per-phase timeout thresholds (seconds) — exceeding triggers slow startup warning.
   // The QuBins images are warmed on mybinder after every publish: a launch
   // measured 10–40 s warm and 1.5–2.5 min cold. Past 3 min in one phase
+  // (building/pushing: 10 min — repo2docker pulls ~0.9 GB from GHCR and pushes
+  // it to the federation member's registry)
   // (above all "waiting") the server is likely stuck, and a reload lets
   // mybinder pick another federation member.
   const PHASE_TIMEOUTS: Record<string, number> = {
     connecting: 60,      // 1 min — should connect quickly
     waiting: 3 * 60,
     fetching: 3 * 60,
-    building: 3 * 60,
-    pushing: 3 * 60,
+    building: 10 * 60,
+    pushing: 10 * 60,
     built: 60,           // 1 min — should be fast
     launching: 3 * 60,
   };
@@ -2356,7 +2358,7 @@ export default function ExecutableCode({
               {statusText[thebeStatus]}
               <InfoIcon tooltip={jupyterConfig?.environment === 'code-engine'
                 ? translate({id: 'executable.info.ceStatus', message: 'Code Engine is starting a cloud container with all packages. This usually takes 1\u20133 minutes.'})
-                : translate({id: 'executable.info.binderStatus.v2', message: 'Binder is starting a free cloud server with all packages. This usually takes under a minute, up to about 3 minutes on a cold start. If it stays on \u201cIn queue\u201d for more than 3 minutes, reload the page and Binder tries another server.'})} position="below" />
+                : translate({id: 'executable.info.binderStatus.v2', message: 'Binder is starting a free cloud server with all packages. This usually takes under a minute, up to about 3 minutes; if Binder says it is building the image, up to about 10 minutes. If it stays on \u201cIn queue\u201d for more than 3 minutes, reload the page and Binder tries another server.'})} position="below" />
             </span>
           )}
 
@@ -2419,10 +2421,10 @@ export default function ExecutableCode({
         <div className="executable-code__conflict-banner" style={{ borderColor: 'var(--ifm-color-warning-dark, #b45309)', color: 'var(--ifm-color-warning-dark, #b45309)' }}>
           {jupyterConfig?.environment === 'code-engine'
             ? translate({id: 'executable.status.ceCacheMiss', message: '\u26a0 Cold start \u2014 container build may take a few minutes.'})
-            : translate({id: 'executable.status.binderCacheMiss.v2', message: '\u26a0 Cold start: this Binder server prepares the image first, which usually takes up to about 3 minutes.'})}
+            : translate({id: 'executable.status.binderCacheMiss.v2', message: '\u26a0 This Binder server has to build the image first (it downloads about 1 GB), which can take up to about 10 minutes.'})}
           <InfoIcon tooltip={jupyterConfig?.environment === 'code-engine'
             ? translate({id: 'executable.info.ceCacheMiss', message: 'The Code Engine container is being built. This is usually faster than Binder.'})
-            : translate({id: 'executable.info.cacheMiss.v2', message: 'This Binder server does not have the image ready yet and prepares it first. If nothing changes for more than 3 minutes, reload the page and Binder tries another server.'})} position="below" />
+            : translate({id: 'executable.info.cacheMiss.v2', message: 'This Binder server does not have the image yet and builds it first: it downloads about 1 GB and stores it, which can take up to about 10 minutes. If nothing changes for longer than that, reload the page and Binder tries another server.'})} position="below" />
         </div>
       )}
 
@@ -2430,7 +2432,7 @@ export default function ExecutableCode({
         <div className="executable-code__conflict-banner" style={{ borderColor: 'var(--ifm-color-danger-dark, #dc3545)', color: 'var(--ifm-color-danger-dark, #dc3545)' }}>
           {jupyterConfig?.environment === 'code-engine'
             ? translate({id: 'executable.status.ceSlowStartup', message: 'Code Engine startup is taking longer than expected. You can cancel and try again later, or use Colab or Docker instead.'})
-            : translate({id: 'executable.status.binderSlowStartup.v2', message: 'Binder is taking longer than usual: it normally starts within 3 minutes. Reload the page and Binder tries another server, or cancel and use Colab, Docker or Code Engine.'})}
+            : translate({id: 'executable.status.binderSlowStartup.v2', message: 'Binder is taking longer than usual. Reload the page and Binder tries another server, or cancel and use Colab, Docker or Code Engine.'})}
         </div>
       )}
 

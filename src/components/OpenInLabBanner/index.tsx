@@ -264,7 +264,7 @@ export default function OpenInLabBanner({ notebookPath, description }: OpenInLab
               <div style={{ width: '100%', marginTop: '0.25rem', fontSize: '0.8rem' }}>
                 {showCacheMissWarning ? (
                   <span style={{ color: 'var(--ifm-color-warning-dark, #b45309)' }}>
-                    {translate({id: 'executable.status.binderCacheMiss.v2', message: '\u26a0 Cold start: this Binder server prepares the image first, which usually takes up to about 3 minutes.'})}
+                    {translate({id: 'executable.status.binderCacheMiss.v2', message: '\u26a0 This Binder server has to build the image first (it downloads about 1 GB), which can take up to about 10 minutes.'})}
                   </span>
                 ) : hint ? (
                   <span style={{ color: 'var(--ifm-color-emphasis-600)' }}>{hint}</span>

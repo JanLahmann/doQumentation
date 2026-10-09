@@ -1246,7 +1246,7 @@ export function openBinderLab(
   const nbPath = mapBinderNotebookPath(notebookPath, locale);
   const isCE = config.environment === 'code-engine';
   const phaseHints = isCE ? CE_TAB_PHASE_HINTS : binderTabPhaseHints();
-  const cacheMissWarning = translate({id: 'executable.status.binderCacheMiss.v2', message: '\u26a0 Cold start: this Binder server prepares the image first, which usually takes up to about 3 minutes.'});
+  const cacheMissWarning = translate({id: 'executable.status.binderCacheMiss.v2', message: '\u26a0 This Binder server has to build the image first (it downloads about 1 GB), which can take up to about 10 minutes.'});
   const tabTitle = isCE ? 'Starting Code Engine\u2026' : 'Starting Binder\u2026';
   const initialPhase = isCE ? 'Connecting to Code Engine\u2026' : 'Connecting to mybinder.org\u2026';
 
