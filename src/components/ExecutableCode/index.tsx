@@ -48,6 +48,7 @@ import {
 } from '../../kernel';
 import { markPageExecuted, isBinderHintDismissed, dismissBinderHint, getHideStaticOutputs } from '../../config/preferences';
 import { trackEvent } from '../../config/analytics';
+import pageRequirements from '../../config/pageRequirements.json';
 import InfoIcon from '../InfoIcon';
 import {
   kernelStatusEffect,
@@ -1199,6 +1200,64 @@ export function getActiveKernel(): unknown {
   return activeKernel;
 }
 
+// ── Package version check ──
+// The install cell only checks that a package is present. A page written for
+// a newer release (e.g. qiskit-ibm-runtime 0.50's executor_estimator.Estimator)
+// then fails on an image that ships an older one. src/config/pageRequirements.json
+// (scripts/make-page-requirements.py) lists the minimum versions per page; the
+// first cell asks the kernel for the installed versions and warns when too old.
+
+export interface OutdatedPackage { dist: string; need: string; have: string }
+
+/** Minimum versions this page's code needs, keyed by distribution name. */
+function pageVersionRequirements(path: string): Record<string, string> {
+  const p = path.replace(/\/$/, '');
+  const pages = pageRequirements.pages as Record<string, Record<string, string>>;
+  const hit = Object.keys(pages).find(page => p === page || p.endsWith(page));
+  return hit ? pages[hit] : {};
+}
+
+function versionParts(v: string): number[] {
+  return (v.match(/\d+/g) ?? []).slice(0, 3).map(Number);
+}
+
+/** True when version `have` is lower than `need` (numeric major.minor.patch). */
+export function isOlderVersion(have: string, need: string): boolean {
+  const a = versionParts(have);
+  const b = versionParts(need);
+  for (let i = 0; i < Math.max(a.length, b.length); i++) {
+    const x = a[i] ?? 0;
+    const y = b[i] ?? 0;
+    if (x !== y) return x < y;
+  }
+  return false;
+}
+
+/** Ask the kernel for the installed versions; return the ones below the page's need. */
+async function checkPageVersions(kernelObj: unknown, reqs: Record<string, string>): Promise<OutdatedPackage[]> {
+  const dists = Object.keys(reqs).filter(isValidPackageName);
+  if (dists.length === 0) return [];
+  const code = `def _dq_versions(dists):
+    import importlib.metadata as md
+    for d in dists:
+        try:
+            print("__DQ_VERSION__", d, md.version(d))
+        except md.PackageNotFoundError:
+            pass
+_dq_versions(${JSON.stringify(dists)})
+del _dq_versions`;
+  let out = '';
+  await executeOnKernelWithOutput(kernelObj, code, (text) => { out += text; });
+  const outdated: OutdatedPackage[] = [];
+  for (const line of out.split('\n')) {
+    const m = line.match(/^__DQ_VERSION__ (\S+) (\S+)/);
+    if (m && reqs[m[1]] && isOlderVersion(m[2], reqs[m[1]])) {
+      outdated.push({ dist: m[1], need: reqs[m[1]], have: m[2] });
+    }
+  }
+  return outdated;
+}
+
 /** Trigger thebelab bootstrap using the auto-detected Jupyter config (idempotent). */
 export function ensureKernel(): void {
   const config = lastJupyterConfig ?? detectJupyterConfig();
@@ -1845,6 +1904,25 @@ export default function ExecutableCode({
     return () => clearInterval(interval);
   }, [binderPhase]);
 
+  // Package version check (first cell only): once the kernel is ready, and
+  // again after a kernel restart (the reader may have just upgraded).
+  const [outdatedPackages, setOutdatedPackages] = useState<OutdatedPackage[]>([]);
+  const [versionCheckRun, setVersionCheckRun] = useState(0);
+  useEffect(() => {
+    const onRestart = () => setVersionCheckRun(n => n + 1);
+    window.addEventListener(RESTART_EVENT, onRestart);
+    return () => window.removeEventListener(RESTART_EVENT, onRestart);
+  }, []);
+  useEffect(() => {
+    if (!isFirstCell || thebeStatus !== 'ready') return;
+    const reqs = pageVersionRequirements(window.location.pathname);
+    const kernel = getActiveKernel();
+    if (!kernel || Object.keys(reqs).length === 0) return;
+    let cancelled = false;
+    checkPageVersions(kernel, reqs).then((list) => { if (!cancelled) setOutdatedPackages(list); });
+    return () => { cancelled = true; };
+  }, [isFirstCell, thebeStatus, versionCheckRun]);
+
   // Listen for injection feedback (simulator or credentials applied)
   useEffect(() => {
     let timer: ReturnType<typeof setTimeout> | null = null;
@@ -2332,6 +2410,37 @@ export default function ExecutableCode({
           {jupyterConfig?.environment === 'code-engine'
             ? translate({id: 'executable.status.ceSlowStartup', message: 'Code Engine startup is taking longer than expected. You can cancel and try again later, or use Colab or Docker instead.'})
             : translate({id: 'executable.status.binderSlowStartup', message: 'Binder startup is taking longer than expected. You can cancel and try again later, or use one of the other backends (Colab, Docker, or Code Engine).'})}
+        </div>
+      )}
+
+      {isFirstCell && outdatedPackages.length > 0 && (
+        <div className="executable-code__conflict-banner" role="alert" style={{ borderColor: 'var(--ifm-color-warning-dark, #b45309)', color: 'var(--ifm-color-warning-dark, #b45309)' }}>
+          {outdatedPackages.map((p) => (
+            <p key={p.dist} style={{ margin: 0 }}>
+              <Translate
+                id="executable.versionCheck.tooOld"
+                values={{ pkg: <code>{p.dist}</code>, need: p.need, have: p.have }}
+              >
+                {'\u26a0 This page needs {pkg} {need} or newer; this server has {have}, so some cells will fail with an ImportError.'}
+              </Translate>
+              {' '}
+              <Translate
+                id="executable.versionCheck.howToUpdate"
+                values={{
+                  cmd: <code>{`%pip install -q -U "${p.dist}>=${p.need}"`}</code>,
+                  restart: <strong>{translate({id: 'executable.button.restart', message: 'Restart Kernel'})}</strong>,
+                }}
+              >
+                {'To update it for this session, run {cmd} in a code cell, then click {restart} and run the page again from the top.'}
+              </Translate>
+              {notebookPath && (
+                <>
+                  {' '}
+                  {translate({id: 'executable.versionCheck.colab', message: 'Or use Open in Colab, which installs the newest version.'})}
+                </>
+              )}
+            </p>
+          ))}
         </div>
       )}
 
