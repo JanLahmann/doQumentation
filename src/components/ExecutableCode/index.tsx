@@ -1637,13 +1637,17 @@ function bootstrapOnce(config: JupyterConfig): void {
 
   if ((config.environment === 'github-pages' || config.environment === 'code-engine') && config.binderUrl) {
     // Build (or reuse) Binder/CE session, then connect thebelab via serverSettings
+    const generation = bootstrapGeneration;
     ensureBinderSession(config, (phase) => {
       if (DEBUG) console.log(`[ExecutableCode] ${config.environment === 'code-engine' ? 'CE' : 'Binder'} phase: ${phase}`);
       window.dispatchEvent(new CustomEvent(BINDER_PHASE_EVENT, { detail: phase }));
     }).then((session) => {
+      // The page was left (or Back pressed) while the server started.
+      if (generation !== bootstrapGeneration) return;
       const options = getThebelabOptions(config, session);
       doBootstrap(options);
     }).catch(() => {
+      if (generation !== bootstrapGeneration) return;
       thebelabBootstrapped = false; // allow retry on failure
       broadcastStatus('error');
     });
