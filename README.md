@@ -73,24 +73,28 @@ All participants share one Jupyter server and one user account in the container:
 
 ### Development
 
-**Prerequisites:** Node.js 18+, Python 3.9+
+**Prerequisites:** Node.js 20+, Python 3.9+ (only for content sync and the translation tools)
 
 ```bash
-git clone --recurse-submodules https://github.com/JanLahmann/doQumentation.git
+git clone https://github.com/JanLahmann/doQumentation.git
 cd doQumentation
 npm install
-python scripts/sync-content.py --sample-only  # or without flag for full sync
-npm start
+npm start              # English dev server at http://localhost:3000
 ```
+
+`docs/` (the generated English pages) is committed, so `npm start` needs no sync. Do not edit `docs/` by hand: it is regenerated from upstream by `scripts/sync-content.py`. Content fixes belong upstream in [Qiskit/documentation](https://github.com/Qiskit/documentation); translations live in `i18n/<locale>/po/` and are written only by the tools in `translation/v2/`.
 
 Other commands:
 
 ```bash
-npm run build          # Production build
-npm run build:search   # Build search index
-npm run typecheck      # Type check
-npm run sync-content   # Sync content from upstream
+npm run typecheck                                    # Type check
+NODE_OPTIONS=--max-old-space-size=8192 \
+  npx docusaurus build --locale en                   # Production build of ONE locale
+npx docusaurus start --locale de                     # Dev server for a translated locale (render it first, see translation/v2/README.md)
+python3 scripts/sync-content.py                      # Full content sync from upstream (needs the upstream-docs submodule)
 ```
+
+Build one locale at a time. `npm run build` builds all 18 locales and needs far more memory than a laptop has; CI builds each locale in its own job.
 
 ## How It Works
 
@@ -157,6 +161,18 @@ doQumentation/
 Pushing to `main` automatically deploys to GitHub Pages and builds two multi-arch Docker images (`linux/amd64` + `linux/arm64`) to [GitHub Container Registry](https://github.com/JanLahmann/doQumentation/pkgs/container/doqumentation).
 
 ## Contributing
+
+Ways to help, from no tools to the full pipeline:
+
+- **Read pages in your language and report what is wrong.** Use the
+  [Wrong or awkward translation](https://github.com/JanLahmann/doQumentation/issues/new?template=translation-report.yml)
+  form; no tools or accounts beyond GitHub needed. A fluent reader is the
+  most valuable reviewer this project has.
+- **Report a site bug or code that does not run** with the
+  [Site bug](https://github.com/JanLahmann/doQumentation/issues/new?template=site-bug.yml) or
+  [Code does not run](https://github.com/JanLahmann/doQumentation/issues/new?template=execution-error.yml) forms.
+- **Run a review round with Claude Code** (below).
+- **Code:** see Development above. `docs/` and `i18n/*/po/` are generated; change the scripts, not the files.
 
 The translations into 17 languages are machine-produced and then reviewed
 against the English source, page by page. That review is where help is most
