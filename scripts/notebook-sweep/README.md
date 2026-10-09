@@ -37,6 +37,28 @@ Knobs: `DOQ_PAR` (parallel containers, default 3), `DOQ_CELL_TIMEOUT`
 (seconds/cell, default 300), `DOQ_OUT` (output folder), `DOQ_NB_ROOT`
 (notebook tree), `DOQ_IMG` (image), `DOQ_SIM_MODE` (Pass S: aer|fake).
 
+## Page labels ("Runs in Simulator Mode")
+
+The "Open in" banner on each notebook page shows one line from the last
+Pass S run: **runs**, **needs-ibm** (a cell needs IBM Quantum), **heavy**
+(a cell timed out or ran out of memory) or **issue** (anything else, with the
+error and a report link). The data is `src/config/pageRunStatus.json`; it is
+one sweep's snapshot, so refresh it after an image bump or a content sync:
+
+```bash
+git fetch origin notebooks
+mkdir -p /tmp/nb && git archive origin/notebooks tutorials guides learning | tar -x -C /tmp/nb
+DOQ_NB_ROOT=/tmp/nb DOQ_NB_REF=origin/notebooks python3 scripts/notebook-sweep/sweep.py S
+python3 scripts/notebook-sweep/make_page_status.py --report .sweep-out/passS-aer/report.json
+```
+
+`sweep.py` records the date, image and notebooks commit in the pass's
+`meta.json`; `make_page_status.py` reads them and gives **no label** to a page
+the sweep did not cover or whose code cells changed on the notebooks branch
+since. `--drop-matching REGEX` leaves out failures known to be fixed in the
+image since the run (the 2026-10-05 data drops the graphviz `neato`/`circo`
+failures, fixed by QuBins/qiskit-images#165 after that run).
+
 Pass B (a graphviz + qiskit-ibm-transpiler patched image) was removed in
 #969's fix: graphviz ships in the QuBins image, and qiskit-ibm-transpiler
 0.18 cannot import on Qiskit 2.5.
