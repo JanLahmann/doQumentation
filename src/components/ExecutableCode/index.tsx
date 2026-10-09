@@ -426,9 +426,13 @@ function showErrorHint(cell: Element, error: { type: string; name?: string }): v
     const nameCode = document.createElement('code');
     nameCode.textContent = error.name;
     div.appendChild(nameCode);
-    div.append(kernelRestartedUnexpectedly
-      ? translate({id: 'executable.errorHint.notDefinedAfterRestart', message: ' is not defined: the kernel restarted and lost all variables. Run the cells above again, or use Run All.'})
-      : translate({id: 'executable.errorHint.notDefined', message: ' is not defined. Run the cells above first \u2014 notebooks must be executed in order.'}));
+    if (kernelRestartedUnexpectedly) {
+      div.append(translate({id: 'executable.errorHint.notDefinedAfterRestart', message: ' is not defined: the kernel restarted and lost all variables. Run the cells above again, or use Run All.'}));
+      // Caused by the restart, not by the page: no "Report this error" link.
+      cell.appendChild(div);
+      return;
+    }
+    div.append(translate({id: 'executable.errorHint.notDefined', message: ' is not defined. Run the cells above first \u2014 notebooks must be executed in order.'}));
   } else if (error.type === 'session') {
     div.append(translate({id: 'executable.error.sessionNotSupported', message: 'Sessions are not available on the IBM Quantum Open Plan. '}));
     const settingsLink = document.createElement('a');
