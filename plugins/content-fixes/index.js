@@ -174,6 +174,10 @@ function remarkContentFixes(options = {}) {
         if (content.length !== 1 || content[0].type !== 'image' || !isWideImage(content[0].url, staticDir)) {
           return child;
         }
+        // The box caps the height (CSS); the image links to the full-size
+        // file. pathname:// = a plain link to a static file, not a route.
+        const image = content[0];
+        child.children = [{type: 'link', url: `pathname://${image.url}`, title: null, children: [image]}];
         return {
           type: 'mdxJsxFlowElement',
           name: 'div',
