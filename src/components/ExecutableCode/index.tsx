@@ -1908,6 +1908,7 @@ export default function ExecutableCode({
   // again after a kernel restart (the reader may have just upgraded).
   const [outdatedPackages, setOutdatedPackages] = useState<OutdatedPackage[]>([]);
   const [versionCheckRun, setVersionCheckRun] = useState(0);
+  const [colabOnPage, setColabOnPage] = useState(false);
   useEffect(() => {
     const onRestart = () => setVersionCheckRun(n => n + 1);
     window.addEventListener(RESTART_EVENT, onRestart);
@@ -1919,6 +1920,8 @@ export default function ExecutableCode({
     const kernel = getActiveKernel();
     if (!kernel || Object.keys(reqs).length === 0) return;
     let cancelled = false;
+    // The "Open in" banner carries the Colab link when the page has a notebook.
+    setColabOnPage(!!document.querySelector('a[href^="https://colab.research.google.com/"]'));
     checkPageVersions(kernel, reqs).then((list) => { if (!cancelled) setOutdatedPackages(list); });
     return () => { cancelled = true; };
   }, [isFirstCell, thebeStatus, versionCheckRun]);
@@ -2433,7 +2436,7 @@ export default function ExecutableCode({
               >
                 {'To update it for this session, run {cmd} in a code cell, then click {restart} and run the page again from the top.'}
               </Translate>
-              {notebookPath && (
+              {colabOnPage && (
                 <>
                   {' '}
                   {translate({id: 'executable.versionCheck.colab', message: 'Or use Open in Colab, which installs the newest version.'})}
