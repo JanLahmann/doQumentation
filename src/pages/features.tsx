@@ -240,7 +240,7 @@ export default function Features(): React.JSX.Element {
               />
               <FeatureCard
                 title={translate({id: 'features.ui.docker.title', message: 'Docker Deployment'})}
-                description={translate({id: 'features.ui.docker.desc', message: 'Multi-stage Docker build with CI/CD to GitHub Container Registry. Full stack (site + Jupyter) or lightweight static-only image.'})}
+                description={translate({id: 'features.ui.docker.desc', message: 'Multi-stage Docker build with CI/CD to GitHub Container Registry: one image with the site, Jupyter and Qiskit, for offline use and classrooms.'})}
               />
               <FeatureCard
                 title={translate({id: 'features.ui.mobile.title', message: 'Mobile Responsive'})}
