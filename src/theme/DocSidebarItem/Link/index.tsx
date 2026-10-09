@@ -15,6 +15,7 @@ import {
   isPageVisited,
   isPageExecuted,
   unmarkPageVisited,
+  unmarkPageExecuted,
 } from '../../../config/preferences';
 import { PAGE_VISITED_EVENT } from '../../../clientModules/pageTracker';
 
@@ -47,6 +48,7 @@ export default function DocSidebarItemLink(props: Props): React.JSX.Element {
     e.stopPropagation();
     if (href) {
       unmarkPageVisited(href);
+      unmarkPageExecuted(href);
       setVisited(false);
       setExecuted(false);
       window.dispatchEvent(new CustomEvent(PAGE_VISITED_EVENT));

@@ -1,15 +1,14 @@
 /**
  * Swizzled DocSidebarItem/Category — wraps the original to add
  * an aggregate progress badge (e.g. "3/10") showing visited/total pages.
- * Clicking the badge clears visited + executed status for all pages in the group.
+ * The badge is display-only; progress is cleared in Settings.
  */
 
 import React, { useState, useEffect, useLayoutEffect, useCallback, useRef } from 'react';
 import OriginalCategory from '@theme-original/DocSidebarItem/Category';
+import {translate} from '@docusaurus/Translate';
 import {
   isPageVisited,
-  unmarkPageVisited,
-  unmarkPageExecuted,
   getSidebarCollapseState,
   setSidebarCollapseState,
 } from '../../../config/preferences';
@@ -63,37 +62,15 @@ export default function DocSidebarItemCategory(props: Props): React.JSX.Element 
   }, [refresh]);
 
   // Create badge element once — stable across re-renders.
-  // Uses <span role="button"> so it can be placed inside <a> links (valid HTML).
+  // Display-only: it used to clear the section's progress on click or Enter,
+  // with no confirmation, and readers took it for a status counter (UX review
+  // 2026-10-08). Clearing lives in Settings → Learning Progress.
   useEffect(() => {
     const badge = document.createElement('span');
     badge.className = 'dq-category-badge';
-    badge.setAttribute('role', 'button');
-    badge.setAttribute('tabindex', '0');
     badgeRef.current = badge;
-
-    const handleClear = (e: Event) => {
-      e.preventDefault();
-      e.stopPropagation();
-      // Clear exactly this category's pages — NOT by common prefix. A prefix can
-      // be shorter than intended when the children don't share a tight path (or
-      // when a sibling category shares the prefix), which would wipe other
-      // categories' progress too.
-      for (const href of allHrefs) {
-        unmarkPageVisited(href);
-        unmarkPageExecuted(href);
-      }
-      setVisitedCount(0);
-      window.dispatchEvent(new CustomEvent(PAGE_VISITED_EVENT));
-    };
-    badge.addEventListener('click', handleClear);
-    badge.addEventListener('keydown', (e) => {
-      if ((e as KeyboardEvent).key === 'Enter' || (e as KeyboardEvent).key === ' ') {
-        handleClear(e);
-      }
-    });
-
     return () => { badge.remove(); badgeRef.current = null; };
-  }, [allHrefs]);
+  }, []);
 
   // (Re-)inject badge into the collapsible's flex flow after every render.
   // Must survive React re-renders of OriginalCategory (e.g. collapse restore).
@@ -126,9 +103,12 @@ export default function DocSidebarItemCategory(props: Props): React.JSX.Element 
     if (!badge) return;
     if (visitedCount > 0 && totalCount > 0) {
       badge.textContent = `${visitedCount}/${totalCount}`;
-      badge.title = `${visitedCount} of ${totalCount} visited — click to clear`;
-      badge.setAttribute('aria-label',
-        `Clear progress for this section (${visitedCount} of ${totalCount} visited)`);
+      const label = translate(
+        {id: 'sidebar.categoryProgress', message: '{visited} of {total} visited'},
+        {visited: String(visitedCount), total: String(totalCount)},
+      );
+      badge.title = label;
+      badge.setAttribute('aria-label', label);
       badge.style.display = '';
     } else {
       badge.style.display = 'none';

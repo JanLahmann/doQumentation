@@ -134,6 +134,12 @@ function collectFallbackRoutes(siteDir, locale) {
   return routes;
 }
 
+/** Remove the site-wide `index, follow` robots meta (docusaurus.config.ts
+ *  headTags) from a page that sets noindex itself. */
+function dropIndexRobots(html) {
+  return html.replace(/<meta[^>]+name=["']robots["'][^>]+content=["']index,[^"']*["'][^>]*>/gi, "");
+}
+
 module.exports = function hreflangPlugin(context, _options) {
   const { i18n, siteDir } = context;
   const localeConfigs = i18n.localeConfigs || {};
@@ -185,7 +191,7 @@ module.exports = function hreflangPlugin(context, _options) {
           ) {
             const meta =
               '<meta data-dq-fallback-noindex name="robots" content="noindex, follow" />';
-            const updated = html.replace(/<\/head>/i, `${meta}</head>`);
+            const updated = dropIndexRobots(html).replace(/<\/head>/i, `${meta}</head>`);
             if (updated !== html) {
               fs.writeFileSync(file, updated, "utf8");
               noindexed++;
@@ -194,8 +200,14 @@ module.exports = function hreflangPlugin(context, _options) {
           continue;
         }
 
-        // Skip pages the build marked noindex (e.g. password-gated admin).
-        if (/<meta[^>]+name=["']robots["'][^>]+noindex/i.test(html)) continue;
+        // Skip pages the build marked noindex (e.g. password-gated admin), and
+        // drop the site-wide "index, follow" robots tag there so the page does
+        // not carry two conflicting robots metas.
+        if (/<meta[^>]+name=["']robots["'][^>]+noindex/i.test(html)) {
+          const cleaned = dropIndexRobots(html);
+          if (cleaned !== html) fs.writeFileSync(file, cleaned, "utf8");
+          continue;
+        }
         // Idempotent: don't double-inject on re-runs.
         if (html.includes('data-rh-hreflang')) continue;
 

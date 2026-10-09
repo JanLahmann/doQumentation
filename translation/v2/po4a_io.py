@@ -207,16 +207,18 @@ def clean_translation(text: str) -> str:
 
 
 def add_marker(text: str, en_hash: str) -> str:
-    """Insert the v1 freshness marker after the frontmatter, so v1 tooling
+    """Append the v1 freshness marker at the end of the page, so v1 tooling
     (freshness check, populate-locale, status) keeps treating the rendered
-    file as a genuine, current translation during the migration."""
-    text = strip_marker(text)
-    lines = text.split("\n")
-    fm_end = _frontmatter_end(lines)
+    file as a genuine, current translation during the migration.
+
+    At the end, not after the frontmatter: Docusaurus takes a page's
+    description from its first paragraph when the frontmatter has none, and
+    on 22 pages per locale the search snippet read
+    `{/ doqumentation-source-hash: … /}` (UX review 2026-10-08). The readers
+    (HASH_PATTERN, MARKER_RE) search the whole file."""
+    text = strip_marker(text).rstrip("\n")
     marker = f"{{/* doqumentation-source-hash: {en_hash} */}}"
-    if fm_end >= 0:
-        return "\n".join(lines[: fm_end + 1] + ["", marker] + lines[fm_end + 1:])
-    return marker + "\n\n" + text
+    return text + "\n\n" + marker + "\n"
 
 
 def en_hash(rel: str) -> str:
