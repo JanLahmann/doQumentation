@@ -164,6 +164,9 @@ Pushing to `main` automatically deploys to GitHub Pages and builds two multi-arc
 
 Ways to help, from no tools to the full pipeline:
 
+- **Ask a question or suggest an idea** in
+  [Discussions](https://github.com/JanLahmann/doQumentation/discussions),
+  one question per discussion. Issues are for bugs and wrong translations.
 - **Read pages in your language and report what is wrong.** Use the
   [Wrong or awkward translation](https://github.com/JanLahmann/doQumentation/issues/new?template=translation-report.yml)
   form; no tools or accounts beyond GitHub needed. A fluent reader is the

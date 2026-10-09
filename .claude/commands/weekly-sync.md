@@ -26,6 +26,10 @@ Run the locale sync for the open "sync: upstream content …" PR (branch
    changed, the per-locale counts from `finish`, and anything handled by
    hand. Enable auto-merge (merge commit) unless it is a draft. Close the
    bot's sync PR as superseded with a one-line comment linking the new PR.
+   If CI's "Sidebar labels translated in every locale" step fails, upstream
+   added sidebar categories: add the keys it lists to each
+   `i18n/<locale>/docusaurus-plugin-content-docs/current.json` (translator
+   agents fill the labels; product names stay English) and push to the PR.
 7. Report what you did in a few sentences.
 
 Never hand-edit PO files or rendered pages, never edit `docs/`, and never
