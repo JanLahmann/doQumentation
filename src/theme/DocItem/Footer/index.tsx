@@ -10,6 +10,7 @@ import Translate from '@docusaurus/Translate';
 import {getOriginalPageUrl} from '../../../lib/originalUrl';
 import FeedbackWidget from '../../../components/FeedbackWidget';
 import BookmarkButton from '../../../components/BookmarkButton';
+import PlayBox from '../../../components/PlayBox';
 
 type Props = React.ComponentProps<typeof OriginalFooter>;
 
@@ -174,6 +175,7 @@ export default function DocItemFooter(props: Props): React.JSX.Element {
 
   return (
     <div className="dq-footer-block">
+      <PlayBox relPath={relPath} locale={locale} />
       {entry && (
         <PageDates
           entry={entry}
