@@ -387,6 +387,10 @@ const config: Config = {
               href: 'https://rasqberry.org',
             },
             {
+              label: 'Offline workshop guide',
+              to: '/workshop-offline',
+            },
+            {
               label: 'RasQberry GitHub',
               href: 'https://github.com/JanLahmann/RasQberry-Two',
             },

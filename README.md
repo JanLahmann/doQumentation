@@ -55,7 +55,7 @@ Access at `http://localhost:8080`. Using Docker instead? Replace `podman` with `
 
 **Jupyter token:** Code execution through the website on port 8080 needs no token. JupyterLab on port 8888 asks for the token: the one you pass with `-e JUPYTER_TOKEN=…`, or, without it, a random token printed in the container logs (`podman logs doq`), which changes on every restart. `-p 127.0.0.1:8888:8888` keeps JupyterLab reachable from the host machine only; drop `127.0.0.1:` to reach it from other machines.
 
-**Classroom use:** one container can serve a whole room. Participants on the same network open `http://<host-ip>:8080` (or `http://<hostname>.local:8080`) and can run code. Code execution is accepted only from the site itself when it is reached by a local-network address (loopback, private IP, `.local` or single-label name), so other websites a participant has open cannot use the server. To let a site at another address use it too (for example a copy of the site you host yourself), list that address: `-e CORS_ORIGIN=https://docs.example.org`. `CORS_ORIGIN` takes a comma-separated list; plain `http://` is accepted only for local-network hosts.
+**Classroom use:** one container can serve a whole room. Step-by-step for teachers, with network setup, measured sizing for a Raspberry Pi 5 and a printable checklist: [Offline workshop guide](https://doqumentation.org/workshop-offline). Participants on the same network open `http://<host-ip>:8080` (or `http://<hostname>.local:8080`) and can run code. Code execution is accepted only from the site itself when it is reached by a local-network address (loopback, private IP, `.local` or single-label name), so other websites a participant has open cannot use the server. To let a site at another address use it too (for example a copy of the site you host yourself), list that address: `-e CORS_ORIGIN=https://docs.example.org`. `CORS_ORIGIN` takes a comma-separated list; plain `http://` is accepted only for local-network hosts.
 
 Switches for workshops (pass with `-e`):
 
@@ -69,7 +69,7 @@ All participants share one Jupyter server and one user account in the container:
 
 ### Deploy to RasQberry
 
-[RasQberry Two](https://rasqberry.org/) ships this image as its Workshop & Qiskit Server; see rasqberry.org for how to start it on the Pi.
+[RasQberry Two](https://rasqberry.org/) ships this image as its Workshop & Qiskit Server; see rasqberry.org for how to start it on the Pi. To run a class from any Raspberry Pi 5 with no internet, follow the [Offline workshop guide](https://doqumentation.org/workshop-offline).
 
 ### Development
 
