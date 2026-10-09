@@ -33,16 +33,19 @@ const CE_PHASE_LABELS: Record<string, string> = {
   failed:     'CE failed',
 };
 
-// Longer hint shown below the banner while building (Binder)
-const BINDER_PHASE_HINTS: Record<string, string> = {
-  connecting: 'Connecting to mybinder.org...',
-  waiting:    'Waiting in queue...',
-  fetching:   'Fetching repository (2–5 min)',
-  building:   'Building Docker image (5–10 min)',
-  pushing:    'Pushing image to registry (2–5 min)',
-  built:      'Image ready — launching JupyterLab...',
-  launching:  'Starting JupyterLab server (2–5 min)',
-};
+// Longer hint shown below the banner while building (Binder). The phase
+// texts share their ids with the code-cell toolbar (ExecutableCode).
+function binderPhaseHints(): Record<string, string> {
+  return {
+    connecting: 'Connecting to mybinder.org...',
+    waiting:    'Waiting in queue...',
+    fetching:   translate({id: 'executable.status.binderFetching.v2', message: 'Fetching repo...'}),
+    building:   translate({id: 'executable.status.binderBuilding.v2', message: 'Building image...'}),
+    pushing:    translate({id: 'executable.status.binderPushing.v2', message: 'Pushing image...'}),
+    built:      'Image ready — launching JupyterLab...',
+    launching:  translate({id: 'executable.status.binderLaunching.v2', message: 'Launching server...'}),
+  };
+}
 
 // CE hints — fast startup, minimal phases
 const CE_PHASE_HINTS: Record<string, string> = {
@@ -93,7 +96,7 @@ export default function OpenInLabBanner({ notebookPath, description }: OpenInLab
         const isCodeEngine = config.environment === 'code-engine';
         const usesRemoteSession = (config.environment === 'github-pages' && !!config.binderUrl) || isCodeEngine;
         const phaseLabels = isCodeEngine ? CE_PHASE_LABELS : BINDER_PHASE_LABELS;
-        const phaseHintMap = isCodeEngine ? CE_PHASE_HINTS : BINDER_PHASE_HINTS;
+        const phaseHintMap = isCodeEngine ? CE_PHASE_HINTS : binderPhaseHints();
 
         let labUrl: string | null = null;
         if (config.labEnabled) {
@@ -261,7 +264,7 @@ export default function OpenInLabBanner({ notebookPath, description }: OpenInLab
               <div style={{ width: '100%', marginTop: '0.25rem', fontSize: '0.8rem' }}>
                 {showCacheMissWarning ? (
                   <span style={{ color: 'var(--ifm-color-warning-dark, #b45309)' }}>
-                    ⚠ Cache not warmed — total build time 10–25 min. Use the <strong>Colab</strong> button above, or come back later.
+                    {translate({id: 'executable.status.binderCacheMiss.v2', message: '\u26a0 Cold start: this Binder server prepares the image first, which usually takes up to about 3 minutes.'})}
                   </span>
                 ) : hint ? (
                   <span style={{ color: 'var(--ifm-color-emphasis-600)' }}>{hint}</span>

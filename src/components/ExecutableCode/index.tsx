@@ -1898,15 +1898,19 @@ export default function ExecutableCode({
     return () => window.removeEventListener(BINDER_PHASE_EVENT, onPhase);
   }, []);
 
-  // Per-phase timeout thresholds (seconds) — exceeding triggers slow startup warning
+  // Per-phase timeout thresholds (seconds) — exceeding triggers slow startup warning.
+  // The QuBins images are warmed on mybinder after every publish: a launch
+  // measured 10–40 s warm and 1.5–2.5 min cold. Past 3 min in one phase
+  // (above all "waiting") the server is likely stuck, and a reload lets
+  // mybinder pick another federation member.
   const PHASE_TIMEOUTS: Record<string, number> = {
     connecting: 60,      // 1 min — should connect quickly
-    waiting: 3 * 60,     // 3 min — queue can be slow
-    fetching: 5 * 60,    // 5 min — "Fetching repo (2–5 min)"
-    building: 12 * 60,   // 12 min — "Building image (5–10 min)" + buffer
-    pushing: 5 * 60,     // 5 min — "Pushing image (2–5 min)"
-    built: 2 * 60,       // 2 min — should be fast
-    launching: 5 * 60,   // 5 min — "Launching server (2–5 min)"
+    waiting: 3 * 60,
+    fetching: 3 * 60,
+    building: 3 * 60,
+    pushing: 3 * 60,
+    built: 60,           // 1 min — should be fast
+    launching: 3 * 60,
   };
 
   // Elapsed timer for Binder build + per-phase slow startup detection
@@ -2158,11 +2162,11 @@ export default function ExecutableCode({
   const binderPhaseLabels: Record<string, string> = {
     connecting: translate({id: 'executable.status.binderConnecting', message: 'Connecting...'}),
     waiting: translate({id: 'executable.status.binderWaiting', message: 'In queue...'}),
-    fetching: translate({id: 'executable.status.binderFetching', message: 'Fetching repo (2\u20135 min)...'}),
-    building: translate({id: 'executable.status.binderBuilding', message: 'Building image (5\u201310 min)...'}),
-    pushing: translate({id: 'executable.status.binderPushing', message: 'Pushing image (2\u20135 min)...'}),
+    fetching: translate({id: 'executable.status.binderFetching.v2', message: 'Fetching repo...'}),
+    building: translate({id: 'executable.status.binderBuilding.v2', message: 'Building image...'}),
+    pushing: translate({id: 'executable.status.binderPushing.v2', message: 'Pushing image...'}),
     built: translate({id: 'executable.status.binderBuilt', message: 'Launching...'}),
-    launching: translate({id: 'executable.status.binderLaunching', message: 'Launching server (2\u20135 min)...'}),
+    launching: translate({id: 'executable.status.binderLaunching.v2', message: 'Launching server...'}),
   };
 
   // CE phase labels — faster startup, fewer phases
@@ -2352,7 +2356,7 @@ export default function ExecutableCode({
               {statusText[thebeStatus]}
               <InfoIcon tooltip={jupyterConfig?.environment === 'code-engine'
                 ? translate({id: 'executable.info.ceStatus', message: 'Code Engine is starting a cloud container with all packages. This usually takes 1\u20133 minutes.'})
-                : translate({id: 'executable.info.binderStatus', message: 'Binder is preparing a free cloud server with all packages. This may take 2\u201325 minutes depending on cache availability.'})} position="below" />
+                : translate({id: 'executable.info.binderStatus.v2', message: 'Binder is starting a free cloud server with all packages. This usually takes under a minute, up to about 3 minutes on a cold start. If it stays on \u201cIn queue\u201d for more than 3 minutes, reload the page and Binder tries another server.'})} position="below" />
             </span>
           )}
 
@@ -2415,10 +2419,10 @@ export default function ExecutableCode({
         <div className="executable-code__conflict-banner" style={{ borderColor: 'var(--ifm-color-warning-dark, #b45309)', color: 'var(--ifm-color-warning-dark, #b45309)' }}>
           {jupyterConfig?.environment === 'code-engine'
             ? translate({id: 'executable.status.ceCacheMiss', message: '\u26a0 Cold start \u2014 container build may take a few minutes.'})
-            : translate({id: 'executable.status.binderCacheMiss', message: '\u26a0 Cache not warmed \u2014 total build time 10\u201325 min. Use Colab (above) or come back later.'})}
+            : translate({id: 'executable.status.binderCacheMiss.v2', message: '\u26a0 Cold start: this Binder server prepares the image first, which usually takes up to about 3 minutes.'})}
           <InfoIcon tooltip={jupyterConfig?.environment === 'code-engine'
             ? translate({id: 'executable.info.ceCacheMiss', message: 'The Code Engine container is being built. This is usually faster than Binder.'})
-            : translate({id: 'executable.info.cacheMiss', message: 'The Binder Docker image must be rebuilt from scratch. Try Colab for instant access, or come back in ~20 minutes.'})} position="below" />
+            : translate({id: 'executable.info.cacheMiss.v2', message: 'This Binder server does not have the image ready yet and prepares it first. If nothing changes for more than 3 minutes, reload the page and Binder tries another server.'})} position="below" />
         </div>
       )}
 
@@ -2426,7 +2430,7 @@ export default function ExecutableCode({
         <div className="executable-code__conflict-banner" style={{ borderColor: 'var(--ifm-color-danger-dark, #dc3545)', color: 'var(--ifm-color-danger-dark, #dc3545)' }}>
           {jupyterConfig?.environment === 'code-engine'
             ? translate({id: 'executable.status.ceSlowStartup', message: 'Code Engine startup is taking longer than expected. You can cancel and try again later, or use Colab or Docker instead.'})
-            : translate({id: 'executable.status.binderSlowStartup', message: 'Binder startup is taking longer than expected. You can cancel and try again later, or use one of the other backends (Colab, Docker, or Code Engine).'})}
+            : translate({id: 'executable.status.binderSlowStartup.v2', message: 'Binder is taking longer than usual: it normally starts within 3 minutes. Reload the page and Binder tries another server, or cancel and use Colab, Docker or Code Engine.'})}
         </div>
       )}
 
