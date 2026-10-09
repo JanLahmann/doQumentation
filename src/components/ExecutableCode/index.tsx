@@ -49,6 +49,11 @@ import {
 import { markPageExecuted, isBinderHintDismissed, dismissBinderHint, getHideStaticOutputs } from '../../config/preferences';
 import { trackEvent } from '../../config/analytics';
 import InfoIcon from '../InfoIcon';
+import {
+  kernelStatusEffect,
+  connectionErrorMessage,
+  type ConnectionIssue,
+} from './connection';
 
 // thebelab 0.4.x global — bootstrap() returns a Promise that resolves
 // when the kernel is connected (after Binder launch + kernel start).
@@ -83,6 +88,7 @@ const RESET_EVENT = 'executablecode:reset';
 const RESTART_EVENT = 'executablecode:restart';
 const INJECTION_EVENT = 'executablecode:injection';
 const BINDER_PHASE_EVENT = 'executablecode:binderphase';
+const CONNECTION_EVENT = 'executablecode:connection';
 
 type ThebeStatus = 'idle' | 'connecting' | 'ready' | 'error';
 
@@ -112,6 +118,26 @@ let kernelRaceRetryTimer: ReturnType<typeof setTimeout> | null = null;
 let kernelDead = false;
 let feedbackCleanupFns: (() => void)[] = [];
 let activeKernel: unknown = null;
+// Whether kernel.statusChanged is wired up; without it the safety net can't
+// tell "no response" from "ran without output".
+let kernelStatusSubscribed = false;
+
+// ── Connection loss / kernel restart ──
+// A dropped socket is only reported after this grace period: the kernel's own
+// reconnect usually closes a short network blip within a second or two.
+const CONNECTION_GRACE_MS = 3000;
+let connectionIssue: ConnectionIssue = null;
+let connectionGraceTimer: ReturnType<typeof setTimeout> | null = null;
+// Set while Restart Kernel runs (plus a short tail for late status messages),
+// so its own 'restarting'/'reconnecting' statuses aren't reported as a crash.
+let userRestartInProgress = false;
+let userRestartTailTimer: ReturnType<typeof setTimeout> | null = null;
+// The kernel restarted on its own since the cells ran: a NameError then means
+// "run them again", not "you skipped a cell".
+let kernelRestartedUnexpectedly = false;
+// Pending waitForKernelIdle() calls, released at once when the kernel is lost
+// so Run All stops instead of waiting out its 60 s fallback.
+const idleWaiterInterrupts = new Set<() => void>();
 
 // ── Run All state ──
 let runAllActive = false;
@@ -150,6 +176,19 @@ function resetModuleState(): void {
     clearTimeout(kernelRaceRetryTimer);
     kernelRaceRetryTimer = null;
   }
+  if (connectionGraceTimer) {
+    clearTimeout(connectionGraceTimer);
+    connectionGraceTimer = null;
+  }
+  if (userRestartTailTimer) {
+    clearTimeout(userRestartTailTimer);
+    userRestartTailTimer = null;
+  }
+  userRestartInProgress = false;
+  kernelRestartedUnexpectedly = false;
+  kernelStatusSubscribed = false;
+  interruptIdleWaiters();
+  setConnectionIssue(null);
   // Abort any in-flight Binder/CE build EventSource. Without this, a build
   // started on a page the user navigated away from keeps its SSE connection
   // (and server-side build slot / CE coroutine) alive until its 20-min timeout.
@@ -181,6 +220,13 @@ function waitForOutputStable(cell: Element, quietMs = 300, maxMs = 3000): Promis
   });
 }
 
+/** The kernel's current status ('idle', 'busy', 'reconnecting', …), if known. */
+function kernelStatusOf(kernelObj: unknown): string | undefined {
+  const k = kernelObj as Record<string, any>;
+  const realKernel = k?.statusChanged ? k : k?.kernel;
+  return typeof realKernel?.status === 'string' ? realKernel.status : undefined;
+}
+
 function waitForKernelIdle(): Promise<void> {
   return new Promise(resolve => {
     if (!activeKernel) { resolve(); return; }
@@ -190,6 +236,14 @@ function waitForKernelIdle(): Promise<void> {
 
     let sawBusy = false;
     let debounce: ReturnType<typeof setTimeout> | null = null;
+    let fallback: ReturnType<typeof setTimeout> | null = null;
+    const finish = () => {
+      if (debounce) clearTimeout(debounce);
+      if (fallback) clearTimeout(fallback);
+      realKernel.statusChanged.disconnect(handler);
+      idleWaiterInterrupts.delete(finish);
+      resolve();
+    };
     const handler = (_: unknown, status: string) => {
       if (status === 'busy') {
         sawBusy = true;
@@ -200,22 +254,29 @@ function waitForKernelIdle(): Promise<void> {
       if (sawBusy && status === 'idle') {
         // Debounce: only resolve if kernel stays idle for IDLE_DEBOUNCE_MS
         if (debounce) clearTimeout(debounce);
-        debounce = setTimeout(() => {
-          realKernel.statusChanged.disconnect(handler);
-          clearTimeout(fallback);
-          resolve();
-        }, IDLE_DEBOUNCE_MS);
+        debounce = setTimeout(finish, IDLE_DEBOUNCE_MS);
       }
     };
     realKernel.statusChanged.connect(handler);
+    // Connection loss or a kernel restart releases the wait at once.
+    idleWaiterInterrupts.add(finish);
 
-    // Fallback: if kernel never goes busy (empty cell), resolve after 2s
-    const fallback = setTimeout(() => {
-      if (debounce) clearTimeout(debounce);
-      realKernel.statusChanged.disconnect(handler);
-      resolve();
-    }, FEEDBACK_SAFETY_NET_MS);
+    // Fallback: if kernel never goes busy (empty cell), resolve after the
+    // safety-net time — unless the kernel is still busy with a long cell.
+    const armFallback = () => {
+      fallback = setTimeout(() => {
+        if (realKernel.status === 'busy') { armFallback(); return; }
+        finish();
+      }, FEEDBACK_SAFETY_NET_MS);
+    };
+    armFallback();
   });
+}
+
+/** Release every pending waitForKernelIdle(). */
+function interruptIdleWaiters(): void {
+  Array.from(idleWaiterInterrupts).forEach(finish => finish());
+  idleWaiterInterrupts.clear();
 }
 /* eslint-enable @typescript-eslint/no-explicit-any */
 
@@ -349,21 +410,25 @@ function showErrorHint(cell: Element, error: { type: string; name?: string }): v
       fallback.append(translate({id: 'executable.errorHint.inACell', message: ' in a cell.'}));
       div.appendChild(fallback);
     }
-  } else if (error.type === 'kernel') {
-    div.append(translate({id: 'executable.errorHint.kernelDisconnected', message: 'Kernel disconnected. Click '}));
-    const back = document.createElement('strong');
-    back.textContent = translate({id: 'executable.errorHint.back', message: 'Back'});
-    div.appendChild(back);
-    div.append(translate({id: 'executable.errorHint.then', message: ' then '}));
-    const run = document.createElement('strong');
-    run.textContent = translate({id: 'executable.errorHint.run', message: 'Run'});
-    div.appendChild(run);
-    div.append(translate({id: 'executable.errorHint.toReconnect', message: ' to reconnect.'}));
+  } else if (error.type === 'connection' || error.type === 'restarted' || error.type === 'noResponse') {
+    // Not a problem with the page's code: no "Report this error" link.
+    div.classList.add(`thebelab-cell__error-hint--${error.type}`);
+    div.append(
+      error.type === 'connection'
+        ? translate({id: 'executable.errorHint.connectionLost', message: 'The connection to the code server was lost, so this cell did not finish. Use Reconnect in the toolbar, then run the cells again from the top.'})
+        : error.type === 'restarted'
+          ? translate({id: 'executable.errorHint.kernelRestarted', message: 'The kernel restarted while this cell was running (often: out of memory). Its results and all variables are gone.'})
+          : translate({id: 'executable.errorHint.noResponse', message: 'No response from the code server. Run the cell again; if that doesn\u2019t help, use Restart Kernel.'}),
+    );
+    cell.appendChild(div);
+    return;
   } else if (error.type === 'name' && error.name) {
     const nameCode = document.createElement('code');
     nameCode.textContent = error.name;
     div.appendChild(nameCode);
-    div.append(translate({id: 'executable.errorHint.notDefined', message: ' is not defined. Run the cells above first \u2014 notebooks must be executed in order.'}));
+    div.append(kernelRestartedUnexpectedly
+      ? translate({id: 'executable.errorHint.notDefinedAfterRestart', message: ' is not defined: the kernel restarted and lost all variables. Run the cells above again, or use Run All.'})
+      : translate({id: 'executable.errorHint.notDefined', message: ' is not defined. Run the cells above first \u2014 notebooks must be executed in order.'}));
   } else if (error.type === 'session') {
     div.append(translate({id: 'executable.error.sessionNotSupported', message: 'Sessions are not available on the IBM Quantum Open Plan. '}));
     const settingsLink = document.createElement('a');
@@ -468,33 +533,135 @@ function settleCellFeedback(cell: Element): void {
  *  1500ms bridges gaps from overlapping thebelab/kernel status signals. */
 const IDLE_DEBOUNCE_MS = 1500;
 
+/** Tell the toolbar what happened to the connection (null: nothing wrong). */
+function setConnectionIssue(issue: ConnectionIssue): void {
+  connectionIssue = issue;
+  if (issue) {
+    // A Run All paused at an error must not wait on a kernel that is gone.
+    runAllPaused = false;
+    if (runAllResume) { runAllResume(); runAllResume = null; }
+  }
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new CustomEvent(CONNECTION_EVENT, { detail: issue }));
+  }
+}
+
+/** True while the kernel can't run cells: lost, dead, or restarted under Run All. */
+function connectionInterrupted(): boolean {
+  return kernelDead || connectionIssue !== null;
+}
+
+function clearFeedbackTimers(): void {
+  if (feedbackIdleDebounceTimer) {
+    clearTimeout(feedbackIdleDebounceTimer);
+    feedbackIdleDebounceTimer = null;
+  }
+  if (feedbackFallbackTimer) {
+    clearTimeout(feedbackFallbackTimer);
+    feedbackFallbackTimer = null;
+  }
+}
+
+/** Mark a cell as stopped by the connection or a restart, not by its code. */
+function markCellInterrupted(cell: Element, type: 'connection' | 'restarted' | 'noResponse'): void {
+  cell.querySelector('.exec-feedback')?.remove();
+  cell.classList.remove('thebelab-cell--running', 'thebelab-cell--done');
+  cell.classList.add('thebelab-cell--error');
+  showErrorHint(cell, { type });
+}
+
+/** Stop tracking the running cell and mark it as interrupted. */
+function interruptExecutingCell(type: 'connection' | 'restarted'): void {
+  clearFeedbackTimers();
+  lastKernelBusy = false;
+  const cell = executingCell;
+  executingCell = null;
+  if (cell) markCellInterrupted(cell, type);
+}
+
+/** The socket stayed down past the grace period: say so, stop Run All. */
+function declareConnectionLost(): void {
+  if (connectionIssue === 'lost') return;
+  interruptExecutingCell('connection');
+  interruptIdleWaiters();
+  setConnectionIssue('lost');
+  broadcastStatus('error');
+}
+
+/** The socket came back (the same kernel, so variables survived). */
+function recoverConnection(): void {
+  if (connectionGraceTimer) {
+    clearTimeout(connectionGraceTimer);
+    connectionGraceTimer = null;
+  }
+  if (connectionIssue !== 'lost' || kernelDead) return;
+  setConnectionIssue(null);
+  if (kernelReady) broadcastStatus('ready');
+  // Executions sent during the outage were queued and go out now, so the
+  // "connection lost" verdict no longer holds: return those cells to neutral.
+  document.querySelectorAll('.thebelab-cell__error-hint--connection').forEach(hint => {
+    hint.closest('.thebelab-cell')?.classList.remove('thebelab-cell--error');
+    hint.remove();
+  });
+}
+
+/** The server restarted the kernel (crash, out of memory): every variable is gone. */
+function handleUnexpectedRestart(): void {
+  kernelRestartedUnexpectedly = true;
+  interruptExecutingCell('restarted');
+  interruptIdleWaiters();
+  setConnectionIssue('restarted');
+  // The restart also wiped the setup (save_account guard, Simulator Mode or
+  // credentials). Queue it again: the kernel sends it once the new process is up.
+  if (activeKernel) injectKernelSetup(activeKernel);
+}
+
 /** Handle kernel busy/idle transitions to detect execution completion.
  *  Called from BOTH:
  *  - thebelab's on('status') for lifecycle events (dead/failed/ready)
  *  - kernel.statusChanged signal for actual busy/idle protocol events */
 function handleKernelStatusForFeedback(status: string): void {
+  const effect = kernelStatusEffect(status, userRestartInProgress);
+
+  if (effect === 'reconnecting') {
+    if (!connectionGraceTimer && connectionIssue !== 'lost') {
+      connectionGraceTimer = setTimeout(() => {
+        connectionGraceTimer = null;
+        declareConnectionLost();
+      }, CONNECTION_GRACE_MS);
+    }
+    return;
+  }
+  if (effect === 'recovered') {
+    recoverConnection();
+    return;
+  }
+  if (effect === 'restarted') {
+    handleUnexpectedRestart();
+    return;
+  }
+
   // Detect kernel death — mark current cell as error and flag for future checks
-  if (status === 'dead' || status === 'failed') {
+  if (effect === 'dead') {
     kernelDead = true;
     kernelReady = false; // kernel gone — no longer ready
     thebelabBootstrapped = false; // Allow re-bootstrap on next Run
-    if (feedbackIdleDebounceTimer) {
-      clearTimeout(feedbackIdleDebounceTimer);
-      feedbackIdleDebounceTimer = null;
+    if (connectionGraceTimer) {
+      clearTimeout(connectionGraceTimer);
+      connectionGraceTimer = null;
     }
-    if (executingCell) {
-      const cell = executingCell;
-      executingCell = null;
-      if (feedbackFallbackTimer) {
-        clearTimeout(feedbackFallbackTimer);
-        feedbackFallbackTimer = null;
-      }
-      cell.classList.remove('thebelab-cell--running');
-      cell.classList.add('thebelab-cell--error');
-      showErrorHint(cell, { type: 'kernel' });
-    }
+    interruptExecutingCell('connection');
+    interruptIdleWaiters();
+    // A kernel that was connected and died is a lost connection; one that
+    // never came up (failed Binder build) is reported as a failed start.
+    if (activeKernel) setConnectionIssue('lost');
     broadcastStatus('error');
     return;
+  }
+
+  // Status messages travel over the socket, so it is back.
+  if (connectionIssue === 'lost' && (effect === 'busy' || effect === 'idle')) {
+    recoverConnection();
   }
 
   // busy: cancel any pending idle debounce — the kernel is still working
@@ -534,11 +701,10 @@ function markCellExecuting(cell: Element): void {
   cell.querySelector('.exec-feedback')?.remove();
   cell.querySelector('.thebelab-cell__error-hint')?.remove();
 
-  // If kernel is dead, show error immediately instead of misleading "running" state
-  if (kernelDead) {
-    cell.classList.remove('thebelab-cell--done', 'thebelab-cell--running');
-    cell.classList.add('thebelab-cell--error');
-    showErrorHint(cell, { type: 'kernel' });
+  // If the kernel is dead or unreachable, say so at once instead of showing a
+  // "running" state that would never end
+  if (kernelDead || connectionIssue === 'lost') {
+    markCellInterrupted(cell, 'connection');
     return;
   }
 
@@ -564,13 +730,33 @@ function markCellExecuting(cell: Element): void {
   cell.classList.add('thebelab-cell--running');
 
   if (feedbackFallbackTimer) clearTimeout(feedbackFallbackTimer);
-  feedbackFallbackTimer = setTimeout(() => {
-    if (executingCell === cell) {
+  const armSafetyNet = () => {
+    feedbackFallbackTimer = setTimeout(() => {
+      feedbackFallbackTimer = null;
+      if (executingCell !== cell) return;
+      const status = kernelStatusOf(activeKernel);
+      // A long cell is still running: keep waiting rather than call it done.
+      if (status === 'busy') { armSafetyNet(); return; }
       executingCell = null;
       console.warn('[ExecutableCode] Safety-net timer fired — kernel.statusChanged may not be working');
-      settleCellFeedback(cell);
-    }
-  }, FEEDBACK_SAFETY_NET_MS);
+      if (connectionInterrupted() || status === 'reconnecting' || status === 'dead') {
+        markCellInterrupted(cell, 'connection');
+      } else if (kernelStatusSubscribed && !lastKernelBusy && !cellHasOutput(cell)) {
+        // The kernel never started on it: an empty output is not a result.
+        markCellInterrupted(cell, 'noResponse');
+      } else {
+        settleCellFeedback(cell);
+      }
+    }, FEEDBACK_SAFETY_NET_MS);
+  };
+  armSafetyNet();
+}
+
+/** Whether a cell's output area shows anything (text or an image). */
+function cellHasOutput(cell: Element): boolean {
+  const output = cell.querySelector(OUTPUT_SELECTOR);
+  if (!output) return false;
+  return (output.textContent || '').trim().length > 0 || !!output.querySelector('img, svg, canvas');
 }
 
 /** After thebelab cells are rendered, attach listeners for execution feedback. */
@@ -1296,6 +1482,9 @@ function doBootstrap(thebelabOptions: Record<string, unknown>): void {
             if (realKernel?.statusChanged?.connect) {
               realKernel.statusChanged.connect(
                 (_sender: unknown, kernelStatus: string) => {
+                  // After Back/Reconnect the old kernel keeps retrying its socket
+                  // and ends in 'dead'; that must not touch the new session.
+                  if (activeKernel !== kernel) return;
                   if (DEBUG) console.log(`[ExecutableCode] kernel.statusChanged: ${kernelStatus}`);
                   handleKernelStatusForFeedback(kernelStatus);
                   // Keep Binder session alive during active code execution
@@ -1304,6 +1493,7 @@ function doBootstrap(thebelabOptions: Record<string, unknown>): void {
                   }
                 }
               );
+              kernelStatusSubscribed = true;
               if (DEBUG) console.log('[ExecutableCode] Subscribed to kernel.statusChanged');
             } else {
               console.warn(
@@ -1418,10 +1608,19 @@ async function restartKernel(): Promise<boolean> {
     return false;
   }
 
+  // Our own restart emits 'restarting'/'reconnecting' too; don't report it as
+  // a crash or a lost connection.
+  userRestartInProgress = true;
+  if (userRestartTailTimer) {
+    clearTimeout(userRestartTailTimer);
+    userRestartTailTimer = null;
+  }
   try {
     broadcastStatus('connecting');
     await realKernel.restart();
     if (DEBUG) console.log('[ExecutableCode] kernel restarted');
+    kernelRestartedUnexpectedly = false;
+    if (connectionIssue === 'restarted') setConnectionIssue(null);
 
     // Clear cell outputs and feedback classes
     document.querySelectorAll('.thebelab-cell').forEach(cell => {
@@ -1452,6 +1651,12 @@ async function restartKernel(): Promise<boolean> {
     console.error('[ExecutableCode] kernel restart failed:', err);
     broadcastStatus('error');
     return false;
+  } finally {
+    // Late status messages from the restart can trail the REST call.
+    userRestartTailTimer = setTimeout(() => {
+      userRestartTailTimer = null;
+      userRestartInProgress = false;
+    }, CONNECTION_GRACE_MS);
   }
 }
 /* eslint-enable @typescript-eslint/no-explicit-any */
@@ -1491,6 +1696,8 @@ export default function ExecutableCode({
   const [runAllPausedState, setRunAllPausedState] = useState(false);
   // 1-based index of the cell Run All stopped at because it raised an error
   const [runAllErrorAt, setRunAllErrorAt] = useState<number | null>(null);
+  const [connectionIssueState, setConnectionIssueState] = useState<ConnectionIssue>(null);
+  const [online, setOnline] = useState(true);
   const binderStartRef = useRef<number | null>(null);
   const phaseStartRef = useRef<number | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -1557,6 +1764,25 @@ export default function ExecutableCode({
     };
     window.addEventListener(STATUS_EVENT, onStatus);
     return () => window.removeEventListener(STATUS_EVENT, onStatus);
+  }, []);
+
+  // Listen for connection loss / kernel restarts, and for the browser going offline
+  useEffect(() => {
+    setConnectionIssueState(connectionIssue);
+    setOnline(navigator.onLine !== false);
+    const onConnection = (e: Event) => {
+      setConnectionIssueState((e as CustomEvent<ConnectionIssue>).detail);
+    };
+    const onOnline = () => setOnline(true);
+    const onOffline = () => setOnline(false);
+    window.addEventListener(CONNECTION_EVENT, onConnection);
+    window.addEventListener('online', onOnline);
+    window.addEventListener('offline', onOffline);
+    return () => {
+      window.removeEventListener(CONNECTION_EVENT, onConnection);
+      window.removeEventListener('online', onOnline);
+      window.removeEventListener('offline', onOffline);
+    };
   }, []);
 
   // Listen for Binder build phase updates (GitHub Pages only)
@@ -1702,10 +1928,24 @@ export default function ExecutableCode({
     restartKernel();
   }, []);
 
+  // Back then Run in one step: a fresh connection (and a new server if the old
+  // one is gone). Used by the Reconnect/Retry button when the server is lost.
+  const handleReconnect = useCallback(() => {
+    resetModuleState();
+    document.body.classList.remove('dq-hide-static-outputs');
+    window.dispatchEvent(new CustomEvent(RESET_EVENT));
+    // Let React return the cells to read mode before they go live again.
+    setTimeout(handleRun, 100);
+  }, [handleRun]);
+
   const handleRunAll = useCallback(async () => {
     if (runAllActive) return;
+    if (connectionIssue === 'lost' || kernelDead) return;
     runAllActive = true;
     runAllAbort = false;
+    // Running from the top is the answer to a restart: clear its notice.
+    kernelRestartedUnexpectedly = false;
+    if (connectionIssue === 'restarted') setConnectionIssue(null);
     trackEvent('Run All', { page: window.location.pathname });
 
     // Clear all previous execution state labels so users see a clean slate
@@ -1738,14 +1978,18 @@ export default function ExecutableCode({
     setRunAllProgress({ current: 0, total: execBtns.length });
 
     for (let i = 0; i < execBtns.length; i++) {
-      if (runAllAbort) break;
+      if (runAllAbort || connectionInterrupted()) break;
       if (runAllPaused) await waitForRunAllResume();
-      if (runAllAbort) break; // re-check after resume (user may have stopped while paused)
+      // re-check after resume (user may have stopped while paused, or the kernel went away)
+      if (runAllAbort || connectionInterrupted()) break;
       setRunAllProgress({ current: i + 1, total: execBtns.length });
       const cell = execBtns[i].closest('.thebelab-cell');
       if (cell) markCellExecuting(cell);
       execBtns[i].click();
       await waitForKernelIdle();
+      // Lost or restarted mid-cell: the status handler already marked the
+      // cell; running on would only queue cells against a kernel that is gone.
+      if (connectionInterrupted()) break;
       // Wait for output DOM to stabilize before marking done/error
       if (cell) await waitForOutputStable(cell);
       // Settle feedback immediately — the idle debounce in handleKernelStatusForFeedback
@@ -1853,11 +2097,18 @@ export default function ExecutableCode({
     ? (phaseLabel || '') + (binderElapsed > 0 ? ` ${formatElapsed(binderElapsed)}` : '')
     : translate({id: 'executable.status.connecting', message: 'Connecting...'});
 
+  const errorKind = connectionErrorMessage(connectionIssueState, online, !!usesRemoteSession);
+  const errorText = {
+    offline: translate({id: 'executable.connection.offline', message: 'You\u2019re offline. Running code here needs an internet connection (or a local doQumentation: Docker or RasQberry).'}),
+    lost: translate({id: 'executable.connection.lost', message: 'Connection to the code server was lost (idle timeout or network).'}),
+    failed: translate({id: 'executable.connection.failed', message: 'Could not start the code server.'}),
+  }[errorKind];
+
   const statusText: Record<ThebeStatus, string> = {
     idle: '',
     connecting: connectingText,
     ready: '',
-    error: translate({id: 'executable.status.error', message: 'Disconnected \u2014 click Back, then Run to retry'}),
+    error: errorText,
   };
 
   const code = children.replace(/\n$/, '');
@@ -1997,12 +2248,35 @@ export default function ExecutableCode({
             </a>
           )}
 
-          {(thebeStatus === 'connecting' || thebeStatus === 'error') && (
-            <span className={`thebe-status thebe-status--${thebeStatus}`} aria-live="polite">
+          {thebeStatus === 'connecting' && (
+            <span className="thebe-status thebe-status--connecting" aria-live="polite">
               {statusText[thebeStatus]}
               <InfoIcon tooltip={jupyterConfig?.environment === 'code-engine'
                 ? translate({id: 'executable.info.ceStatus', message: 'Code Engine is starting a cloud container with all packages. This usually takes 1\u20133 minutes.'})
                 : translate({id: 'executable.info.binderStatus', message: 'Binder is preparing a free cloud server with all packages. This may take 2\u201325 minutes depending on cache availability.'})} position="below" />
+            </span>
+          )}
+
+          {isExecutable && mode === 'run' && thebeStatus === 'error' && (
+            <>
+              <span className="thebe-status thebe-status--error" role="alert">
+                {statusText.error}
+              </span>
+              <button
+                className="executable-code__button"
+                onClick={handleReconnect}
+                title={translate({id: 'executable.connection.reconnectTitle', message: 'Connect again (starting a new server if needed). Variables are lost: run the cells again from the top.'})}
+              >
+                {connectionIssueState === 'lost'
+                  ? translate({id: 'executable.connection.reconnect', message: 'Reconnect'})
+                  : translate({id: 'executable.connection.retry', message: 'Retry'})}
+              </button>
+            </>
+          )}
+
+          {isExecutable && mode === 'run' && thebeStatus === 'ready' && connectionIssueState === 'restarted' && (
+            <span className="executable-code__runall-stopped" role="alert">
+              {translate({id: 'executable.connection.restarted', message: 'The kernel restarted (often: out of memory) and all variables were lost. Use Run All to run the page again from the top.'})}
             </span>
           )}
 
