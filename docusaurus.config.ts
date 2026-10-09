@@ -4,6 +4,7 @@ import type * as Preset from '@docusaurus/preset-classic';
 import {familyFooterColumn} from './family-footer';
 import remarkMath from 'remark-math';
 import rehypeKatex from 'rehype-katex';
+import {remarkContentFixes, fixTablesPreprocessor} from './plugins/content-fixes';
 
 // Umami analytics, unless the build is for an offline image
 // (Dockerfile.jupyter sets DOQ_ANALYTICS=0 for jupyter-local).
@@ -30,6 +31,9 @@ const config: Config = {
   // stale. Warn rather than fail so locale builds keep shipping while the
   // re-translation queue catches up.
   markdown: {
+    // Upstream writes a paragraph straight after a table's last row; GFM then
+    // swallows it into the table. See plugins/content-fixes.
+    preprocessor: fixTablesPreprocessor,
     hooks: {
       onBrokenMarkdownImages: 'warn',
     },
@@ -209,6 +213,9 @@ const config: Config = {
     './plugins/hreflang',
     // Bundles src/kernel/*.py (kernel patches) as strings.
     './plugins/python-source',
+    // Course catalogue page at /learning/courses (src/data/courses.json +
+    // localized sidebar labels and course descriptions).
+    './plugins/course-catalogue',
   ],
 
   themes: [
@@ -239,6 +246,8 @@ const config: Config = {
           sidebarPath: './sidebars.ts',
           routeBasePath: '/', // Serve docs at root
           breadcrumbs: true,
+          // Dead link forms and very wide images; see plugins/content-fixes.
+          beforeDefaultRemarkPlugins: [remarkContentFixes],
           remarkPlugins: [remarkMath],
           rehypePlugins: [rehypeKatex],
           editUrl: 'https://github.com/JanLahmann/doQumentation/tree/main/',
@@ -301,10 +310,10 @@ const config: Config = {
           activeBaseRegex: '^/guides(/|$)',
         },
         {
-          to: '/learning/courses/basics-of-quantum-information',
+          to: '/learning/courses',
           label: 'Courses',
           position: 'left',
-          activeBaseRegex: '^/learning/courses/',
+          activeBaseRegex: '^/learning/courses(/|$)',
         },
         {
           to: '/learning/modules/computer-science',
@@ -361,6 +370,10 @@ const config: Config = {
               href: 'https://github.com/JanLahmann/doQumentation',
             },
             {
+              label: 'Discussions',
+              href: 'https://github.com/JanLahmann/doQumentation/discussions',
+            },
+            {
               label: 'Legal / Impressum',
               to: '/legal',
             },
@@ -372,6 +385,10 @@ const config: Config = {
             {
               label: 'RasQberry',
               href: 'https://rasqberry.org',
+            },
+            {
+              label: 'Offline workshop guide',
+              to: '/workshop-offline',
             },
             {
               label: 'RasQberry GitHub',

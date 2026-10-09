@@ -23,7 +23,7 @@ The language in the user message determines the target. Look up LOCALE and infor
 | Arabic | ar | informal register |
 | Hebrew | he | informal register |
 | Thai | th | casual (no ครับ/ค่ะ) |
-| Malay | ms | casual |
+| Malay | ms | "anda" (the standard neutral form), not "kamu" |
 | Indonesian | id | casual |
 | Korean | ko | polite (합니다/해요) but not overly formal |
 | Polish | pl | informal ("ty" not "Pan/Pani") |

@@ -15,7 +15,7 @@ function BetaNoticeBanner(): React.JSX.Element | null {
     <div className="beta-notice">
       <span className="beta-notice__text">
         <Translate
-          id="betaNotice.text"
+          id="betaNotice.textWithDiscussions"
           values={{
             issueLink: (
               <a
@@ -26,9 +26,18 @@ function BetaNoticeBanner(): React.JSX.Element | null {
                 <Translate id="betaNotice.issueLink">Open a GitHub issue</Translate>
               </a>
             ),
+            discussionLink: (
+              <a
+                href="https://github.com/JanLahmann/doQumentation/discussions"
+                target="_blank"
+                rel="noopener noreferrer"
+              >
+                <Translate id="betaNotice.discussionLink">Ask in Discussions</Translate>
+              </a>
+            ),
           }}
         >
-          {'This project is in beta. Found a bug or have an idea? {issueLink} — we\'d love your feedback!'}
+          {'This project is in beta. Found a bug? {issueLink}. Question or idea? {discussionLink} — we\'d love your feedback!'}
         </Translate>
       </span>
       <button
