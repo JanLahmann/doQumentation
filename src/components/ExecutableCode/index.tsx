@@ -2533,8 +2533,10 @@ export default function ExecutableCode({
                   restart: <strong>{translate({id: 'executable.button.restart', message: 'Restart Kernel'})}</strong>,
                 }}
               >
-                {'To update it for this session, run {cmd} in a code cell, then click {restart} and run the page again from the top.'}
+                {'To update it for this session, run {cmd} in a code cell, then click {restart} (the old version stays loaded until the kernel restarts) and run the page again from the top.'}
               </Translate>
+              {' '}
+              {translate({id: 'executable.versionCheck.pipConflict', message: 'pip then prints a dependency-conflict warning about qiskit-serverless or qiskit-ibm-catalog: that is expected and harmless for this page.'})}
               {colabOnPage && (
                 <>
                   {' '}
