@@ -205,15 +205,15 @@ function isGitHubPagesHostname(hostname: string): boolean {
 
 /** Fallback guess for a site that is not a self-hosted container (e.g. a
  *  local Jupyter on :8888 next to a dev server). Kept in step with the LAN
- *  hosts nginx.conf accepts: loopback, .local, single-label names, private
- *  and link-local IPv4. */
+ *  hosts nginx.conf accepts: loopback, single-label names, router suffixes
+ *  (.local, .lan, .home, .internal, .home.arpa), private and link-local IPv4. */
 function isLocalHostname(hostname: string): boolean {
   return (
     hostname === 'localhost' ||
     hostname === '127.0.0.1' ||
     hostname === '[::1]' ||
     hostname.includes('rasqberry') ||
-    hostname.endsWith('.local') ||
+    /\.(local|lan|home|internal|home\.arpa)$/.test(hostname) ||
     (hostname !== '' && !hostname.includes('.') && !hostname.includes(':')) ||
     hostname.startsWith('192.168.') ||
     hostname.startsWith('10.') ||
