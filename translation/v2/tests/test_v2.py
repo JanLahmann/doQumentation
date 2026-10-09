@@ -126,6 +126,12 @@ def test_bootstrap_from_existing_translation_round_trips():
     tr = io.tr_path("de", rel)
     if not io.is_genuine(tr):
         pytest.skip("no German index in this checkout")
+    m = io.MARKER_RE.search(tr.read_text(encoding="utf-8"))
+    if not m or m.group(1) != io.en_hash(rel):
+        # A rendered page left in git from an older English (the 17 tracked
+        # index.mdx files are not re-rendered by CI) cannot gettextize against
+        # the current English; that is staleness, not a pipeline bug.
+        pytest.skip("German index in this checkout predates the current English")
     po = io.gettextize(rel, tr)
     assert all(e.msgstr for e in po if io.translatable(e))
     with tempfile.NamedTemporaryFile(suffix=".po", delete=False) as tmp:
@@ -213,6 +219,13 @@ def test_read_results_positional_and_legacy_shapes():
     assert pairs == [] and "1 translations for 2 items" in reason
     out.write_text(json.dumps([{"id": "p.mdx#2", "msgstr": "Zwei"}]), encoding="utf-8")   # {id, msgstr} still read
     assert read_results(b) == ([("p.mdx#2", "Zwei")], None)
+    out.write_text(json.dumps([{"msgid": "One", "msgstr": "Eins"}, {"msgid": "Two", "msgstr": "Zwei"}]),
+                   encoding="utf-8")                                       # items echoed back with msgstr
+    assert read_results(b) == ([("p.mdx#1", "Eins"), ("p.mdx#2", "Zwei")], None)
+    out.write_text(json.dumps([{"msgid": "Two", "msgstr": "Zwei"}, {"msgid": "One", "msgstr": "Eins"}]),
+                   encoding="utf-8")                                       # reordered: rejected, never shifted
+    pairs, reason = read_results(b)
+    assert pairs == [] and "do not match" in reason
     out.unlink()
     b.write_text(json.dumps([{"id": "p.mdx#1", "msgstr": "Eins"}]), encoding="utf-8")     # filled in place (old runs)
     assert read_results(b) == ([("p.mdx#1", "Eins")], None)

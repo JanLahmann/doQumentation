@@ -115,6 +115,9 @@ Each batch is a JSON list of segments from doQumentation, a {lang} mirror of
 IBM Quantum's Qiskit documentation. For every item write the {lang}
 translation of `msgid` into `msgstr`. Change nothing else.
 
+Output: write the batch's `.out.json` as a JSON list of strings, one msgstr
+per item, in the batch's order and with exactly as many strings as items.
+
 Register: {register or 'informal, as the existing translations use'}.
 
 Rules, each enforced by an automatic checker:
@@ -649,7 +652,8 @@ def read_results(bpath: Path) -> tuple[list[tuple[str, str]], str | None]:
     whole cannot be used. Accepts, in this order: <batch>.out.json as a list
     of strings paired positionally with <batch>.ids.json (a count mismatch
     rejects the batch: a dropped item would shift every later one);
-    <batch>.out.json as a list of {id, msgstr}; the batch file itself
+    <batch>.out.json as a list of {id, msgstr}; <batch>.out.json as the
+    batch items echoed back with msgstr (every msgid must match); the batch file itself
     filled in place with {id, msgstr} (the shape before .out.json)."""
     stem = bpath.name[:-len(".json")]
     out_path = bpath.with_name(stem + ".out.json")
@@ -674,6 +678,16 @@ def read_results(bpath: Path) -> tuple[list[tuple[str, str]], str | None]:
             return [], f"invalid JSON in {out_path.name}: {exc}"
         if isinstance(res, list) and all(isinstance(r, dict) and "id" in r for r in res):
             return [(r["id"], r.get("msgstr", "")) for r in res], None
+        # The batch items echoed back with msgstr added (agents write this when
+        # the output shape is not spelled out). Accepted only when every msgid
+        # matches its batch item, so a dropped or reordered item cannot shift
+        # a translation onto the wrong entry.
+        if isinstance(res, list) and all(isinstance(r, dict) and "msgid" in r and "msgstr" in r for r in res):
+            ids = json.loads(ids_path.read_text(encoding="utf-8")) if ids_path.exists() else [it.get("id") for it in items]
+            if (len(res) != len(items) or len(ids) != len(items) or any(i is None for i in ids)
+                    or any(r["msgid"] != it.get("msgid") for r, it in zip(res, items))):
+                return [], f"{out_path.name}: msgid/msgstr entries do not match the batch items one to one"
+            return [(i, r["msgstr"]) for i, r in zip(ids, res)], None
         return [], f"unrecognised content in {out_path.name}"
     if items and all(isinstance(it, dict) and "id" in it and "msgstr" in it for it in items):
         return [(it["id"], it["msgstr"]) for it in items], None
