@@ -109,7 +109,9 @@ if [[ ! "$CULL_IDLE_TIMEOUT" =~ ^[0-9]+$ ]]; then
   echo "ERROR: CULL_IDLE_TIMEOUT must be a whole number of seconds."
   exit 1
 fi
-echo "window.__DOQ_RUNTIME__ = {labEnabled: ${LAB_ENABLED}};" > /tmp/nginx/runtime-config.js
+# selfHosted tells the site that Jupyter is behind this same origin (/api/),
+# so it never has to guess from the host name or port (src/config/jupyter.ts).
+echo "window.__DOQ_RUNTIME__ = {selfHosted: true, labEnabled: ${LAB_ENABLED}};" > /tmp/nginx/runtime-config.js
 
 # ── Write Jupyter config with real token ──
 # Note: /home/jovyan/.jupyter is pre-created in the Dockerfile
