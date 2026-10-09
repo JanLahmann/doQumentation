@@ -10,6 +10,7 @@
 
 import React, { useState, useEffect } from 'react';
 import Layout from '@theme/Layout';
+import Link from '@docusaurus/Link';
 import Translate, {translate} from '@docusaurus/Translate';
 import InfoIcon from '@site/src/components/InfoIcon';
 import {
@@ -1651,6 +1652,13 @@ qiskit-ibm-catalog, qiskit-addon-utils, pyscf`}</code>
                   RasQberry runs the doQumentation container (see Docker Setup below). Open the site
                   from the Pi's address, port 8080, and code runs on the Pi with no further setup.
                 </Translate>
+              </p>
+              <p>
+                <Link to="/workshop-offline">
+                  <Translate id="settings.help.rasqberry.workshopGuide">
+                    Offline workshop guide: run a class from one Raspberry Pi
+                  </Translate>
+                </Link>
               </p>
 
               <h4><Translate id="settings.help.local.heading">Local Jupyter Setup</Translate></h4>

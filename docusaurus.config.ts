@@ -219,6 +219,9 @@ const config: Config = {
     // Keeps src/config/pageIndex.json (the append-only page list behind the
     // compact progress cookies) in step with the docs. DQ_PAGE_INDEX=write|check.
     './plugins/page-index',
+    // Course catalogue page at /learning/courses (src/data/courses.json +
+    // localized sidebar labels and course descriptions).
+    './plugins/course-catalogue',
   ],
 
   themes: [
@@ -313,10 +316,10 @@ const config: Config = {
           activeBaseRegex: '^/guides(/|$)',
         },
         {
-          to: '/learning/courses/basics-of-quantum-information',
+          to: '/learning/courses',
           label: 'Courses',
           position: 'left',
-          activeBaseRegex: '^/learning/courses/',
+          activeBaseRegex: '^/learning/courses(/|$)',
         },
         {
           to: '/learning/modules/computer-science',
@@ -388,6 +391,10 @@ const config: Config = {
             {
               label: 'RasQberry',
               href: 'https://rasqberry.org',
+            },
+            {
+              label: 'Offline workshop guide',
+              to: '/workshop-offline',
             },
             {
               label: 'RasQberry GitHub',
