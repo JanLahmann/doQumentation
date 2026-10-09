@@ -105,7 +105,7 @@ export default function OpenInLabBanner({ notebookPath, description }: OpenInLab
 
         // Download URL: notebooks are in static/notebooks/{path}.ipynb
         const dlPath = notebookPath.includes('/') ? notebookPath : `tutorials/${notebookPath}`;
-        const downloadUrl = `/notebooks/${dlPath}.ipynb`;
+        const downloadUrl = `/notebooks/${dlPath.replace(/\.ipynb$/, '')}.ipynb`;
 
         const handleBinderClick = (e: React.MouseEvent) => {
           trackEvent('Binder Launch', { notebook: notebookPath, page: window.location.pathname });
@@ -165,7 +165,7 @@ export default function OpenInLabBanner({ notebookPath, description }: OpenInLab
               flexWrap: 'wrap',
             }}
           >
-            <span>&#128221;</span>
+            <span aria-hidden="true">&#128221;</span>
             <span>
               {notebookPath.startsWith('workshop/')
                 ? translate({id: 'openInLab.workshopBanner', message: 'Community workshop notebook — not part of the official IBM Quantum documentation.'})
@@ -176,8 +176,8 @@ export default function OpenInLabBanner({ notebookPath, description }: OpenInLab
                 </span>
               )}
             </span>
-            <div style={{ marginLeft: 'auto', display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
-              <span style={{ fontWeight: 600, whiteSpace: 'nowrap' }}>Open in:<InfoIcon tooltip={translate({id: 'openInLab.info.openIn', message: 'JupyterLab: full notebook editor with all packages pre-installed. Colab: Google\'s free cloud notebooks (requires a Google account). Download: save the .ipynb file to your machine.'})} position="below" /></span>
+            <div style={{ marginLeft: 'auto', display: 'flex', flexWrap: 'wrap', gap: '0.5rem', alignItems: 'center' }}>
+              <span style={{ fontWeight: 600, whiteSpace: 'nowrap' }}>{translate({id: 'openInLab.openIn', message: 'Open in:'})}<InfoIcon tooltip={translate({id: 'openInLab.info.openIn', message: 'JupyterLab: full notebook editor with all packages pre-installed. Colab: Google\'s free cloud notebooks (requires a Google account). Download: save the .ipynb file to your machine.'})} position="below" /></span>
               {labUrl && (
                 <a
                   href={labUrl}
@@ -243,14 +243,14 @@ export default function OpenInLabBanner({ notebookPath, description }: OpenInLab
                 href="/about/code-modifications"
                 style={{
                   fontSize: '0.75rem',
-                  color: 'var(--ifm-color-emphasis-500)',
-                  textDecoration: 'none',
+                  color: 'var(--ifm-color-emphasis-700)',
+                  textDecoration: 'underline',
                   whiteSpace: 'nowrap',
                   alignSelf: 'center',
                 }}
                 title="See what doQumentation modifies in exported notebooks"
               >
-                What&apos;s modified?
+                {translate({id: 'openInLab.whatsModified', message: "What's modified?"})}
               </a>
             </div>
             {isActive && (

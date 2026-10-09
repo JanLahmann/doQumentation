@@ -245,6 +245,11 @@ function detectCellError(cell: Element): { type: string; name?: string } | null 
     return { type: 'session' };
   }
 
+  // No IBM Quantum account (expected on hello-world's hardware cell without credentials)
+  if (/AccountNotFoundError|IBMNotAuthorizedError|Unable to find account/.test(text)) {
+    return { type: 'account' };
+  }
+
   // An exception, not merely something on stderr: a warning such as
   // matplotlib's "... is not a writable directory" or a DeprecationWarning
   // also renders as stderr and must not be reported as an error (#963).
@@ -367,6 +372,17 @@ function showErrorHint(cell: Element, error: { type: string; name?: string }): v
     settingsLink.style.textDecoration = 'underline';
     div.appendChild(settingsLink);
     div.append(translate({id: 'executable.error.sessionSettingsAfter', message: ' to automatically convert Session calls to job mode.'}));
+  } else if (error.type === 'account') {
+    div.append(translate({id: 'executable.errorHint.accountPrefix', message: 'This cell needs an IBM Quantum account. '}));
+    const settingsLink = document.createElement('a');
+    settingsLink.href = '/jupyter-settings#ibm-quantum';
+    settingsLink.textContent = translate({id: 'executable.errorHint.accountLink', message: 'Add your API key in Settings'});
+    settingsLink.style.textDecoration = 'underline';
+    div.appendChild(settingsLink);
+    div.append(translate({id: 'executable.errorHint.accountAfter', message: ' to run it on real hardware. Without an account, skip this cell.'}));
+    // Expected without credentials, not a bug: no "Report this error" link.
+    cell.appendChild(div);
+    return;
   } else {
     div.append(translate({id: 'executable.errorHint.genericError', message: 'An error occurred.'}));
   }
@@ -1473,6 +1489,8 @@ export default function ExecutableCode({
   const [binderSlowStartup, setBinderSlowStartup] = useState(false);
   const [runAllProgress, setRunAllProgress] = useState<{ current: number; total: number } | null>(null);
   const [runAllPausedState, setRunAllPausedState] = useState(false);
+  // 1-based index of the cell Run All stopped at because it raised an error
+  const [runAllErrorAt, setRunAllErrorAt] = useState<number | null>(null);
   const binderStartRef = useRef<number | null>(null);
   const phaseStartRef = useRef<number | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -1744,6 +1762,15 @@ export default function ExecutableCode({
         executingCell = null;
         lastKernelBusy = false;
         settleCellFeedback(cell);
+        // Stop at the first error, as JupyterLab does: the cells after it
+        // depend on it, and carrying on showed results that looked valid but
+        // weren't (hello-world drew the simulator histogram under "real hardware").
+        if (detectCellError(cell) && i < execBtns.length - 1 && !runAllAbort) {
+          runAllPaused = true;
+          setRunAllPausedState(true);
+          setRunAllErrorAt(i + 1);
+          cell.scrollIntoView({ block: 'center', behavior: 'smooth' });
+        }
       }
     }
 
@@ -1753,6 +1780,7 @@ export default function ExecutableCode({
     runAllResume = null;
     setRunAllProgress(null);
     setRunAllPausedState(false);
+    setRunAllErrorAt(null);
   }, []);
 
   const handlePauseRunAll = useCallback(() => {
@@ -1763,6 +1791,7 @@ export default function ExecutableCode({
   const handleContinueRunAll = useCallback(() => {
     runAllPaused = false;
     setRunAllPausedState(false);
+    setRunAllErrorAt(null);
     if (runAllResume) { runAllResume(); runAllResume = null; }
   }, []);
 
@@ -1770,6 +1799,7 @@ export default function ExecutableCode({
     runAllAbort = true;
     runAllPaused = false;
     setRunAllPausedState(false);
+    setRunAllErrorAt(null);
     if (runAllResume) { runAllResume(); runAllResume = null; }
   }, []);
 
@@ -1922,6 +1952,14 @@ export default function ExecutableCode({
               >
                 {translate({id: 'executable.button.stopRunAll', message: 'Stop'})}
               </button>
+              {runAllErrorAt !== null && (
+                <span className="executable-code__runall-stopped" role="status">
+                  {translate(
+                    {id: 'executable.runAll.stoppedAtError', message: 'Stopped at cell {n}: it raised an error. Continue runs the rest anyway.'},
+                    {n: String(runAllErrorAt)}
+                  )}
+                </span>
+              )}
             </>
           )}
 

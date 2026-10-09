@@ -17,6 +17,7 @@
 import React, {useEffect, useState} from 'react';
 import {translate} from '@docusaurus/Translate';
 import {usePluginData} from '@docusaurus/useGlobalData';
+import useDocusaurusContext from '@docusaurus/useDocusaurusContext';
 
 // Props are still typed via the original component for upgrade-safety.
 import OriginalEditThisPage from '@theme-original/EditThisPage';
@@ -48,13 +49,17 @@ function buildContentEditUrl(
   return null;
 }
 
-function buildSiteIssueUrl(pagePath: string): string {
+function buildSiteIssueUrl(pageUrl: string, pagePath: string, locale: string): string {
+  // The full URL, not doqumentation.org + path: locale sites serve pages at
+  // root paths, so a report from de.doqumentation.org pointed at the English page.
+  const isTranslation = locale !== 'en';
   const body = [
-    'Page: https://doqumentation.org' + pagePath,
+    'Page: ' + pageUrl,
+    'Language: ' + locale,
     '',
     'What kind of issue is this? (delete the ones that don\'t apply)',
     '- [ ] Site/frontend bug (rendering, navigation, broken UI)',
-    '- [ ] Translation problem (wrong, missing, or awkward translation)',
+    `- [${isTranslation ? 'x' : ' '}] Translation problem (wrong, missing, or awkward translation)`,
     '- [ ] Code execution issue (Binder, Jupyter, kernel, output)',
     '- [ ] Search, sidebar, or other UX issue',
     '- [ ] Accessibility issue',
@@ -67,10 +72,12 @@ function buildSiteIssueUrl(pagePath: string): string {
     '## Description',
     '',
   ].join('\n');
-  return `${DOQ_REPO}/issues/new?body=${encodeURIComponent(body)}`;
+  const title = isTranslation ? `[${locale}] Translation: ${pagePath}` : `Site issue: ${pagePath}`;
+  return `${DOQ_REPO}/issues/new?title=${encodeURIComponent(title)}&body=${encodeURIComponent(body)}`;
 }
 
 export default function EditThisPage(props: Props): React.JSX.Element {
+  const {i18n: {currentLocale}} = useDocusaurusContext();
   const data = usePluginData('page-dates') as PageDatesData | undefined;
   const relPath = editUrlToRelPath(props.editUrl);
   const entry = relPath ? data?.pages?.[relPath] : undefined;
@@ -84,8 +91,8 @@ export default function EditThisPage(props: Props): React.JSX.Element {
     `${DOQ_REPO}/issues/new`,
   );
   useEffect(() => {
-    setSiteIssueUrl(buildSiteIssueUrl(window.location.pathname));
-  }, []);
+    setSiteIssueUrl(buildSiteIssueUrl(window.location.href, window.location.pathname, currentLocale));
+  }, [currentLocale]);
 
   return (
     <div className="dq-feedback-actions">

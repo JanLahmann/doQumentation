@@ -104,6 +104,10 @@ def test_marker_round_trip():
     stamped = io.add_marker(text, "deadbeef")
     assert "doqumentation-source-hash: deadbeef" in stamped
     assert io.strip_marker(stamped).strip() == text.strip()
+    # At the end, never as the first paragraph: Docusaurus would make it the
+    # page's meta description when the frontmatter has none.
+    assert stamped.rstrip().endswith("deadbeef */}")
+    assert io.add_marker(stamped, "deadbeef") == stamped   # idempotent
 
 
 @needs_po4a

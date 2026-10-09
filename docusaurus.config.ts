@@ -288,26 +288,32 @@ const config: Config = {
         src: 'img/logo.svg',
       },
       items: [
+        // Plain links with activeBaseRegex: one sidebar holds the whole site, so a
+        // `docSidebar` item lit "Tutorials" on every page (and the search plugin
+        // copies the active item into every result's breadcrumb).
         {
-          type: 'docSidebar',
-          sidebarId: 'tutorialsSidebar',
-          position: 'left',
+          to: '/tutorials',
           label: 'Tutorials',
+          position: 'left',
+          activeBaseRegex: '^/tutorials(/|$)',
         },
         {
           to: '/guides',
           label: 'Guides',
           position: 'left',
+          activeBaseRegex: '^/guides(/|$)',
         },
         {
           to: '/learning/courses/basics-of-quantum-information',
           label: 'Courses',
           position: 'left',
+          activeBaseRegex: '^/learning/courses/',
         },
         {
           to: '/learning/modules/computer-science',
           label: 'Modules',
           position: 'left',
+          activeBaseRegex: '^/learning/modules/',
         },
         // Qiskit Addons are temporarily hidden from the navbar.
         // Pages remain accessible via direct URL (/qiskit-addons and /qiskit-addons/<slug>/...).

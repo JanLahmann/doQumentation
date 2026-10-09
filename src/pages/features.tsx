@@ -73,7 +73,7 @@ export default function Features(): React.JSX.Element {
               />
               <FeatureCard
                 title={translate({id: 'features.contentLibrary.nav.title', message: 'Structured Navigation'})}
-                description={translate({id: 'features.contentLibrary.nav.desc', message: 'Auto-generated sidebars with collapsible categories. Tutorials, Guides, Courses, and Modules each have their own organized sidebar.'})}
+                description={translate({id: 'features.contentLibrary.nav.desc', message: 'An auto-generated sidebar with collapsible sections for Tutorials, Guides, Courses and Modules, with progress counters.'})}
               />
             </div>
           </section>

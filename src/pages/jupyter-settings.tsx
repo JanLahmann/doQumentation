@@ -366,7 +366,13 @@ export default function JupyterSettings(): React.JSX.Element {
     }
     saveIBMQuantumCredentials(ibmToken, ibmCrn);
     setIbmDaysRemaining(ttlDays);
-    setIbmSaveResult(translate({id: 'settings.ibm.saveSuccess', message: 'Credentials saved! They will be auto-injected when the kernel starts.'}));
+    // Saving credentials means "use real hardware": the default Simulator Mode
+    // would otherwise keep ignoring them on every page but hello-world.
+    if (executionMode !== 'credentials') {
+      setExecutionModeState('credentials');
+      setExecutionMode('credentials');
+    }
+    setIbmSaveResult(translate({id: 'settings.ibm.saveSuccessHardware', message: 'Credentials saved. Code now runs on IBM Quantum hardware (Execution Mode above); switch back to a simulator there at any time.'}));
   };
 
   const handleIbmDelete = () => {
@@ -859,13 +865,13 @@ export default function JupyterSettings(): React.JSX.Element {
                 <div style={{ marginTop: '0.5rem' }}>
                   <div className="alert alert--warning margin-bottom--md">
                     <Translate
-                      id="settings.ibm.securityNote"
+                      id="settings.ibm.securityNoteCookies"
                       values={{
                         strong: <strong>{translate({id: 'settings.ibm.securityNoteLabel', message: 'Security note:'})}</strong>,
                         saveAccount: <code>save_account()</code>,
                       }}
                     >
-                      {'{strong} Credentials are stored in your browser\'s localStorage in plain text. They are not encrypted and can be read by browser extensions or anyone with access to this device. Use the expiry setting below to limit exposure, and delete credentials when you\'re done. For shared or public computers, prefer the manual {saveAccount} method described below instead.'}
+                      {'{strong} Credentials are stored in your browser in plain text: in localStorage and, on doqumentation.org, in a cookie shared across the language sites. They are not encrypted and can be read by browser extensions or anyone with access to this device. Use the expiry setting below to limit exposure, and delete credentials when you\'re done. For shared or public computers, prefer the manual {saveAccount} method described below instead.'}
                     </Translate>
                   </div>
 
@@ -1117,10 +1123,10 @@ QiskitRuntimeService.save_account(
           <h3><Translate id="settings.display.outputs.heading">Pre-computed Outputs</Translate></h3>
           <p style={{ fontSize: '0.85rem', color: 'var(--ifm-color-content-secondary)' }}>
             <Translate
-              id="settings.display.outputs.desc"
+              id="settings.display.outputs.descToggleOff"
               values={{run: <strong>Run</strong>}}
             >
-              {'Each notebook page shows pre-computed outputs (images, tables, text) from IBM\'s original runs. When you click {run} to execute code live, both the original outputs and your new live results are shown side by side. Enable this toggle to hide the original outputs during live execution, keeping only your results visible.'}
+              {'Each notebook page shows pre-computed outputs (images, tables, text) from IBM\'s original runs. When you click {run} to execute code live, both the original outputs and your new live results are shown. Turn this toggle off to hide the original outputs during live execution, keeping only your results visible.'}
             </Translate>
           </p>
           <div className="jupyter-settings__field">
@@ -1186,9 +1192,11 @@ QiskitRuntimeService.save_account(
           <h2 id="manage-data" style={{ marginTop: '2rem' }}><Translate id="settings.data.heading">Manage Your Data</Translate></h2>
 
           <p style={{ fontSize: '0.9rem', color: 'var(--ifm-color-emphasis-600)' }}>
-            <Translate id="settings.data.privacy">
-              All data is stored locally in your browser (localStorage). Nothing is sent to our servers.
-              Clearing your browser data or using a different browser/device starts fresh.
+            <Translate id="settings.data.privacyCookies">
+              All data stays in your browser. On doqumentation.org it is kept in localStorage and in cookies
+              that share it across the language sites; those cookies travel to the static web host with each
+              page request, never to a doQumentation server. Clearing your browser data or using a different
+              browser/device starts fresh.
             </Translate>
           </p>
 
@@ -1196,13 +1204,13 @@ QiskitRuntimeService.save_account(
           <h3 style={{ marginTop: '1.5rem' }}><Translate id="settings.progress.heading">Progress</Translate></h3>
           <p style={{ fontSize: '0.85rem', color: 'var(--ifm-color-content-secondary)' }}>
             <Translate
-              id="settings.progress.desc"
+              id="settings.progress.descCode"
               values={{
                 check: <strong>&#10003;</strong>,
-                play: <strong>&#9654;</strong>,
+                code: <strong>&lt;/&gt;</strong>,
               }}
             >
-              {'Visited pages show a {check} in the sidebar; executed notebooks show a {play}.'}
+              {'Visited pages show a {check} in the sidebar. Notebook pages show a {code}: grey until visited, blue once visited, green once you ran code on them.'}
             </Translate>
           </p>
 
