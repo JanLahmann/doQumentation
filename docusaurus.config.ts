@@ -36,6 +36,14 @@ const config: Config = {
   },
 
   headTags: [
+    // Hide the beta notice / translation-feedback banners before first paint
+    // when they were dismissed this session. They are in the static HTML so
+    // they don't shift the page when they appear (src/components/BetaNotice).
+    {
+      tagName: 'script',
+      attributes: {},
+      innerHTML: "(function(){try{var d=document.documentElement,s=sessionStorage;if(s.getItem('dq-beta-notice-dismissed')==='1')d.setAttribute('data-dq-beta-dismissed','');if(s.getItem('dq-translation-feedback')==='1')d.setAttribute('data-dq-tf-dismissed','')}catch(e){}})();",
+    },
     // Self-hosted fonts (static/vendor/fonts): preload the Latin IBM Plex Sans
     // file every page uses, so text swaps to it before first paint.
     {
