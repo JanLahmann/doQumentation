@@ -170,12 +170,9 @@ const config: Config = {
     // e.g. LAB_ENABLED=false); the site ships an empty default. Loaded
     // synchronously, before the app reads window.__DOQ_RUNTIME__.
     { src: '/runtime-config.js' },
-    // Thebe for Jupyter execution (thebelab 0.4.0), served from the site so
-    // an offline Pi can run code (#964); see static/vendor/README.md.
-    {
-      src: '/vendor/thebelab/index.js',
-      async: true,
-    },
+    // thebelab (code execution, static/vendor/thebelab/) is not listed here:
+    // src/components/ExecutableCode/loadThebelab.ts loads it when a session
+    // starts, so pages that never run code don't download and parse it.
     // Umami analytics — shared Fun with Quantum family property. Left out of
     // offline builds (DOQ_ANALYTICS=0, the jupyter-local image).
     ...(ANALYTICS ? [{
