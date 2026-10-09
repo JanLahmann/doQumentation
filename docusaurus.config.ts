@@ -216,6 +216,9 @@ const config: Config = {
     './plugins/hreflang',
     // Bundles src/kernel/*.py (kernel patches) as strings.
     './plugins/python-source',
+    // Course catalogue page at /learning/courses (src/data/courses.json +
+    // localized sidebar labels and course descriptions).
+    './plugins/course-catalogue',
   ],
 
   themes: [
@@ -310,10 +313,10 @@ const config: Config = {
           activeBaseRegex: '^/guides(/|$)',
         },
         {
-          to: '/learning/courses/basics-of-quantum-information',
+          to: '/learning/courses',
           label: 'Courses',
           position: 'left',
-          activeBaseRegex: '^/learning/courses/',
+          activeBaseRegex: '^/learning/courses(/|$)',
         },
         {
           to: '/learning/modules/computer-science',
