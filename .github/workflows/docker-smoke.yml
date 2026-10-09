@@ -138,6 +138,13 @@ jobs:
                /usr/share/nginx/html --include=*.html | head -3 | grep .; then
             echo "::error::built pages still load a CDN or analytics script"; fail=1
           else echo "PASS: no CDN or analytics script in the built pages"; fi
+          # A deep link gets its own pre-rendered page, not the home page.
+          # (Into a variable first: under pipefail, `curl | grep -q` fails when
+          # grep stops reading a large page early.)
+          page=$(curl -s http://localhost:8080/tutorials/hello-world)
+          if grep -qi '<title[^>]*>Hello World' <<< "$page"; then
+            echo "PASS: deep link serves its own page"
+          else echo "::error::/tutorials/hello-world did not serve its own pre-rendered page"; fail=1; fi
           # Safe defaults for a room on shared Wi-Fi: no Lab button (nginx
           # serves no /lab) and no terminals for LAN participants.
           curl -s http://localhost:8080/runtime-config.js | grep -q 'labEnabled: false' \
@@ -149,6 +156,29 @@ jobs:
           done
 
           docker rm -f smoke >/dev/null 2>&1 || true
+
+          # A restart (`--restart`, a Pi reboot) must come back up: the
+          # entrypoint used to patch its own previous edits, so the terminals
+          # block was "not found" and the container exited; and a new random
+          # token (no JUPYTER_TOKEN) never reached nginx, so the API answered 403.
+          wait_api() {  # wait_api <port> -> 0 once Jupyter answers through nginx
+            for i in $(seq 1 60); do
+              [ "$(curl -s -o /dev/null -w '%{http_code}' "http://localhost:$1/api/status")" = "200" ] && return 0
+              sleep 2
+            done
+            return 1
+          }
+          docker run -d --name smoke3 -p 8083:80 doqumentation-jupyter:smoke
+          if wait_api 8083; then
+            docker restart smoke3 >/dev/null
+            if wait_api 8083; then echo "PASS: restarted container serves, new token reaches nginx"
+            else docker logs smoke3 || true; echo "::error::container did not come back after a restart"; fail=1; fi
+            got=$(curl -s -o /dev/null -w '%{http_code}' -X POST http://localhost:8083/api/terminals \
+              -H 'Host: localhost:8083' -H 'Origin: http://localhost:8083')
+            [ "$got" = "403" ] && echo "PASS: terminals still blocked after restart" \
+              || { echo "::error::/api/terminals after restart: got $got, want 403"; fail=1; }
+          else docker logs smoke3 || true; echo "::error::container without JUPYTER_TOKEN did not start"; fail=1; fi
+          docker rm -f smoke3 >/dev/null 2>&1 || true
 
           # Workshop switches (#963), turned on explicitly.
           docker run -d --name smoke2 -p 8081:80 -e JUPYTER_TOKEN=smoketoken1234 \
@@ -172,3 +202,21 @@ jobs:
           else echo "PASS: invalid LAB_ENABLED refused"; fi
 
           [ "$fail" = "0" ] || exit 1
+
+      # The README's commands use Podman (rootless), which, unlike Docker, does
+      # not let the container's non-root nginx bind :80 unless the binary has
+      # that capability. Run the same image under Podman once.
+      - name: Run under rootless Podman
+        run: |
+          set -euo pipefail
+          docker save doqumentation-jupyter:smoke | podman load -q
+          podman run -d --name psmoke -p 8090:80 docker.io/library/doqumentation-jupyter:smoke
+          ok=0
+          for i in $(seq 1 60); do
+            [ "$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8090/api/status)" = "200" ] && { ok=1; break; }
+            sleep 2
+          done
+          podman logs psmoke 2>&1 | grep -E 'emerg|ERROR' || true
+          podman rm -f psmoke >/dev/null 2>&1 || true
+          [ "$ok" = "1" ] && echo "PASS: serves site and Jupyter under rootless Podman" \
+            || { echo "::error::image does not serve under rootless Podman"; exit 1; }

@@ -138,6 +138,11 @@ c.MappingKernelManager.cull_connected = False
 PYEOF
 
 # ── Inject token into nginx proxy config ──
+# Start from the pristine config on every start: the edits below replace
+# their placeholders, so on a restart (`--restart`, a Pi reboot) patching the
+# previous start's file found nothing to replace — terminals refused to start
+# the container, and a new random token never reached nginx.
+cp /etc/nginx/doq-site.conf.template /etc/nginx/sites-enabled/default
 # Replace placeholder comments with real Authorization headers
 sed -i "s|# __JUPYTER_AUTH__|proxy_set_header Authorization \"token ${JUPYTER_TOKEN}\";|g" \
   /etc/nginx/sites-enabled/default
