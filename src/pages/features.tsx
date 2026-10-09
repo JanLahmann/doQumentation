@@ -94,7 +94,7 @@ export default function Features(): React.JSX.Element {
               />
               <FeatureCard
                 title={translate({id: 'features.execution.ce.title', message: 'IBM Cloud Code Engine'})}
-                description={translate({id: 'features.execution.ce.desc', message: "Serverless Jupyter kernel on your IBM Cloud account. Cold start in seconds instead of Binder's 10–25 minutes. Free tier covers roughly 14 hours per month."})}
+                description={translate({id: 'features.execution.ce.desc.v2', message: "Serverless Jupyter kernel on your IBM Cloud account, with no shared queue: cold start in seconds (Binder usually needs under a minute, up to about 3 minutes on a cold start). Free tier covers roughly 14 hours per month."})}
                 link="/jupyter-settings#code-engine"
                 linkLabel={translate({id: 'features.execution.ce.link', message: 'Set up Code Engine'})}
               />

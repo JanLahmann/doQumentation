@@ -10,6 +10,7 @@
  * Storage is backed by cookies (cross-subdomain) + localStorage via storage.ts.
  */
 
+import { translate } from '@docusaurus/Translate';
 import { getItem, setItem, removeItem } from './storage';
 
 export interface JupyterConfig {
@@ -1171,22 +1172,24 @@ const CE_TAB_PHASE_HINTS: Record<string, string> = {
   ready:      'Connected!',
 };
 
-/** Default English phase hints for the Binder loading tab */
-const BINDER_TAB_PHASE_HINTS: Record<string, string> = {
-  connecting: 'Connecting to mybinder.org\u2026',
-  waiting:    'Waiting in queue\u2026',
-  fetching:   'Fetching repository (2\u20135 min)\u2026',
-  building:   'Building Docker image (5\u201310 min)\u2026',
-  pushing:    'Pushing image to registry (2\u20135 min)\u2026',
-  built:      'Image ready \u2014 launching JupyterLab\u2026',
-  launching:  'Starting JupyterLab server (2\u20135 min)\u2026',
-};
+/** Phase hints for the Binder loading tab (ids shared with ExecutableCode) */
+function binderTabPhaseHints(): Record<string, string> {
+  return {
+    connecting: 'Connecting to mybinder.org\u2026',
+    waiting:    'Waiting in queue\u2026',
+    fetching:   translate({id: 'executable.status.binderFetching.v2', message: 'Fetching repo...'}),
+    building:   translate({id: 'executable.status.binderBuilding.v2', message: 'Building image...'}),
+    pushing:    translate({id: 'executable.status.binderPushing.v2', message: 'Pushing image...'}),
+    built:      'Image ready \u2014 launching JupyterLab\u2026',
+    launching:  translate({id: 'executable.status.binderLaunching.v2', message: 'Launching server...'}),
+  };
+}
 
 function escapeHtml(s: string): string {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
-function makeTabHtml(title: string, initialPhase: string): string {
+function makeTabHtml(title: string, initialPhase: string, warning: string): string {
   return `<!DOCTYPE html>
 <html><head><meta charset="utf-8"><title>${escapeHtml(title)}</title>
 <style>
@@ -1198,8 +1201,7 @@ function makeTabHtml(title: string, initialPhase: string): string {
 </style></head><body>
   <div id="phase">${escapeHtml(initialPhase)}</div>
   <div id="elapsed"></div>
-  <div id="warning">\u26a0 Cache not warmed \u2014 total build time 10\u201325 min.
-    Close this tab and use Colab instead, or come back later.</div>
+  <div id="warning">${escapeHtml(warning)}</div>
 </body></html>`;
 }
 
@@ -1218,7 +1220,8 @@ export function openBinderLab(
 ): void {
   const nbPath = mapBinderNotebookPath(notebookPath, locale);
   const isCE = config.environment === 'code-engine';
-  const phaseHints = isCE ? CE_TAB_PHASE_HINTS : BINDER_TAB_PHASE_HINTS;
+  const phaseHints = isCE ? CE_TAB_PHASE_HINTS : binderTabPhaseHints();
+  const cacheMissWarning = translate({id: 'executable.status.binderCacheMiss.v2', message: '\u26a0 Cold start: this Binder server prepares the image first, which usually takes up to about 3 minutes.'});
   const tabTitle = isCE ? 'Starting Code Engine\u2026' : 'Starting Binder\u2026';
   const initialPhase = isCE ? 'Connecting to Code Engine\u2026' : 'Connecting to mybinder.org\u2026';
 
@@ -1226,7 +1229,7 @@ export function openBinderLab(
   const tab = window.open('about:blank', '_blank');
   if (tab) {
     tab.document.open();
-    tab.document.write(makeTabHtml(tabTitle, initialPhase));
+    tab.document.write(makeTabHtml(tabTitle, initialPhase, cacheMissWarning));
     tab.document.close();
   }
 
