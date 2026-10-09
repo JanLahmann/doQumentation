@@ -115,7 +115,12 @@ const sidebars: SidebarsConfig = {
             type: 'category' as const,
             label: 'Courses',
             collapsed: true,
-            items: courseItems,
+            // The catalogue page (plugins/course-catalogue) is a plugin route,
+            // not a doc, so it can't be the category link; list it first.
+            items: [
+              {type: 'link' as const, label: 'All courses', href: '/learning/courses', className: 'dq-sidebar-catalogue-link'},
+              ...courseItems,
+            ],
           },
         ]
       : []),

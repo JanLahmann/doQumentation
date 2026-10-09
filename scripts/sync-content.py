@@ -2444,6 +2444,24 @@ Home page placeholder — run a full content sync to populate.
     print(f"  ✓ Created fallback {index_path}")
 
 
+def _learning_toc_title(kind: str, name: str) -> str:
+    """Title of a course or module from its upstream _toc.json.
+
+    The slug-derived fallback produced "Quantum Chem With Vqe" and
+    "Use A Qc Today" on /learning (UX review 2026-10-09).
+    """
+    for root in (UPSTREAM_DIR, LOCAL_CONTENT_DIR):
+        toc_path = root / "learning" / kind / name / "_toc.json"
+        if toc_path.exists():
+            try:
+                title = json.loads(toc_path.read_text()).get("title")
+            except (OSError, ValueError):
+                title = None
+            if title:
+                return title
+    return name.replace("-", " ").title()
+
+
 def create_learning_landing_pages():
     """Generate landing pages for /learning/ and /learning/modules/.
 
@@ -2462,14 +2480,14 @@ def create_learning_landing_pages():
     if courses_dir.exists():
         for d in sorted(courses_dir.iterdir()):
             if d.is_dir():
-                title = d.name.replace("-", " ").title()
+                title = _learning_toc_title("courses", d.name)
                 course_links.append(f"- [{title}](/learning/courses/{d.name})")
 
     module_links = []
     if modules_dir.exists():
         for d in sorted(modules_dir.iterdir()):
             if d.is_dir():
-                title = d.name.replace("-", " ").title()
+                title = _learning_toc_title("modules", d.name)
                 module_links.append(f"- [{title}](/learning/modules/{d.name})")
 
     learning_index = learning_dir / "index.mdx"
