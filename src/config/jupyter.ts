@@ -187,8 +187,8 @@ export function getAvailableBackends(): AvailableBackend[] {
     backends.push({ environment: 'github-pages', label: 'Binder', detail: 'mybinder.org' });
   }
 
-  // Local / RasQberry?
-  if (isLocalHostname(hostname)) {
+  // Local / RasQberry? (A self-hosted container says so itself.)
+  if (getRuntimeConfig().selfHosted === true || isLocalHostname(hostname)) {
     backends.push({ environment: 'rasqberry', label: 'Local / RasQberry' });
   }
 
@@ -203,22 +203,36 @@ function isGitHubPagesHostname(hostname: string): boolean {
   );
 }
 
+/** Fallback guess for a site that is not a self-hosted container (e.g. a
+ *  local Jupyter on :8888 next to a dev server). Kept in step with the LAN
+ *  hosts nginx.conf accepts: loopback, single-label names, router suffixes
+ *  (.local, .lan, .home, .internal, .home.arpa), private and link-local IPv4. */
 function isLocalHostname(hostname: string): boolean {
   return (
     hostname === 'localhost' ||
     hostname === '127.0.0.1' ||
+    hostname === '[::1]' ||
     hostname.includes('rasqberry') ||
-    hostname.endsWith('.local') ||
+    /\.(local|lan|home|internal|home\.arpa)$/.test(hostname) ||
+    (hostname !== '' && !hostname.includes('.') && !hostname.includes(':')) ||
     hostname.startsWith('192.168.') ||
     hostname.startsWith('10.') ||
+    hostname.startsWith('169.254.') ||
     /^172\.(1[6-9]|2\d|3[01])\./.test(hostname)
   );
 }
 
+interface RuntimeConfig {
+  /** Set by the offline container: Jupyter is behind this same origin (/api/). */
+  selfHosted?: boolean;
+  labEnabled?: boolean;
+}
+
 /** Settings a self-hosted container sets at start: docker-entrypoint.sh serves
- *  /runtime-config.js (static/runtime-config.js is the empty default). */
-function getRuntimeConfig(): { labEnabled?: boolean } {
-  const rc = (window as unknown as { __DOQ_RUNTIME__?: { labEnabled?: boolean } }).__DOQ_RUNTIME__;
+ *  /runtime-config.js (static/runtime-config.js is the empty default, so the
+ *  public site and the Code Engine image never claim to be self-hosted). */
+function getRuntimeConfig(): RuntimeConfig {
+  const rc = (window as unknown as { __DOQ_RUNTIME__?: RuntimeConfig }).__DOQ_RUNTIME__;
   return rc && typeof rc === 'object' ? rc : {};
 }
 
@@ -297,9 +311,15 @@ function buildConfigFor(env: JupyterConfig['environment']): JupyterConfig | null
     }
     case 'rasqberry': {
       const hostname = window.location.hostname;
-      if (!isLocalHostname(hostname)) return null;
+      // The offline container declares itself in /runtime-config.js: then
+      // Jupyter is always behind this origin, whatever the host name or port
+      // (quantum-pi:8080, a .lan name, port 80, a TLS proxy on 443).
+      const selfHosted = getRuntimeConfig().selfHosted === true;
+      if (!selfHosted && !isLocalHostname(hostname)) return null;
+      // Fallback guess without it: a non-standard port means the container's
+      // nginx; otherwise a bare Jupyter on :8888 with the RasQberry token.
       const port = window.location.port;
-      const isDocker = port && port !== '80' && port !== '443' && port !== '8888';
+      const isDocker = selfHosted || (port && port !== '80' && port !== '443' && port !== '8888');
       const origin = window.location.origin;
       return {
         enabled: true,

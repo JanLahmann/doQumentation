@@ -151,8 +151,59 @@ function waitForRunAllResume(): Promise<void> {
 }
 let lastJupyterConfig: JupyterConfig | null = null;
 
+// Bumped by resetModuleState(): a kernel that connects after its page was left
+// (or after Back/Cancel) belongs to no one and is shut down at once.
+let bootstrapGeneration = 0;
+// The page the module-level state belongs to (see the route effect in the component).
+let statePath: string | null = null;
+let mountedCells = 0;
+let pageHideHooked = false;
+
+/* eslint-disable @typescript-eslint/no-explicit-any */
+function realKernelOf(kernelObj: unknown): Record<string, any> | undefined {
+  const k = kernelObj as Record<string, any>;
+  return k?.shutdown ? k : k?.kernel;
+}
+/* eslint-enable @typescript-eslint/no-explicit-any */
+
+/**
+ * Shut a kernel down on its server (best effort, never awaited). Each page
+ * starts its own kernel; once the page lets go of it nothing reconnects, and
+ * while its socket stays open the server's idle culler skips it, so on a
+ * shared workshop server it would hold its memory (~200 MB with Qiskit
+ * loaded) for as long as the tab is open.
+ */
+function shutdownKernel(kernelObj: unknown): void {
+  const real = realKernelOf(kernelObj);
+  if (!real?.shutdown) return;
+  try {
+    Promise.resolve(real.shutdown()).catch(() => { /* server gone: nothing to free */ });
+  } catch { /* ignore */ }
+}
+
+/**
+ * On reload, tab close or leaving the site the kernel is orphaned too. The
+ * page is going away, so send the shutdown as a keepalive request. Skipped
+ * when the page may come back from the back/forward cache (persisted).
+ */
+function shutdownKernelOnPageHide(e: PageTransitionEvent): void {
+  if (e.persisted) return;
+  const real = realKernelOf(activeKernel);
+  const id = real?.id;
+  const settings = real?.serverSettings;
+  if (typeof id !== 'string' || typeof settings?.baseUrl !== 'string') return;
+  const url = settings.baseUrl.replace(/\/*$/, '/') + 'api/kernels/' + encodeURIComponent(id);
+  const headers: Record<string, string> = {};
+  if (settings.token) headers.Authorization = `token ${settings.token}`;
+  try {
+    fetch(url, { method: 'DELETE', keepalive: true, headers }).catch(() => { /* best effort */ });
+  } catch { /* ignore */ }
+}
+
 /** Reset all module-level mutable state so next Run triggers a fresh bootstrap. */
 function resetModuleState(): void {
+  bootstrapGeneration++;
+  shutdownKernel(activeKernel);
   thebelabBootstrapped = false;
   kernelReady = false;
   kernelDead = false;
@@ -1466,6 +1517,7 @@ function doBootstrap(thebelabOptions: Record<string, unknown>): void {
       // cache which can be empty if getPageConfig() ran before injection.
       const kernelPromise = window.thebelab.bootstrap(thebelabOptions);
       thebelabBootstrapped = true;
+      const generation = bootstrapGeneration;
       if (DEBUG) console.log('[ExecutableCode] bootstrap() called, waiting for kernel promise...');
 
       // Stay in 'connecting' state until the kernel is ready
@@ -1473,6 +1525,11 @@ function doBootstrap(thebelabOptions: Record<string, unknown>): void {
         kernelPromise.then(
           (kernel) => {
             if (DEBUG) console.log('[ExecutableCode] kernel ready:', kernel);
+            if (generation !== bootstrapGeneration) {
+              // Its page was left (or Back/Cancel pressed) while it connected.
+              shutdownKernel(kernel);
+              return;
+            }
             kernelDead = false;
             activeKernel = kernel;
 
@@ -1518,6 +1575,7 @@ function doBootstrap(thebelabOptions: Record<string, unknown>): void {
             });
           },
           (err) => {
+            if (generation !== bootstrapGeneration) return;
             // Jupyter race condition mitigation: kernel WS handshake can fail
             // transiently with `NoneType.kernel_ws_protocol` (race in Jupyter
             // Server 2.16.0 between kernel creation and WebSocket attachment).
@@ -1579,13 +1637,17 @@ function bootstrapOnce(config: JupyterConfig): void {
 
   if ((config.environment === 'github-pages' || config.environment === 'code-engine') && config.binderUrl) {
     // Build (or reuse) Binder/CE session, then connect thebelab via serverSettings
+    const generation = bootstrapGeneration;
     ensureBinderSession(config, (phase) => {
       if (DEBUG) console.log(`[ExecutableCode] ${config.environment === 'code-engine' ? 'CE' : 'Binder'} phase: ${phase}`);
       window.dispatchEvent(new CustomEvent(BINDER_PHASE_EVENT, { detail: phase }));
     }).then((session) => {
+      // The page was left (or Back pressed) while the server started.
+      if (generation !== bootstrapGeneration) return;
       const options = getThebelabOptions(config, session);
       doBootstrap(options);
     }).catch(() => {
+      if (generation !== bootstrapGeneration) return;
       thebelabBootstrapped = false; // allow retry on failure
       broadcastStatus('error');
     });
@@ -1676,14 +1738,34 @@ export default function ExecutableCode({
   const location = useLocation();
 
   // Reset module-level state on SPA page navigation so stale kernel/bootstrap
-  // state from the previous page doesn't leak into the new page.
-  const prevPathRef = useRef(location.pathname);
+  // state from the previous page doesn't leak into the new page (and its
+  // kernel is shut down). The new page's cells are usually fresh mounts, so
+  // compare with the page the state belongs to, not with this instance's
+  // first path: otherwise Run on the next page found "already bootstrapped"
+  // and showed a ready toolbar over cells that never went live.
   useEffect(() => {
-    if (location.pathname !== prevPathRef.current) {
-      prevPathRef.current = location.pathname;
-      resetModuleState();
-    }
+    if (statePath !== null && statePath !== location.pathname) resetModuleState();
+    statePath = location.pathname;
   }, [location.pathname]);
+
+  // Leaving for a page without code cells unmounts them all: drop the kernel
+  // then, rather than when the next code page happens to be opened.
+  useEffect(() => {
+    mountedCells++;
+    if (!pageHideHooked) {
+      pageHideHooked = true;
+      window.addEventListener('pagehide', shutdownKernelOnPageHide);
+    }
+    return () => {
+      mountedCells--;
+      setTimeout(() => {
+        if (mountedCells === 0 && statePath !== null && statePath !== window.location.pathname) {
+          resetModuleState();
+          statePath = null;
+        }
+      }, 0);
+    };
+  }, []);
 
   const [mode, setMode] = useState<'read' | 'run'>('read');
   const [thebeStatus, setThebeStatus] = useState<ThebeStatus>('idle');
@@ -1865,6 +1947,8 @@ export default function ExecutableCode({
   }, []);
 
   const isExecutable = language === 'python' && jupyterConfig?.thebeEnabled;
+  // No code server found for this address: say so instead of just leaving out Run.
+  const runUnavailable = language === 'python' && jupyterConfig !== null && !jupyterConfig.thebeEnabled;
   const canOpenLab = jupyterConfig?.labEnabled && notebookPath;
 
   const handleRun = useCallback(() => {
@@ -2135,8 +2219,19 @@ export default function ExecutableCode({
     <>
       {/* Toolbar — rendered outside .executable-code so position:sticky works
           (.executable-code has overflow:hidden for border-radius clipping) */}
-      {isFirstCell && (isExecutable || canOpenLab) && (
+      {isFirstCell && (isExecutable || canOpenLab || runUnavailable) && (
         <div className="executable-code__toolbar">
+          {runUnavailable && (
+            <span className="executable-code__unavailable" role="note">
+              {translate({
+                id: 'executable.unavailable',
+                message: 'Code cannot run here: no code server was found for this address.',
+              })}{' '}
+              <a href="/jupyter-settings#compute-backend">
+                {translate({id: 'executable.unavailable.link', message: 'Choose one in Settings'})}
+              </a>
+            </span>
+          )}
           {isExecutable && (
             <button
               className={`executable-code__button ${mode === 'run' ? 'executable-code__button--active' : ''}`}
@@ -2305,13 +2400,13 @@ export default function ExecutableCode({
             </a>
           )}
 
-          <a
+          {!runUnavailable && (<a
             className="executable-code__settings-link"
             href="/jupyter-settings#ibm-quantum"
             title={translate({id: 'executable.settingsLink.title', message: 'Jupyter & IBM Quantum settings'})}
           >
             {translate({id: 'executable.settingsLink', message: 'Settings'})}
-          </a>
+          </a>)}
         </div>
       )}
 
