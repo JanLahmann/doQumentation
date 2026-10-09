@@ -842,7 +842,12 @@ export function getLabUrl(config: JupyterConfig, notebookPath: string): string |
 
 /**
  * Owner/repo + branch holding a locale's notebooks for nbgitpuller to pull.
- * EN uses this repo's notebooks branch (already maintained by deploy.yml).
+ * Every target holds ONE language only, so a Binder session clones ~120 MB
+ * instead of every language.
+ * EN uses this repo's `notebooks-en` branch (English notebooks only,
+ * published by deploy.yml). The `notebooks` branch also carries every
+ * locale's subdirectory (~3 GB, for the Code Engine image), so it must not
+ * be the nbgitpuller source.
  * Translated locales each have a satellite repo (`doqumentation-{locale}`)
  * with a dedicated notebooks branch maintained by deploy-locales.yml.
  */
@@ -855,7 +860,7 @@ function getNotebookContentRepo(locale?: string): { repoUrl: string; repoDir: st
     ? {
         repoUrl: 'https://github.com/JanLahmann/doQumentation',
         repoDir: 'doQumentation',
-        branch: 'notebooks',
+        branch: 'notebooks-en',
       }
     : {
         repoUrl: `https://github.com/JanLahmann/doqumentation-${locale}`,
