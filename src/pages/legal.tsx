@@ -1,6 +1,7 @@
 /**
- * Legal Page — Impressum + Privacy Policy (Datenschutzerklärung).
- * Required for German-hosted websites under TMG/DDG §5 and GDPR.
+ * Legal Page — who runs the site + Privacy Policy (Datenschutzerklärung).
+ * doQumentation is a non-profit open-source project (maintainer's decision:
+ * a short "who runs this site" note instead of a full Impressum).
  */
 
 import React from 'react';
@@ -8,24 +9,23 @@ import Layout from '@theme/Layout';
 
 export default function LegalPage(): React.JSX.Element {
   return (
-    <Layout title="Legal / Impressum" description="Legal notice and privacy policy">
+    <Layout title="Legal & Privacy" description="Who runs doQumentation, and the privacy policy">
       <main className="container margin-vert--lg" style={{ maxWidth: '800px' }}>
 
-        <h1>Legal Notice (Impressum)</h1>
-
-        <p>Information in accordance with §5 DDG (German Digital Services Act):</p>
+        <h1>Who Runs This Site</h1>
 
         <p>
-          <strong>Jan-R. Lahmann</strong><br />
-          Personal open-source project
+          doQumentation is a non-profit, open-source project, maintained by{' '}
+          <strong>Jan-R. Lahmann</strong> as part of the{' '}
+          <a href="https://rasqberry.org/" target="_blank" rel="noopener noreferrer">RasQberry</a> project.
         </p>
 
         <h3>Contact</h3>
         <p>
-          For questions, feedback, or legal inquiries, please open an issue on GitHub:<br />
-          <a href="https://github.com/JanLahmann/doQumentation/issues" target="_blank" rel="noopener noreferrer">
-            github.com/JanLahmann/doQumentation/issues
-          </a>
+          For questions, feedback, or legal and privacy inquiries, please use{' '}
+          <a href="https://github.com/JanLahmann/doQumentation/discussions" target="_blank" rel="noopener noreferrer">GitHub Discussions</a>{' '}
+          or open an{' '}
+          <a href="https://github.com/JanLahmann/doQumentation/issues" target="_blank" rel="noopener noreferrer">issue on GitHub</a>.
         </p>
 
         <h3>Disclaimer</h3>
@@ -41,6 +41,10 @@ export default function LegalPage(): React.JSX.Element {
         <h1>Privacy Policy (Datenschutzerklärung)</h1>
 
         <h3>Overview</h3>
+        <p>
+          The person responsible for this website under the GDPR is the maintainer named
+          above, reachable through the contact given there.
+        </p>
         <p>
           This website is designed to be privacy-friendly. The site itself sets no cookies,
           does not ask for personal data, and does not require user accounts. Fonts, maths
@@ -135,7 +139,9 @@ export default function LegalPage(): React.JSX.Element {
         <p>
           Since we do not collect personal data, there is typically no personal data
           to access, correct, or delete. If you believe we hold any personal data
-          about you, please <a href="https://github.com/JanLahmann/doQumentation/issues" target="_blank" rel="noopener noreferrer">contact us via GitHub</a>.
+          about you, please contact us via{' '}
+          <a href="https://github.com/JanLahmann/doQumentation/discussions" target="_blank" rel="noopener noreferrer">GitHub Discussions</a> or{' '}
+          <a href="https://github.com/JanLahmann/doQumentation/issues" target="_blank" rel="noopener noreferrer">issues</a>.
         </p>
         <p>
           You have the right to lodge a complaint with a supervisory authority.
