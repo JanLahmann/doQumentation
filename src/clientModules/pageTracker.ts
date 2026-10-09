@@ -6,15 +6,19 @@
  * Runs on every client-side route change.
  */
 
-import { markPageVisited, setLastPage, addRecentPage, ALL_PREFERENCE_KEYS } from '../config/preferences';
+import {
+  markPageVisited, setLastPage, addRecentPage, refreshBookmarkTitle, migrateLegacyProgress, ALL_PREFERENCE_KEYS,
+} from '../config/preferences';
 import { ALL_JUPYTER_KEYS } from '../config/jupyter';
-import { migrateLocalStorageToCookies } from '../config/storage';
+import { migrateLocalStorageToCookies, migrateLocalOnlyCookies } from '../config/storage';
 
 /** Custom event name broadcast after a page visit is recorded. */
 export const PAGE_VISITED_EVENT = 'dq:page-visited';
 
-// One-time migration: copy existing localStorage values to cookies
-// for cross-subdomain sharing. Runs once per page-load session.
+// Storage migrations, once per page load, in this order:
+//  1. cookies of local-only keys (IBM API key/CRN) → this site's localStorage
+//  2. old JSON progress/bookmark cookies → compact format (frees the cookie budget)
+//  3. localStorage-only values → shared cookies (cross-subdomain sharing)
 let migrationDone = false;
 
 // Docusaurus client module lifecycle hook:
@@ -22,6 +26,8 @@ let migrationDone = false;
 export function onRouteDidUpdate({ location }: { location: Location }): void {
   if (!migrationDone) {
     migrationDone = true;
+    migrateLocalOnlyCookies();
+    migrateLegacyProgress();
     migrateLocalStorageToCookies([...ALL_PREFERENCE_KEYS, ...ALL_JUPYTER_KEYS]);
   }
   const path = location.pathname;
@@ -38,6 +44,7 @@ export function onRouteDidUpdate({ location }: { location: Location }): void {
     const title = (raw && raw !== 'doQumentation') ? raw : path;
     setLastPage(path, title);
     addRecentPage(path, title);
+    if (title !== path) refreshBookmarkTitle(path, title);
   }, 100);
 
   // Notify sidebar items to re-check their visited state

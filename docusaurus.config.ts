@@ -212,6 +212,9 @@ const config: Config = {
     './plugins/hreflang',
     // Bundles src/kernel/*.py (kernel patches) as strings.
     './plugins/python-source',
+    // Keeps src/config/pageIndex.json (the append-only page list behind the
+    // compact progress cookies) in step with the docs. DQ_PAGE_INDEX=write|check.
+    './plugins/page-index',
   ],
 
   themes: [
