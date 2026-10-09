@@ -1,6 +1,6 @@
 # What we need right now
 
-*Auto-generated on 2026-10-08 by `translation/scripts/contributing-status.py`.*
+*Auto-generated on 2026-10-09 by `translation/scripts/contributing-status.py`.*
 *Do not edit by hand — it will be overwritten. Regenerate with:*
 
 ```bash
@@ -44,32 +44,32 @@ stop; it is the only reservation there is. List them any time with
 
 ## Pick a locale
 
-Nearly every page of every locale now carries a review verdict, so the
-work is **re-reading where a read is most likely to find something**.
-Sample with `--order risk` (and without `--exclude-reviewed`): it takes
-pages whose last verdict was FAIL first (they were fixed but never
-re-read), then pages never read, then the oldest verdicts.
-`translation/v2/round.py start --order risk` does this for you.
+Every locale below has pages waiting for a read: pages never read, or
+*delta* pages whose retranslated entries no reviewer has seen yet (the
+pool table further down). Pick one that is not claimed above, open
+your claim issue, then follow `CONTRIBUTING-REVIEWS.md`. When a
+locale's pool runs dry, sample with `--order risk`: it re-reads the
+pages whose last verdict was FAIL first (the first column here).
 
 | Locale | Last verdict FAIL | Never read | Oldest verdict |
 |---|---|---|---|
-| `fr` | **1** | 24 | 2026-07-05 |
-| `ar` | **1** | 24 | 2026-08-29 |
-| `de` | **1** | 24 | 2026-09-29 |
-| `es` | **0** | 24 | 2026-06-26 |
-| `pl` | **0** | 24 | 2026-06-28 |
-| `pt` | **0** | 24 | 2026-07-05 |
-| `id` | **0** | 24 | 2026-09-12 |
-| `ja` | **0** | 24 | 2026-09-28 |
-| `it` | **0** | 24 | 2026-09-28 |
-| `ko` | **0** | 24 | 2026-09-28 |
-| `uk` | **0** | 24 | 2026-09-29 |
-| `tl` | **0** | 24 | 2026-09-29 |
-| `he` | **0** | 24 | 2026-09-29 |
-| `ms` | **0** | 24 | 2026-09-29 |
-| `th` | **0** | 24 | 2026-09-29 |
-| `ro` | **0** | 24 | 2026-09-29 |
-| `cs` | **0** | 24 | 2026-09-29 |
+| `fr` | **1** | 26 | 2026-07-05 |
+| `ar` | **1** | 26 | 2026-08-29 |
+| `de` | **1** | 26 | 2026-09-29 |
+| `es` | **0** | 26 | 2026-06-26 |
+| `pl` | **0** | 26 | 2026-06-28 |
+| `pt` | **0** | 26 | 2026-07-05 |
+| `id` | **0** | 26 | 2026-09-12 |
+| `ja` | **0** | 26 | 2026-09-28 |
+| `it` | **0** | 26 | 2026-09-28 |
+| `ko` | **0** | 26 | 2026-09-28 |
+| `uk` | **0** | 26 | 2026-09-29 |
+| `tl` | **0** | 26 | 2026-09-29 |
+| `he` | **0** | 26 | 2026-09-29 |
+| `ms` | **0** | 26 | 2026-09-29 |
+| `th` | **0** | 26 | 2026-09-29 |
+| `ro` | **0** | 26 | 2026-09-29 |
+| `cs` | **0** | 26 | 2026-09-29 |
 
 **`--max-leaks` currently filters nothing, and that is expected.** A
 leak is a term the locale's `translation/glossary/<loc>.json` records
@@ -79,27 +79,31 @@ do not count, and no locale currently records anything else, so
 every file scores 0. What limits a pool today is pages already
 reviewed with nothing written since, not leakage.
 
-**Nearly exhausted** (fewer than 25 eligible) — still worth
-a short round, but expect to re-sweep files that already carry a
-verdict, or to accept a round smaller than 25:
+*Never read* pages have no verdict yet: a full read. *Delta* pages
+were reviewed, and an English sync has since retranslated entries on
+them. The reviewer judges only those entries. A review's own fixes do
+not count as unread. A locale can be 100% reviewed and still have a
+delta pool.
 
-- `ar` — 4 never read, 20 delta (429/453 reviewed)
-- `cs` — 4 never read, 20 delta (429/453 reviewed)
-- `de` — 4 never read, 20 delta (429/453 reviewed)
-- `es` — 4 never read, 20 delta (429/453 reviewed)
-- `fr` — 4 never read, 20 delta (429/453 reviewed)
-- `he` — 4 never read, 20 delta (429/453 reviewed)
-- `id` — 4 never read, 20 delta (429/453 reviewed)
-- `it` — 4 never read, 20 delta (429/453 reviewed)
-- `ja` — 4 never read, 20 delta (429/453 reviewed)
-- `ko` — 4 never read, 20 delta (429/453 reviewed)
-- `ms` — 4 never read, 20 delta (429/453 reviewed)
-- `pl` — 4 never read, 20 delta (429/453 reviewed)
-- `pt` — 4 never read, 20 delta (429/453 reviewed)
-- `ro` — 4 never read, 20 delta (429/453 reviewed)
-- `th` — 4 never read, 20 delta (429/453 reviewed)
-- `tl` — 5 never read, 19 delta (429/453 reviewed)
-- `uk` — 4 never read, 20 delta (429/453 reviewed)
+| Locale | Never read | Delta | Reviewed so far |
+|---|---|---|---|
+| `ar` | **4** | 22 | 427/453 (94%) |
+| `cs` | **4** | 22 | 427/453 (94%) |
+| `de` | **4** | 22 | 427/453 (94%) |
+| `es` | **4** | 22 | 427/453 (94%) |
+| `fr` | **4** | 22 | 427/453 (94%) |
+| `he` | **4** | 22 | 427/453 (94%) |
+| `id` | **4** | 22 | 427/453 (94%) |
+| `it` | **4** | 22 | 427/453 (94%) |
+| `ja` | **4** | 22 | 427/453 (94%) |
+| `ko` | **4** | 22 | 427/453 (94%) |
+| `ms` | **4** | 22 | 427/453 (94%) |
+| `pl` | **4** | 22 | 427/453 (94%) |
+| `pt` | **4** | 22 | 427/453 (94%) |
+| `ro` | **4** | 22 | 427/453 (94%) |
+| `th` | **4** | 22 | 427/453 (94%) |
+| `tl` | **5** | 21 | 427/453 (94%) |
+| `uk` | **4** | 22 | 427/453 (94%) |
 
 ---
 
