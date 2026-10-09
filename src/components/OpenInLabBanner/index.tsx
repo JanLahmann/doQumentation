@@ -5,6 +5,7 @@ import useDocusaurusContext from '@docusaurus/useDocusaurusContext';
 import { detectJupyterConfig, getLabUrl, getBinderLabUrl, getColabUrl, openBinderLab } from '../../config/jupyter';
 import { trackEvent } from '../../config/analytics';
 import InfoIcon from '../InfoIcon';
+import PageRunStatus from '../PageRunStatus';
 
 interface OpenInLabBannerProps {
   notebookPath: string;
@@ -253,6 +254,7 @@ export default function OpenInLabBanner({ notebookPath, description }: OpenInLab
                 {translate({id: 'openInLab.whatsModified', message: "What's modified?"})}
               </a>
             </div>
+            <PageRunStatus notebookPath={notebookPath} />
             {isActive && (
               <div style={{ width: '100%', marginTop: '0.25rem', fontSize: '0.8rem' }}>
                 {showCacheMissWarning ? (

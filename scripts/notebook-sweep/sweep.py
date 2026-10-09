@@ -13,7 +13,9 @@ The notebooks are read from NB_ROOT (default: the gitignored notebooks/
 tree sync-content.py writes). That tree is only as fresh as the last local
 sync; for what the live site serves, export the published branch first:
     git archive origin/notebooks tutorials guides learning | tar -x -C DIR
-and run with DOQ_NB_ROOT=DIR. DOQ_IMG overrides the image.
+and run with DOQ_NB_ROOT=DIR DOQ_NB_REF=origin/notebooks (recorded in each
+pass's meta.json so make_page_status.py can tell which pages changed since).
+DOQ_IMG overrides the image.
 Pass S: every EN notebook, stock image, with the site's own Simulator Mode
         kernel patch (src/kernel/, DOQ_SIM_MODE aer|fake, default aer)
         instead of sim_shim -> what a learner gets on the site.
@@ -28,6 +30,7 @@ each handed a contiguous batch. 4 CPU / 8 GB VM -> PAR=3.
 """
 from __future__ import annotations
 
+import json
 import os
 import re
 import subprocess
@@ -71,10 +74,29 @@ def chunk(lst: list[str], n: int) -> list[list[str]]:
     return [lst[i:i + per] for i in range(0, len(lst), per)] or [[]]
 
 
+def notebooks_ref() -> str | None:
+    """The commit the swept notebooks came from: DOQ_NB_REF, else NB_ROOT's own
+    git HEAD. make_page_status.py needs it to drop pages changed since."""
+    if os.environ.get("DOQ_NB_REF"):
+        return subprocess.run(["git", "-C", str(REPO), "rev-parse", os.environ["DOQ_NB_REF"]],
+                              capture_output=True, text=True).stdout.strip() or os.environ["DOQ_NB_REF"]
+    head = subprocess.run(["git", "-C", str(NB_ROOT), "rev-parse", "HEAD"],
+                          capture_output=True, text=True)
+    return head.stdout.strip() if head.returncode == 0 else None
+
+
 def run_pass(label: str, image: str, sub: str, nbs: list[str], site: bool = False) -> None:
     pass_out = OUT / sub
     pass_out.mkdir(parents=True, exist_ok=True)
     print(f">>> Pass {label}: {len(nbs)} notebooks, image={image}, PAR={PAR}")
+    (pass_out / "meta.json").write_text(json.dumps({
+        "date": time.strftime("%Y-%m-%d", time.gmtime()),
+        "image": image,
+        "pass": label,
+        "sim_mode": os.environ.get("DOQ_SIM_MODE", "aer") if site else None,
+        "notebooks_ref": notebooks_ref(),
+        "cell_timeout_s": int(CELL_TIMEOUT),
+    }, indent=2) + "\n")
     if not nbs:
         print("  (nothing to do)")
         return
