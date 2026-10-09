@@ -364,6 +364,10 @@ const config: Config = {
               href: 'https://github.com/JanLahmann/doQumentation',
             },
             {
+              label: 'Discussions',
+              href: 'https://github.com/JanLahmann/doQumentation/discussions',
+            },
+            {
               label: 'Legal / Impressum',
               to: '/legal',
             },

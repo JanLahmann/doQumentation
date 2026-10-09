@@ -22,7 +22,11 @@ export default function LegalPage(): React.JSX.Element {
 
         <h3>Contact</h3>
         <p>
-          For questions, feedback, or legal inquiries, please open an issue on GitHub:<br />
+          Questions and ideas are welcome in{' '}
+          <a href="https://github.com/JanLahmann/doQumentation/discussions" target="_blank" rel="noopener noreferrer">
+            GitHub Discussions
+          </a>.<br />
+          For bug reports or legal inquiries, please open an issue on GitHub:<br />
           <a href="https://github.com/JanLahmann/doQumentation/issues" target="_blank" rel="noopener noreferrer">
             github.com/JanLahmann/doQumentation/issues
           </a>
