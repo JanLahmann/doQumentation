@@ -7,7 +7,9 @@
  * - RasQberry Pi (local Jupyter server)
  * - Custom user-configured server
  *
- * Storage is backed by cookies (cross-subdomain) + localStorage via storage.ts.
+ * Storage is backed by cookies (cross-subdomain) + localStorage via storage.ts,
+ * except the IBM Quantum API key, CRN and their saved-at time: those stay in
+ * this language site's localStorage only (storage.ts LOCAL_ONLY_KEYS).
  */
 
 import { translate } from '@docusaurus/Translate';

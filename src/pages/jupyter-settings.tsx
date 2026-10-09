@@ -866,13 +866,13 @@ export default function JupyterSettings(): React.JSX.Element {
                 <div style={{ marginTop: '0.5rem' }}>
                   <div className="alert alert--warning margin-bottom--md">
                     <Translate
-                      id="settings.ibm.securityNoteCookies"
+                      id="settings.ibm.securityNoteLocal"
                       values={{
                         strong: <strong>{translate({id: 'settings.ibm.securityNoteLabel', message: 'Security note:'})}</strong>,
                         saveAccount: <code>save_account()</code>,
                       }}
                     >
-                      {'{strong} Credentials are stored in your browser in plain text: in localStorage and, on doqumentation.org, in a cookie shared across the language sites. They are not encrypted and can be read by browser extensions or anyone with access to this device. Use the expiry setting below to limit exposure, and delete credentials when you\'re done. For shared or public computers, prefer the manual {saveAccount} method described below instead.'}
+                      {'{strong} Credentials are stored in plain text in this browser\'s localStorage, for this language site only (on another language site, enter them again). They are never put in a cookie, so they are not sent to the web host. They are not encrypted and can be read by browser extensions or anyone with access to this device. Use the expiry setting below to limit exposure, and delete credentials when you\'re done. For shared or public computers, prefer the manual {saveAccount} method described below instead.'}
                     </Translate>
                   </div>
 
@@ -1193,11 +1193,13 @@ QiskitRuntimeService.save_account(
           <h2 id="manage-data" style={{ marginTop: '2rem' }}><Translate id="settings.data.heading">Manage Your Data</Translate></h2>
 
           <p style={{ fontSize: '0.9rem', color: 'var(--ifm-color-emphasis-600)' }}>
-            <Translate id="settings.data.privacyCookies">
-              All data stays in your browser. On doqumentation.org it is kept in localStorage and in cookies
-              that share it across the language sites; those cookies travel to the static web host with each
-              page request, never to a doQumentation server. Clearing your browser data or using a different
-              browser/device starts fresh.
+            <Translate id="settings.data.privacyCompact">
+              All data stays in your browser. On doqumentation.org your progress, bookmarks and settings are
+              kept in localStorage and in small cookies that share them across the language sites; those
+              cookies travel to the static web host with each page request, never to a doQumentation server.
+              Your IBM Quantum credentials are never put in a cookie: they stay in localStorage on the language
+              site where you entered them. Clearing your browser data or using a different browser/device
+              starts fresh.
             </Translate>
           </p>
 
