@@ -4,6 +4,7 @@ import type * as Preset from '@docusaurus/preset-classic';
 import {familyFooterColumn} from './family-footer';
 import remarkMath from 'remark-math';
 import rehypeKatex from 'rehype-katex';
+import {remarkContentFixes, fixTablesPreprocessor} from './plugins/content-fixes';
 
 // Umami analytics, unless the build is for an offline image
 // (Dockerfile.jupyter sets DOQ_ANALYTICS=0 for jupyter-local).
@@ -30,22 +31,32 @@ const config: Config = {
   // stale. Warn rather than fail so locale builds keep shipping while the
   // re-translation queue catches up.
   markdown: {
+    // Upstream writes a paragraph straight after a table's last row; GFM then
+    // swallows it into the table. See plugins/content-fixes.
+    preprocessor: fixTablesPreprocessor,
     hooks: {
       onBrokenMarkdownImages: 'warn',
     },
   },
 
   headTags: [
-    // Preconnect hints for external resources
+    // Hide the beta notice / translation-feedback banners before first paint
+    // when they were dismissed this session. They are in the static HTML so
+    // they don't shift the page when they appear (src/components/BetaNotice).
     {
-      tagName: 'link',
-      attributes: { rel: 'preconnect', href: 'https://fonts.googleapis.com' },
+      tagName: 'script',
+      attributes: {},
+      innerHTML: "(function(){try{var d=document.documentElement,s=sessionStorage;if(s.getItem('dq-beta-notice-dismissed')==='1')d.setAttribute('data-dq-beta-dismissed','');if(s.getItem('dq-translation-feedback')==='1')d.setAttribute('data-dq-tf-dismissed','')}catch(e){}})();",
     },
+    // Self-hosted fonts (static/vendor/fonts): preload the Latin IBM Plex Sans
+    // file every page uses, so text swaps to it before first paint.
     {
       tagName: 'link',
       attributes: {
-        rel: 'preconnect',
-        href: 'https://fonts.gstatic.com',
+        rel: 'preload',
+        href: '/vendor/fonts/ibm-plex-sans-latin-var.woff2',
+        as: 'font',
+        type: 'font/woff2',
         crossorigin: 'anonymous',
       },
     },
@@ -193,6 +204,12 @@ const config: Config = {
       href: '/vendor/katex/katex.min.css',
       type: 'text/css',
     },
+    // Web fonts (IBM Plex Sans/Mono, Noto Sans Arabic/Hebrew), served from
+    // the site rather than Google Fonts (static/vendor/README.md).
+    {
+      href: '/vendor/fonts/fonts.css',
+      type: 'text/css',
+    },
   ],
 
   clientModules: [
@@ -212,6 +229,9 @@ const config: Config = {
     './plugins/hreflang',
     // Bundles src/kernel/*.py (kernel patches) as strings.
     './plugins/python-source',
+    // Course catalogue page at /learning/courses (src/data/courses.json +
+    // localized sidebar labels and course descriptions).
+    './plugins/course-catalogue',
   ],
 
   themes: [
@@ -242,6 +262,8 @@ const config: Config = {
           sidebarPath: './sidebars.ts',
           routeBasePath: '/', // Serve docs at root
           breadcrumbs: true,
+          // Dead link forms and very wide images; see plugins/content-fixes.
+          beforeDefaultRemarkPlugins: [remarkContentFixes],
           remarkPlugins: [remarkMath],
           rehypePlugins: [rehypeKatex],
           editUrl: 'https://github.com/JanLahmann/doQumentation/tree/main/',
@@ -304,10 +326,10 @@ const config: Config = {
           activeBaseRegex: '^/guides(/|$)',
         },
         {
-          to: '/learning/courses/basics-of-quantum-information',
+          to: '/learning/courses',
           label: 'Courses',
           position: 'left',
-          activeBaseRegex: '^/learning/courses/',
+          activeBaseRegex: '^/learning/courses(/|$)',
         },
         {
           to: '/learning/modules/computer-science',
@@ -364,6 +386,10 @@ const config: Config = {
               href: 'https://github.com/JanLahmann/doQumentation',
             },
             {
+              label: 'Discussions',
+              href: 'https://github.com/JanLahmann/doQumentation/discussions',
+            },
+            {
               label: 'Legal / Impressum',
               to: '/legal',
             },
@@ -375,6 +401,10 @@ const config: Config = {
             {
               label: 'RasQberry',
               href: 'https://rasqberry.org',
+            },
+            {
+              label: 'Offline workshop guide',
+              to: '/workshop-offline',
             },
             {
               label: 'RasQberry GitHub',

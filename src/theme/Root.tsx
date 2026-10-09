@@ -1,12 +1,12 @@
 import React from 'react';
-import BetaNotice from '@site/src/components/BetaNotice';
-import TranslationFeedback from '@site/src/components/TranslationFeedback';
+import TrailingSlashFix from '@site/src/components/TrailingSlashFix';
 
+// The beta notice and translation-feedback banners render from
+// src/theme/AnnouncementBar (after the skip link), not here.
 export default function Root({children}: {children: React.ReactNode}): React.JSX.Element {
   return (
     <>
-      <BetaNotice />
-      <TranslationFeedback />
+      <TrailingSlashFix />
       {children}
     </>
   );

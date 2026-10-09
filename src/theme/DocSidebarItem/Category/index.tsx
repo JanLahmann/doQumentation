@@ -2,9 +2,14 @@
  * Swizzled DocSidebarItem/Category — wraps the original to add
  * an aggregate progress badge (e.g. "3/10") showing visited/total pages.
  * The badge is display-only; progress is cleared in Settings.
+ *
+ * No wrapper element: the original renders the <li>, and nothing may sit
+ * between <ul> and <li>. The <li> gets a per-instance class through
+ * item.className, which the effects below use to find it.
  */
 
-import React, { useState, useEffect, useLayoutEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useLayoutEffect, useCallback, useRef, useId, useMemo } from 'react';
+import clsx from 'clsx';
 import OriginalCategory from '@theme-original/DocSidebarItem/Category';
 import {translate} from '@docusaurus/Translate';
 import {
@@ -35,8 +40,20 @@ type Props = React.ComponentProps<typeof OriginalCategory>;
 export default function DocSidebarItemCategory(props: Props): React.JSX.Element {
   const [visitedCount, setVisitedCount] = useState(0);
   const [totalCount, setTotalCount] = useState(0);
-  const wrapperRef = useRef<HTMLDivElement>(null);
   const badgeRef = useRef<HTMLSpanElement | null>(null);
+  const badgeTextRef = useRef<HTMLSpanElement | null>(null);
+  const badgeLabelRef = useRef<HTMLSpanElement | null>(null);
+
+  // A class unique to this instance, to find the original's <li>.
+  const uid = 'dq-sc-' + useId().replace(/[^a-zA-Z0-9_-]/g, '');
+  const item = useMemo(
+    () => ({...props.item, className: clsx(props.item.className, 'dq-sidebar-category', uid)}),
+    [props.item, uid],
+  );
+  const getListItem = useCallback(
+    () => document.querySelector<HTMLElement>('li.' + uid),
+    [uid],
+  );
 
   const items = (props.item?.items || []) as SidebarItem[];
   const allHrefs = React.useMemo(() => collectHrefs(items), [items]);
@@ -66,9 +83,19 @@ export default function DocSidebarItemCategory(props: Props): React.JSX.Element 
   // with no confirmation, and readers took it for a status counter (UX review
   // 2026-10-08). Clearing lives in Settings → Learning Progress.
   useEffect(() => {
+    // "3/10" is shown but hidden from screen readers; they get the
+    // visually hidden "3 of 10 visited" instead (inside the category link
+    // for categories without a page, next to it otherwise).
     const badge = document.createElement('span');
     badge.className = 'dq-category-badge';
+    const text = document.createElement('span');
+    text.setAttribute('aria-hidden', 'true');
+    const label = document.createElement('span');
+    label.className = 'dq-sr-only';
+    badge.append(text, label);
     badgeRef.current = badge;
+    badgeTextRef.current = text;
+    badgeLabelRef.current = label;
     return () => { badge.remove(); badgeRef.current = null; };
   }, []);
 
@@ -76,9 +103,10 @@ export default function DocSidebarItemCategory(props: Props): React.JSX.Element 
   // Must survive React re-renders of OriginalCategory (e.g. collapse restore).
   useLayoutEffect(() => {
     const badge = badgeRef.current;
-    if (!badge || !wrapperRef.current) return;
+    const li = getListItem();
+    if (!badge || !li) return;
 
-    const collapsible = wrapperRef.current.querySelector('.menu__list-item-collapsible');
+    const collapsible = li.querySelector(':scope > .menu__list-item-collapsible');
     if (!collapsible) return;
 
     // href categories: .menu__caret is a separate <button> sibling — badge before it.
@@ -102,13 +130,13 @@ export default function DocSidebarItemCategory(props: Props): React.JSX.Element 
     const badge = badgeRef.current;
     if (!badge) return;
     if (visitedCount > 0 && totalCount > 0) {
-      badge.textContent = `${visitedCount}/${totalCount}`;
       const label = translate(
         {id: 'sidebar.categoryProgress', message: '{visited} of {total} visited'},
         {visited: String(visitedCount), total: String(totalCount)},
       );
+      if (badgeTextRef.current) badgeTextRef.current.textContent = `${visitedCount}/${totalCount}`;
+      if (badgeLabelRef.current) badgeLabelRef.current.textContent = ` (${label})`;
       badge.title = label;
-      badge.setAttribute('aria-label', label);
       badge.style.display = '';
     } else {
       badge.style.display = 'none';
@@ -117,9 +145,9 @@ export default function DocSidebarItemCategory(props: Props): React.JSX.Element 
 
   // Sidebar collapse memory: observe DOM changes and persist state
   useEffect(() => {
-    if (!wrapperRef.current || !categoryLabel) return;
+    if (!categoryLabel) return;
 
-    const listItem = wrapperRef.current.querySelector('.menu__list-item');
+    const listItem = getListItem();
     if (!listItem) return;
 
     // Restore saved state on mount
@@ -141,11 +169,7 @@ export default function DocSidebarItemCategory(props: Props): React.JSX.Element 
     observer.observe(listItem, { attributes: true, attributeFilter: ['class'] });
 
     return () => observer.disconnect();
-  }, [categoryLabel]);
+  }, [categoryLabel, getListItem]);
 
-  return (
-    <div className="dq-sidebar-category" ref={wrapperRef}>
-      <OriginalCategory {...props} />
-    </div>
-  );
+  return <OriginalCategory {...props} item={item} />;
 }

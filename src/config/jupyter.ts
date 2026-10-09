@@ -10,6 +10,7 @@
  * Storage is backed by cookies (cross-subdomain) + localStorage via storage.ts.
  */
 
+import { translate } from '@docusaurus/Translate';
 import { getItem, setItem, removeItem } from './storage';
 
 export interface JupyterConfig {
@@ -187,8 +188,8 @@ export function getAvailableBackends(): AvailableBackend[] {
     backends.push({ environment: 'github-pages', label: 'Binder', detail: 'mybinder.org' });
   }
 
-  // Local / RasQberry?
-  if (isLocalHostname(hostname)) {
+  // Local / RasQberry? (A self-hosted container says so itself.)
+  if (getRuntimeConfig().selfHosted === true || isLocalHostname(hostname)) {
     backends.push({ environment: 'rasqberry', label: 'Local / RasQberry' });
   }
 
@@ -203,22 +204,36 @@ function isGitHubPagesHostname(hostname: string): boolean {
   );
 }
 
+/** Fallback guess for a site that is not a self-hosted container (e.g. a
+ *  local Jupyter on :8888 next to a dev server). Kept in step with the LAN
+ *  hosts nginx.conf accepts: loopback, single-label names, router suffixes
+ *  (.local, .lan, .home, .internal, .home.arpa), private and link-local IPv4. */
 function isLocalHostname(hostname: string): boolean {
   return (
     hostname === 'localhost' ||
     hostname === '127.0.0.1' ||
+    hostname === '[::1]' ||
     hostname.includes('rasqberry') ||
-    hostname.endsWith('.local') ||
+    /\.(local|lan|home|internal|home\.arpa)$/.test(hostname) ||
+    (hostname !== '' && !hostname.includes('.') && !hostname.includes(':')) ||
     hostname.startsWith('192.168.') ||
     hostname.startsWith('10.') ||
+    hostname.startsWith('169.254.') ||
     /^172\.(1[6-9]|2\d|3[01])\./.test(hostname)
   );
 }
 
+interface RuntimeConfig {
+  /** Set by the offline container: Jupyter is behind this same origin (/api/). */
+  selfHosted?: boolean;
+  labEnabled?: boolean;
+}
+
 /** Settings a self-hosted container sets at start: docker-entrypoint.sh serves
- *  /runtime-config.js (static/runtime-config.js is the empty default). */
-function getRuntimeConfig(): { labEnabled?: boolean } {
-  const rc = (window as unknown as { __DOQ_RUNTIME__?: { labEnabled?: boolean } }).__DOQ_RUNTIME__;
+ *  /runtime-config.js (static/runtime-config.js is the empty default, so the
+ *  public site and the Code Engine image never claim to be self-hosted). */
+function getRuntimeConfig(): RuntimeConfig {
+  const rc = (window as unknown as { __DOQ_RUNTIME__?: RuntimeConfig }).__DOQ_RUNTIME__;
   return rc && typeof rc === 'object' ? rc : {};
 }
 
@@ -297,9 +312,15 @@ function buildConfigFor(env: JupyterConfig['environment']): JupyterConfig | null
     }
     case 'rasqberry': {
       const hostname = window.location.hostname;
-      if (!isLocalHostname(hostname)) return null;
+      // The offline container declares itself in /runtime-config.js: then
+      // Jupyter is always behind this origin, whatever the host name or port
+      // (quantum-pi:8080, a .lan name, port 80, a TLS proxy on 443).
+      const selfHosted = getRuntimeConfig().selfHosted === true;
+      if (!selfHosted && !isLocalHostname(hostname)) return null;
+      // Fallback guess without it: a non-standard port means the container's
+      // nginx; otherwise a bare Jupyter on :8888 with the RasQberry token.
       const port = window.location.port;
-      const isDocker = port && port !== '80' && port !== '443' && port !== '8888';
+      const isDocker = selfHosted || (port && port !== '80' && port !== '443' && port !== '8888');
       const origin = window.location.origin;
       return {
         enabled: true,
@@ -842,7 +863,12 @@ export function getLabUrl(config: JupyterConfig, notebookPath: string): string |
 
 /**
  * Owner/repo + branch holding a locale's notebooks for nbgitpuller to pull.
- * EN uses this repo's notebooks branch (already maintained by deploy.yml).
+ * Every target holds ONE language only, so a Binder session clones ~120 MB
+ * instead of every language.
+ * EN uses this repo's `notebooks-en` branch (English notebooks only,
+ * published by deploy.yml). The `notebooks` branch also carries every
+ * locale's subdirectory (~3 GB, for the Code Engine image), so it must not
+ * be the nbgitpuller source.
  * Translated locales each have a satellite repo (`doqumentation-{locale}`)
  * with a dedicated notebooks branch maintained by deploy-locales.yml.
  */
@@ -855,7 +881,7 @@ function getNotebookContentRepo(locale?: string): { repoUrl: string; repoDir: st
     ? {
         repoUrl: 'https://github.com/JanLahmann/doQumentation',
         repoDir: 'doQumentation',
-        branch: 'notebooks',
+        branch: 'notebooks-en',
       }
     : {
         repoUrl: `https://github.com/JanLahmann/doqumentation-${locale}`,
@@ -1171,22 +1197,24 @@ const CE_TAB_PHASE_HINTS: Record<string, string> = {
   ready:      'Connected!',
 };
 
-/** Default English phase hints for the Binder loading tab */
-const BINDER_TAB_PHASE_HINTS: Record<string, string> = {
-  connecting: 'Connecting to mybinder.org\u2026',
-  waiting:    'Waiting in queue\u2026',
-  fetching:   'Fetching repository (2\u20135 min)\u2026',
-  building:   'Building Docker image (5\u201310 min)\u2026',
-  pushing:    'Pushing image to registry (2\u20135 min)\u2026',
-  built:      'Image ready \u2014 launching JupyterLab\u2026',
-  launching:  'Starting JupyterLab server (2\u20135 min)\u2026',
-};
+/** Phase hints for the Binder loading tab (ids shared with ExecutableCode) */
+function binderTabPhaseHints(): Record<string, string> {
+  return {
+    connecting: 'Connecting to mybinder.org\u2026',
+    waiting:    'Waiting in queue\u2026',
+    fetching:   translate({id: 'executable.status.binderFetching.v2', message: 'Fetching repo...'}),
+    building:   translate({id: 'executable.status.binderBuilding.v2', message: 'Building image...'}),
+    pushing:    translate({id: 'executable.status.binderPushing.v2', message: 'Pushing image...'}),
+    built:      'Image ready \u2014 launching JupyterLab\u2026',
+    launching:  translate({id: 'executable.status.binderLaunching.v2', message: 'Launching server...'}),
+  };
+}
 
 function escapeHtml(s: string): string {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
-function makeTabHtml(title: string, initialPhase: string): string {
+function makeTabHtml(title: string, initialPhase: string, warning: string): string {
   return `<!DOCTYPE html>
 <html><head><meta charset="utf-8"><title>${escapeHtml(title)}</title>
 <style>
@@ -1198,8 +1226,7 @@ function makeTabHtml(title: string, initialPhase: string): string {
 </style></head><body>
   <div id="phase">${escapeHtml(initialPhase)}</div>
   <div id="elapsed"></div>
-  <div id="warning">\u26a0 Cache not warmed \u2014 total build time 10\u201325 min.
-    Close this tab and use Colab instead, or come back later.</div>
+  <div id="warning">${escapeHtml(warning)}</div>
 </body></html>`;
 }
 
@@ -1218,7 +1245,8 @@ export function openBinderLab(
 ): void {
   const nbPath = mapBinderNotebookPath(notebookPath, locale);
   const isCE = config.environment === 'code-engine';
-  const phaseHints = isCE ? CE_TAB_PHASE_HINTS : BINDER_TAB_PHASE_HINTS;
+  const phaseHints = isCE ? CE_TAB_PHASE_HINTS : binderTabPhaseHints();
+  const cacheMissWarning = translate({id: 'executable.status.binderCacheMiss.v2', message: '\u26a0 Cold start: this Binder server prepares the image first, which usually takes up to about 3 minutes.'});
   const tabTitle = isCE ? 'Starting Code Engine\u2026' : 'Starting Binder\u2026';
   const initialPhase = isCE ? 'Connecting to Code Engine\u2026' : 'Connecting to mybinder.org\u2026';
 
@@ -1226,7 +1254,7 @@ export function openBinderLab(
   const tab = window.open('about:blank', '_blank');
   if (tab) {
     tab.document.open();
-    tab.document.write(makeTabHtml(tabTitle, initialPhase));
+    tab.document.write(makeTabHtml(tabTitle, initialPhase, cacheMissWarning));
     tab.document.close();
   }
 
