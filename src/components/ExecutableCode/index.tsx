@@ -54,9 +54,11 @@ import {
   connectionErrorMessage,
   type ConnectionIssue,
 } from './connection';
+import { loadThebelab, prefetchThebelab } from './loadThebelab';
 
 // thebelab 0.4.x global — bootstrap() returns a Promise that resolves
 // when the kernel is connected (after Binder launch + kernel start).
+// Not on every page: loadThebelab() injects the script when a session starts.
 declare global {
   interface Window {
     thebelab?: {
@@ -153,6 +155,7 @@ let lastJupyterConfig: JupyterConfig | null = null;
 
 // Bumped by resetModuleState(): a kernel that connects after its page was left
 // (or after Back/Cancel) belongs to no one and is shut down at once.
+// Also stops a doBootstrap() still waiting for the thebelab script.
 let bootstrapGeneration = 0;
 // The page the module-level state belongs to (see the route effect in the component).
 let statePath: string | null = null;
@@ -1463,10 +1466,9 @@ function broadcastStatus(status: ThebeStatus): void {
 }
 
 /**
- * Wait for thebelab CDN to load, then call bootstrap() with the given options.
+ * Load thebelab (loadThebelab), then call bootstrap() with the given options.
  * Handles kernel promise, status events, and credential injection.
  */
-const BOOTSTRAP_MAX_RETRIES = 60; // 60 × 500ms = 30s total timeout
 
 // Jupyter Server 2.16.0 has a race condition under high concurrent load:
 // AttributeError: 'NoneType'.kernel_ws_protocol fires when the WebSocket
@@ -1479,17 +1481,11 @@ const KERNEL_RACE_BACKOFF_MS = 1000;
 let kernelRaceRetriesUsed = 0;
 
 function doBootstrap(thebelabOptions: Record<string, unknown>): void {
-  let retryCount = 0;
+  const generation = bootstrapGeneration;
   const tryBootstrap = () => {
+    if (generation !== bootstrapGeneration) return; // Back / navigation meanwhile
     if (!window.thebelab) {
-      retryCount++;
-      if (retryCount > BOOTSTRAP_MAX_RETRIES) {
-        console.error('[ExecutableCode] thebelab CDN failed to load after 30s');
-        broadcastStatus('error');
-        return;
-      }
-      if (DEBUG) console.log('[ExecutableCode] waiting for thebelab CDN...');
-      setTimeout(tryBootstrap, 500);
+      broadcastStatus('error');
       return;
     }
 
@@ -1517,7 +1513,6 @@ function doBootstrap(thebelabOptions: Record<string, unknown>): void {
       // cache which can be empty if getPageConfig() ran before injection.
       const kernelPromise = window.thebelab.bootstrap(thebelabOptions);
       thebelabBootstrapped = true;
-      const generation = bootstrapGeneration;
       if (DEBUG) console.log('[ExecutableCode] bootstrap() called, waiting for kernel promise...');
 
       // Stay in 'connecting' state until the kernel is ready
@@ -1610,7 +1605,15 @@ function doBootstrap(thebelabOptions: Record<string, unknown>): void {
   };
 
   // Give React a tick to render all the <pre data-executable> elements
-  setTimeout(tryBootstrap, 100);
+  // (and the script time to arrive, if it is still loading).
+  setTimeout(() => {
+    loadThebelab().then(tryBootstrap, (err) => {
+      if (generation !== bootstrapGeneration) return;
+      console.error('[ExecutableCode] could not load thebelab:', err);
+      thebelabBootstrapped = false; // let Retry load it again
+      broadcastStatus('error');
+    });
+  }, 100);
 }
 
 /**
@@ -1634,6 +1637,9 @@ function bootstrapOnce(config: JupyterConfig): void {
 
   // Set guard synchronously to prevent duplicate bootstrap from rapid clicks
   thebelabBootstrapped = true;
+  // Start the thebelab download now, alongside the Binder/CE startup;
+  // doBootstrap() waits for it and reports a failure.
+  loadThebelab().catch(() => {});
 
   if ((config.environment === 'github-pages' || config.environment === 'code-engine') && config.binderUrl) {
     // Build (or reuse) Binder/CE session, then connect thebelab via serverSettings
@@ -1955,6 +1961,15 @@ export default function ExecutableCode({
   const runUnavailable = language === 'python' && jupyterConfig !== null && !jupyterConfig.thebeEnabled;
   const canOpenLab = jupyterConfig?.labEnabled && notebookPath;
 
+  // This page has runnable code: fetch thebelab into the cache when idle.
+  useEffect(() => {
+    if (isExecutable) prefetchThebelab();
+  }, [isExecutable]);
+  // Pointer on (or focus reaches) Run: start loading it for real.
+  const preloadThebelab = useCallback(() => {
+    if (mode === 'read') loadThebelab().catch(() => {});
+  }, [mode]);
+
   const handleRun = useCallback(() => {
     if (!jupyterConfig) return;
 
@@ -2240,6 +2255,8 @@ export default function ExecutableCode({
             <button
               className={`executable-code__button ${mode === 'run' ? 'executable-code__button--active' : ''}`}
               onClick={mode === 'run' ? handleReset : handleRun}
+              onPointerEnter={preloadThebelab}
+              onFocus={preloadThebelab}
               title={
                 thebeStatus === 'connecting'
                   ? translate({id: 'executable.button.cancelTitle', message: 'Cancel Binder startup and return to static view'})
