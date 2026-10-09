@@ -11,6 +11,7 @@ Since September 2026 a locale's translation is its PO files under
 Docusaurus builds are rendered from them and are **not in git**. The
 pipeline, its tools and the sync procedure are documented in
 [`translation/v2/README.md`](translation/v2/README.md) — read it once.
+Questions? Ask in [Discussions (Q&A)](https://github.com/JanLahmann/doQumentation/discussions/categories/q-a), one question per discussion.
 
 > 👀 **Want to *review* rather than translate?** See
 > [`CONTRIBUTING-REVIEWS.md`](CONTRIBUTING-REVIEWS.md) — a self-contained,

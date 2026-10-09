@@ -10,6 +10,8 @@ A round is **budget-shaped**: you tell it how many pages to review (40 is
 the default for a first round), and it stops cleanly if you run out of
 usage mid-round — nothing breaks, and it resumes where it stopped.
 
+Questions about this recipe? Ask in [Discussions (Q&A)](https://github.com/JanLahmann/doQumentation/discussions/categories/q-a), one question per discussion.
+
 ---
 
 ## For the human: how to start
