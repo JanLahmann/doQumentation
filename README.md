@@ -26,13 +26,13 @@ IBM's [Qiskit documentation](https://github.com/Qiskit/documentation) is open so
 
 ## Deployment Tiers
 
-| | [GitHub Pages](https://doqumentation.org) | [Docker (lite)](https://github.com/JanLahmann/doQumentation/pkgs/container/doqumentation) | [Docker (jupyter)](https://github.com/JanLahmann/doQumentation/pkgs/container/doqumentation) | [RasQberry](https://rasqberry.org/) |
-|---|---|---|---|---|
-| Browse tutorials, guides, & courses | Yes | Yes | Yes | Yes |
-| Full-text search | Yes | Yes | Yes | Yes |
-| Execute code | Via [Binder](https://mybinder.org) | Via [Binder](https://mybinder.org) | Local Jupyter | Local Jupyter |
-| Open in JupyterLab | — | — | Planned | Yes |
-| Offline access | — | Yes | Yes | Yes |
+| | [GitHub Pages](https://doqumentation.org) | [Docker / Podman](https://github.com/JanLahmann/doQumentation/pkgs/container/doqumentation) (`:jupyter`) | [RasQberry](https://rasqberry.org/) |
+|---|---|---|---|
+| Browse tutorials, guides, & courses | Yes, 17 languages | Yes, English | Yes, English |
+| Full-text search | Yes | Yes | Yes |
+| Execute code | Via [Binder](https://mybinder.org) | Local Jupyter | Local Jupyter |
+| JupyterLab | Via Binder | On port 8888 (token) | On port 8888 (token) |
+| Offline access | — | Yes | Yes |
 
 ## Quick Start
 
@@ -43,29 +43,33 @@ IBM's [Qiskit documentation](https://github.com/Qiskit/documentation) is open so
 ### Run with Podman / Docker
 
 ```bash
-# Full stack: site + Jupyter + Qiskit (~3 GB)
-podman run -p 8080:80 -p 8888:8888 ghcr.io/janlahmann/doqumentation:jupyter
+# Site + Jupyter + Qiskit: about 1.2 GB to download, ~3 GB on disk.
+# Pull it before you travel if the venue has no internet.
+podman run -d --name doq --restart unless-stopped \
+  -e JUPYTER_TOKEN=choose-a-token \
+  -p 8080:80 -p 127.0.0.1:8888:8888 \
+  ghcr.io/janlahmann/doqumentation:jupyter
 ```
 
-Access at `http://localhost:8080`. Using Docker instead? Just replace `podman` with `docker` — the commands are identical. Or build locally with `podman compose --profile jupyter up`. Images are multi-arch (`linux/amd64` + `linux/arm64`).
+Access at `http://localhost:8080`. Using Docker instead? Replace `podman` with `docker`; the commands are identical. Or build locally with `podman compose --profile jupyter up`. Images are multi-arch (`linux/amd64` + `linux/arm64`).
 
-**Jupyter token:** The full-stack container generates a random authentication token at startup (printed in the container logs). Code execution through the website on port 8080 is transparent — no token needed. Direct JupyterLab access on port 8888 requires the token. To set a fixed token: `JUPYTER_TOKEN=mytoken podman run ...`
+**Jupyter token:** Code execution through the website on port 8080 needs no token. JupyterLab on port 8888 asks for the token: the one you pass with `-e JUPYTER_TOKEN=…`, or, without it, a random token printed in the container logs (`podman logs doq`), which changes on every restart. `-p 127.0.0.1:8888:8888` keeps JupyterLab reachable from the host machine only; drop `127.0.0.1:` to reach it from other machines.
 
-**Classroom use:** one container can serve a whole room. Participants on the same network open `http://<host-ip>:8080` (or `http://<hostname>.local:8080`) and can run code; no configuration is needed. Code execution is accepted only from the site itself when it is reached by a local-network address (loopback, private IP, `.local` or single-label name), so other websites a participant has open cannot use the server. To let a site at another address use it too (for example a copy of the site you host yourself), list that address: `-e CORS_ORIGIN=https://docs.example.org`. `CORS_ORIGIN` takes a comma-separated list; plain `http://` is accepted only for local-network hosts.
+**Classroom use:** one container can serve a whole room. Participants on the same network open `http://<host-ip>:8080` (or `http://<hostname>.local:8080`) and can run code. Code execution is accepted only from the site itself when it is reached by a local-network address (loopback, private IP, `.local` or single-label name), so other websites a participant has open cannot use the server. To let a site at another address use it too (for example a copy of the site you host yourself), list that address: `-e CORS_ORIGIN=https://docs.example.org`. `CORS_ORIGIN` takes a comma-separated list; plain `http://` is accepted only for local-network hosts.
+
+Switches for workshops (pass with `-e`):
+
+| Variable | Default | Effect |
+|---|---|---|
+| `LAB_ENABLED` | `false` | `true` shows an "Open in JupyterLab" button on notebook pages. It needs JupyterLab reachable at `/lab` on the site's address, which this image's web server does not provide; the teacher uses port 8888 instead. |
+| `ALLOW_TERMINALS` | `false` | `true` lets anyone who can open the site start a shell in the container. Leave it off for a room of participants. |
+| `CULL_IDLE_TIMEOUT` | `600` | Seconds before an idle kernel is shut down (`0` = never). |
+
+All participants share one Jupyter server and one user account in the container: any of them can run arbitrary Python there. Use it with a group you trust, keep secrets out of the container, and restart it between groups (`podman restart doq`).
 
 ### Deploy to RasQberry
 
-> **Note:** RasQberry deployment is under development. Instructions will be provided soon.
-
-<!--
-```bash
-wget https://github.com/JanLahmann/doQumentation/releases/latest/download/doQumentation-pi.tar.gz
-tar -xzf doQumentation-pi.tar.gz
-cd doQumentation-pi && ./install.sh
-```
-
-Access at `http://rasqberry.local` or your Pi's IP address.
--->
+[RasQberry Two](https://rasqberry.org/) ships this image as its Workshop & Qiskit Server; see rasqberry.org for how to start it on the Pi.
 
 ### Development
 
@@ -96,7 +100,7 @@ Tutorial content is sourced from [Qiskit/documentation](https://github.com/Qiski
 - **Docker / RasQberry:** Connects to a local Jupyter server with Qiskit pre-installed
 - **Custom:** Configure any Jupyter endpoint in [Settings](https://doqumentation.org/jupyter-settings)
 
-On RasQberry, an **Open in Lab** button opens the full notebook in JupyterLab.
+On doqumentation.org, an **Open in JupyterLab** button opens the full notebook on Binder.
 
 ## Content Synchronization
 
@@ -135,7 +139,7 @@ doQumentation/
 │       └── MDXComponents.tsx      # IBM component stubs (Admonition, Image, etc.)
 ├── scripts/
 │   ├── sync-content.py            # Pull & transform content from upstream
-│   └── setup-pi.sh                # Raspberry Pi setup
+│   └── setup-pi.sh                # native Pi install (unsupported, see #385; use the container)
 ├── binder/
 │   └── jupyter-requirements-security.txt # CVE floors on top of the QuBins base image
 ├── .github/workflows/

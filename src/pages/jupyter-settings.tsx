@@ -1637,20 +1637,22 @@ qiskit-ibm-catalog, qiskit-addon-utils, pyscf`}</code>
             <div className="jupyter-settings__details-content">
               <h4><Translate id="settings.help.rasqberry.heading">RasQberry Setup</Translate></h4>
               <p>
-                <Translate id="settings.help.rasqberry.desc">
-                  If you're running on a RasQberry Pi, the Jupyter server should be
-                  automatically detected. If not, ensure the jupyter-tutorials service is running:
+                <Translate id="settings.help.rasqberry.descImage">
+                  RasQberry runs the doQumentation container (see Docker Setup below). Open the site
+                  from the Pi's address, port 8080, and code runs on the Pi with no further setup.
+                </Translate>
+              </p>
+
+              <h4><Translate id="settings.help.local.heading">Local Jupyter Setup</Translate></h4>
+              <p>
+                <Translate id="settings.help.local.descOrigin">
+                  Start a Jupyter server that accepts this site only, with a token you choose,
+                  then enter its URL and token under Custom Server above:
                 </Translate>
               </p>
               <pre>
-                <code>sudo systemctl status jupyter-tutorials</code>
-              </pre>
-
-              <h4><Translate id="settings.help.local.heading">Local Jupyter Setup</Translate></h4>
-              <p><Translate id="settings.help.local.desc">Start a Jupyter server with CORS enabled:</Translate></p>
-              <pre>
-                <code>{`jupyter server --ServerApp.token='rasqberry' \\
-  --ServerApp.allow_origin='*' \\
+                <code>{`jupyter server --ServerApp.token='choose-a-long-token' \\
+  --ServerApp.allow_origin='https://doqumentation.org' \\
   --ServerApp.disable_check_xsrf=True`}</code>
               </pre>
 
@@ -1665,11 +1667,14 @@ qiskit-ibm-catalog, qiskit-addon-utils, pyscf`}</code>
               </p>
               <p><Translate id="settings.help.docker.retrieveToken">To retrieve the token from container logs:</Translate></p>
               <pre>
-                <code>docker compose --profile jupyter logs | grep &quot;Jupyter token&quot;</code>
+                <code>podman logs doq | grep &quot;Jupyter token&quot;</code>
               </pre>
               <p><Translate id="settings.help.docker.fixedToken">To set a fixed token:</Translate></p>
               <pre>
-                <code>JUPYTER_TOKEN=mytoken docker compose --profile jupyter up</code>
+                <code>{`podman run -d --name doq --restart unless-stopped \\
+  -e JUPYTER_TOKEN=choose-a-token \\
+  -p 8080:80 -p 127.0.0.1:8888:8888 \\
+  ghcr.io/janlahmann/doqumentation:jupyter`}</code>
               </pre>
 
               <h4><Translate id="settings.help.remote.heading">Remote Server</Translate></h4>
@@ -1682,7 +1687,7 @@ qiskit-ibm-catalog, qiskit-addon-utils, pyscf`}</code>
                 </Translate>
               </p>
               <pre>
-                <code>{`c.ServerApp.allow_origin = '*'
+                <code>{`c.ServerApp.allow_origin = 'https://doqumentation.org'
 c.ServerApp.allow_credentials = True`}</code>
               </pre>
             </div>

@@ -88,14 +88,16 @@ GEN
 )
 
 # ── Workshop switches (RasQberry Workshop Server, #963) ──
-#   LAB_ENABLED=false      hide "Open in Lab" (nginx serves no /lab; the
-#                          teacher opens JupyterLab on :8888 directly)
-#   ALLOW_TERMINALS=false  stop proxying /terminals/, so LAN participants
-#                          cannot open a shell in the container
+# Safe by default for a room of participants on shared Wi-Fi:
+#   LAB_ENABLED=true       show "Open in Lab". Off by default: nginx serves no
+#                          /lab, so the button led to a 404; the teacher opens
+#                          JupyterLab on :8888 directly.
+#   ALLOW_TERMINALS=true   proxy /terminals/. Off by default, so LAN
+#                          participants cannot open a shell in the container.
 #   CULL_IDLE_TIMEOUT=<s>  seconds before an idle kernel is shut down
 #                          (default 600; 0 never)
-LAB_ENABLED="${LAB_ENABLED:-true}"
-ALLOW_TERMINALS="${ALLOW_TERMINALS:-true}"
+LAB_ENABLED="${LAB_ENABLED:-false}"
+ALLOW_TERMINALS="${ALLOW_TERMINALS:-false}"
 CULL_IDLE_TIMEOUT="${CULL_IDLE_TIMEOUT:-600}"
 for v in LAB_ENABLED ALLOW_TERMINALS; do
   if [[ ! "${!v}" =~ ^(true|false)$ ]]; then
@@ -177,13 +179,15 @@ echo "  Jupyter token: ${JUPYTER_TOKEN}"
 echo "========================================"
 echo ""
 echo "  Website (token injected automatically):"
-echo "    http://localhost:8080/"
+echo "    http://localhost:8080/   participants: http://<this machine's IP>:8080/"
 echo ""
 echo "  Direct JupyterLab (token required):"
 echo "    http://localhost:8888/?token=${JUPYTER_TOKEN}"
 echo ""
-echo "  To set a fixed token, restart with:"
-echo "    JUPYTER_TOKEN=mytoken docker compose --profile jupyter up"
+echo "  Lab button: ${LAB_ENABLED}   terminals: ${ALLOW_TERMINALS}   idle kernel cull: ${CULL_IDLE_TIMEOUT}s"
+echo ""
+echo "  To set a fixed token, start the container with -e JUPYTER_TOKEN=mytoken"
+echo "  (docker compose: JUPYTER_TOKEN=mytoken docker compose --profile jupyter up)"
 echo "========================================"
 echo ""
 
