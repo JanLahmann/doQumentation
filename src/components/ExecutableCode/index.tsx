@@ -81,6 +81,8 @@ let thebelabEventsHooked = false;
 // Bumped by resetModuleState(): a doBootstrap() still waiting for the thebelab
 // script when the learner pressed Back or left the page must not bootstrap.
 let bootstrapGeneration = 0;
+// Page the current session was started on.
+let bootstrapPath: string | null = null;
 
 // Custom event names used to coordinate all cells on the page
 const ACTIVATE_EVENT = 'executablecode:activate';
@@ -1572,6 +1574,13 @@ function doBootstrap(thebelabOptions: Record<string, unknown>): void {
  */
 function bootstrapOnce(config: JupyterConfig): void {
   lastJupyterConfig = config;
+  // A session started on another page (client-side navigation): the cells
+  // here are new, so connect them afresh. The reset in the component only
+  // fires for an instance that survives navigation, and none does.
+  if (bootstrapPath !== null && bootstrapPath !== window.location.pathname) {
+    resetModuleState();
+  }
+  bootstrapPath = window.location.pathname;
   if (thebelabBootstrapped) {
     // A bootstrap is already in flight or done. Only announce 'ready' if a kernel
     // has actually connected — otherwise we're mid-connect (incl. the race-retry
