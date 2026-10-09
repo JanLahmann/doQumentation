@@ -4,6 +4,7 @@ Thank you for helping. Pick the path that fits:
 
 | You want to… | Go to |
 |---|---|
+| Ask a question or suggest an idea | [Discussions](https://github.com/JanLahmann/doQumentation/discussions) (one question per discussion) |
 | Report a wrong or awkward translation (no tools needed) | [Wrong or awkward translation](https://github.com/JanLahmann/doQumentation/issues/new?template=translation-report.yml) |
 | Report a broken page, link, search or setting | [Site bug](https://github.com/JanLahmann/doQumentation/issues/new?template=site-bug.yml) |
 | Report code that does not run on the site | [Code does not run](https://github.com/JanLahmann/doQumentation/issues/new?template=execution-error.yml) |

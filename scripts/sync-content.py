@@ -1786,6 +1786,16 @@ def sync_upstream_images():
 
     print(f"  Total: {total} images synced")
 
+    # Circuits drawn with fold=-1 come out up to 54,284 px wide; browsers do
+    # not decode an image wider than 32,767 px. Shrink them in place (same
+    # name and format, so pages and translations need no change). Never fatal.
+    print("\n🖼  Downscaling images too wide for browsers...", flush=True)
+    subprocess.run(
+        [sys.executable, str(PROJECT_ROOT / "scripts" / "downscale-wide-images.py"),
+         str(STATIC_DIR / "docs/images"), str(STATIC_DIR / "learning/images")],
+        check=False,
+    )
+
     # Also copy images to notebooks/ so Jupyter can serve them
     print("\n🖼  Copying images to notebooks/ for Jupyter...")
     nb_image_mappings = [
