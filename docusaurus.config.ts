@@ -40,16 +40,23 @@ const config: Config = {
   },
 
   headTags: [
-    // Preconnect hints for external resources
+    // Hide the beta notice / translation-feedback banners before first paint
+    // when they were dismissed this session. They are in the static HTML so
+    // they don't shift the page when they appear (src/components/BetaNotice).
     {
-      tagName: 'link',
-      attributes: { rel: 'preconnect', href: 'https://fonts.googleapis.com' },
+      tagName: 'script',
+      attributes: {},
+      innerHTML: "(function(){try{var d=document.documentElement,s=sessionStorage;if(s.getItem('dq-beta-notice-dismissed')==='1')d.setAttribute('data-dq-beta-dismissed','');if(s.getItem('dq-translation-feedback')==='1')d.setAttribute('data-dq-tf-dismissed','')}catch(e){}})();",
     },
+    // Self-hosted fonts (static/vendor/fonts): preload the Latin IBM Plex Sans
+    // file every page uses, so text swaps to it before first paint.
     {
       tagName: 'link',
       attributes: {
-        rel: 'preconnect',
-        href: 'https://fonts.gstatic.com',
+        rel: 'preload',
+        href: '/vendor/fonts/ibm-plex-sans-latin-var.woff2',
+        as: 'font',
+        type: 'font/woff2',
         crossorigin: 'anonymous',
       },
     },
@@ -195,6 +202,12 @@ const config: Config = {
   stylesheets: [
     {
       href: '/vendor/katex/katex.min.css',
+      type: 'text/css',
+    },
+    // Web fonts (IBM Plex Sans/Mono, Noto Sans Arabic/Hebrew), served from
+    // the site rather than Google Fonts (static/vendor/README.md).
+    {
+      href: '/vendor/fonts/fonts.css',
       type: 'text/css',
     },
   ],

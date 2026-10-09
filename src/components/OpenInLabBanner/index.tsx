@@ -190,9 +190,11 @@ export default function OpenInLabBanner({ notebookPath, description }: OpenInLab
                   }
                   style={{
                     padding: '0.25rem 0.75rem',
+                    // Fixed IBM blue / red, not the theme primary: white text on
+                    // dark mode's light primary (#78a9ff) was only 2.35:1.
                     backgroundColor: binderPhase === 'failed'
-                      ? 'var(--ifm-color-danger)'
-                      : 'var(--ifm-color-primary)',
+                      ? '#da1e28'
+                      : '#0f62fe',
                     color: '#fff',
                     borderRadius: '4px',
                     fontWeight: 600,

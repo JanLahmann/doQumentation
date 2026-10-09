@@ -1,18 +1,36 @@
-import React, { useState } from 'react';
-import BrowserOnly from '@docusaurus/BrowserOnly';
+import React, { useEffect, useState } from 'react';
 import Translate, {translate} from '@docusaurus/Translate';
 
-const STORAGE_KEY = 'dq-beta-notice-dismissed';
+// Dismissal lasts for the browser session. The banner is in the static HTML
+// (so it does not push the page down when it appears); an inline head script
+// in docusaurus.config.ts sets `html[data-dq-beta-dismissed]` from this key
+// before first paint, and custom.css hides the banner under that attribute.
+export const BETA_NOTICE_STORAGE_KEY = 'dq-beta-notice-dismissed';
 
-function BetaNoticeBanner(): React.JSX.Element | null {
-  const [dismissed, setDismissed] = useState(
-    () => sessionStorage.getItem(STORAGE_KEY) === '1',
-  );
+function readDismissed(): boolean {
+  try {
+    return sessionStorage.getItem(BETA_NOTICE_STORAGE_KEY) === '1';
+  } catch {
+    return false;
+  }
+}
+
+export default function BetaNotice(): React.JSX.Element | null {
+  // Start "shown" on both server and client so hydration matches; the head
+  // script has already hidden it if it was dismissed.
+  const [dismissed, setDismissed] = useState(false);
+  useEffect(() => {
+    if (readDismissed()) setDismissed(true);
+  }, []);
 
   if (dismissed) return null;
 
   return (
-    <div className="beta-notice">
+    <div
+      className="beta-notice"
+      role="region"
+      aria-label={translate({id: 'betaNotice.regionLabel', message: 'Beta notice', description: 'Accessible name of the beta notice banner at the top of every page'})}
+    >
       <span className="beta-notice__text">
         <Translate
           id="betaNotice.textWithDiscussions"
@@ -41,9 +59,12 @@ function BetaNoticeBanner(): React.JSX.Element | null {
         </Translate>
       </span>
       <button
+        type="button"
         className="beta-notice__close"
         onClick={() => {
-          sessionStorage.setItem(STORAGE_KEY, '1');
+          try { sessionStorage.setItem(BETA_NOTICE_STORAGE_KEY, '1'); } catch { /* private mode */ }
+          // Keeps it hidden on the next page, before that page's effect runs.
+          document.documentElement.setAttribute('data-dq-beta-dismissed', '');
           setDismissed(true);
         }}
         aria-label={translate({id: 'betaNotice.dismiss', message: 'Dismiss beta notice'})}
@@ -51,11 +72,5 @@ function BetaNoticeBanner(): React.JSX.Element | null {
         &times;
       </button>
     </div>
-  );
-}
-
-export default function BetaNotice(): React.JSX.Element {
-  return (
-    <BrowserOnly>{() => <BetaNoticeBanner />}</BrowserOnly>
   );
 }
