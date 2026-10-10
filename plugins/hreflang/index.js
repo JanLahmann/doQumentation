@@ -32,6 +32,12 @@
  *   `follow` keeps link equity flowing. Fallback pages are then also skipped for
  *   hreflang (Google: don't list noindex pages as alternates). EN builds have no
  *   fallbacks, so nothing is noindexed there.
+ *
+ * Also: points robots.txt at THIS build's sitemap.
+ *   static/robots.txt names https://doqumentation.org/sitemap.xml, and every
+ *   locale build copies it, so each subdomain told crawlers to read the EN
+ *   sitemap and its own sitemap.xml was never advertised. The `Sitemap:` line
+ *   is rewritten to the current locale's URL from i18n.localeConfigs.
  */
 
 const fs = require("fs");
@@ -154,6 +160,10 @@ module.exports = function hreflangPlugin(context, _options) {
       base: String(cfg.url).replace(/\/$/, ""),
     }));
 
+  const ownBase = String(
+    (localeConfigs[currentLocale] && localeConfigs[currentLocale].url) || context.siteConfig.url
+  ).replace(/\/$/, "");
+
   const enBase = (localeConfigs.en && localeConfigs.en.url
     ? String(localeConfigs.en.url)
     : "https://doqumentation.org"
@@ -163,6 +173,13 @@ module.exports = function hreflangPlugin(context, _options) {
     name: PLUGIN_NAME,
 
     async postBuild({ outDir }) {
+      const robots = path.join(outDir, "robots.txt");
+      if (fs.existsSync(robots)) {
+        const text = fs.readFileSync(robots, "utf8");
+        const updated = text.replace(/^Sitemap:.*$/m, `Sitemap: ${ownBase}/sitemap.xml`);
+        if (updated !== text) fs.writeFileSync(robots, updated, "utf8");
+      }
+
       if (alternates.length === 0) return;
 
       const files = walkHtml(outDir, []);
