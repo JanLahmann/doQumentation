@@ -251,3 +251,6 @@ module.exports = function hreflangPlugin(context, _options) {
     },
   };
 };
+
+// docusaurus.config.ts drops these routes from each locale's sitemap.xml.
+module.exports.collectFallbackRoutes = collectFallbackRoutes;

@@ -5,6 +5,7 @@ import {familyFooterColumn} from './family-footer';
 import remarkMath from 'remark-math';
 import rehypeKatex from 'rehype-katex';
 import {remarkContentFixes, fixTablesPreprocessor} from './plugins/content-fixes';
+import {collectFallbackRoutes} from './plugins/hreflang';
 
 // Umami analytics, unless the build is for an offline image
 // (Dockerfile.jupyter sets DOQ_ANALYTICS=0 for jupyter-local).
@@ -281,6 +282,23 @@ const config: Config = {
           // Docusaurus' tag pages add no SEO value.
           ignorePatterns: ['/admin', '/admin/**', '/search', '/tags/**', '/404*'],
           filename: 'sitemap.xml',
+          // A locale build serves EN content (noindex) for pages not yet
+          // translated in that language; list only pages meant for indexing.
+          // The locale is read from the item URLs' host (each locale is built
+          // with its own subdomain as site url).
+          createSitemapItems: async ({defaultCreateSitemapItems, ...params}) => {
+            const items = await defaultCreateSitemapItems(params);
+            if (items.length === 0) return items;
+            const host = new URL(items[0].url).hostname;
+            const locale = Object.entries(config.i18n?.localeConfigs ?? {})
+              .find(([, c]) => c?.url && new URL(c.url).hostname === host)?.[0];
+            const fallbacks: Set<string> = collectFallbackRoutes(__dirname, locale);
+            if (fallbacks.size === 0) return items;
+            return items.filter((item) => {
+              const route = new URL(item.url).pathname.replace(/\/$/, '') || '/';
+              return !fallbacks.has(route);
+            });
+          },
         },
       } satisfies Preset.Options,
     ],
