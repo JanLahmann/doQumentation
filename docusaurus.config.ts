@@ -390,7 +390,7 @@ const config: Config = {
               href: 'https://github.com/JanLahmann/doQumentation/discussions',
             },
             {
-              label: 'Legal / Impressum',
+              label: 'Legal & Privacy',
               to: '/legal',
             },
           ],
