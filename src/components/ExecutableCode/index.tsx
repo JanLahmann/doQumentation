@@ -37,6 +37,10 @@ import {
   clearBinderSession,
   cancelBinderBuild,
   getIBMQuantumPlan,
+  getQiskitTag,
+  setQiskitTag,
+  LIGHT_QISKIT_TAG,
+  LIGHT_QISKIT_RUNTIME,
   type JupyterConfig,
   type BinderSession,
 } from '../../config/jupyter';
@@ -2560,6 +2564,35 @@ export default function ExecutableCode({
                 <>
                   {' '}
                   {translate({id: 'executable.versionCheck.colab', message: 'Or use Open in Colab, which installs the newest version.'})}
+                </>
+              )}
+              {/* Binder only: the light QuBins image already ships a new enough
+                  qiskit-ibm-runtime, so one click replaces the manual upgrade. */}
+              {jupyterConfig?.environment === 'github-pages' &&
+                p.dist === 'qiskit-ibm-runtime' &&
+                getQiskitTag() !== LIGHT_QISKIT_TAG &&
+                !isOlderVersion(LIGHT_QISKIT_RUNTIME, p.need) && (
+                <>
+                  {' '}
+                  <Translate
+                    id="executable.versionCheck.lightImage"
+                    values={{ pkg: <code>{p.dist}</code>, runtime: LIGHT_QISKIT_RUNTIME }}
+                  >
+                    {'Or switch Binder to the light Qiskit image, which already has {pkg} {runtime} (it lacks the Qiskit addons and Matplotlib; change it back in Settings).'}
+                  </Translate>
+                  {' '}
+                  <button
+                    type="button"
+                    className="executable-code__button"
+                    onClick={() => {
+                      setQiskitTag(LIGHT_QISKIT_TAG);
+                      cancelBinderBuild();
+                      clearBinderSession();
+                      window.location.reload();
+                    }}
+                  >
+                    {translate({id: 'executable.versionCheck.lightImageButton', message: 'Switch and reload'})}
+                  </button>
                 </>
               )}
             </p>

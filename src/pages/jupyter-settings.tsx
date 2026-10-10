@@ -46,6 +46,7 @@ import {
   setQiskitTag,
   SUPPORTED_QISKIT_TAGS,
   DEFAULT_QISKIT_TAG,
+  LIGHT_QISKIT_RUNTIME,
   DEFAULT_FAKE_DEVICE,
   type QiskitTag,
   getWorkshopPool,
@@ -638,10 +639,15 @@ export default function JupyterSettings(): React.JSX.Element {
                     onChange={(e) => handleQiskitTagChange(e.target.value as QiskitTag)}
                   >
                     {SUPPORTED_QISKIT_TAGS.map((tag) => {
-                      const ver = tag.replace('-xl', '');
+                      const ver = tag.replace(/-(xl|small)$/, '');
+                      const label = tag.endsWith('-small')
+                        ? translate(
+                            {id: 'settings.qiskit.optionLight', message: 'Qiskit {version} light (IBM Runtime {runtime}, no addons)'},
+                            {version: ver, runtime: LIGHT_QISKIT_RUNTIME})
+                        : `Qiskit ${ver}`;
                       return (
                         <option key={tag} value={tag}>
-                          {`Qiskit ${ver}`}{tag === DEFAULT_QISKIT_TAG ? ' ✓' : ''}
+                          {label}{tag === DEFAULT_QISKIT_TAG ? ' ✓' : ''}
                         </option>
                       );
                     })}
@@ -649,6 +655,10 @@ export default function JupyterSettings(): React.JSX.Element {
                   <p style={{ fontSize: '0.85rem', color: 'var(--ifm-color-content-secondary)', marginTop: '0.35rem' }}>
                     <Translate id="settings.qiskit.help">
                       Choose which Qiskit version the Binder backend runs. The default (✓) matches doQumentation's current pin. Pick an older version if a notebook needs it.
+                    </Translate>
+                    {' '}
+                    <Translate id="settings.qiskit.helpLight" values={{runtime: LIGHT_QISKIT_RUNTIME}}>
+                      {'The light image has only Qiskit, Qiskit Aer and IBM Runtime {runtime}: it suits the guides that need IBM Runtime {runtime}, which the default image does not have yet. Pages that use Qiskit addons, or draw circuits and plots with Matplotlib, may not run there; use the default image for them.'}
                     </Translate>
                   </p>
                 </div>

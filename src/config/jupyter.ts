@@ -64,11 +64,25 @@ const STORAGE_KEY_BACKEND_OVERRIDE = 'doqumentation_backend_override';
 // mybinder URL points at. Only affects the Binder tier; CE/local are baked
 // in / user-controlled. null = use the default (current) tag.
 const STORAGE_KEY_QISKIT_VERSION = 'doqumentation_qiskit_version';
-// Allow-list of exposed QuBins image tags (current + 2 prior, -xl size).
-// Pre-2.0 Qiskit APIs differ enough that the tutorials won't run, so we don't
-// expose older.
-export const SUPPORTED_QISKIT_TAGS = ['2.5-xl', '2.4-xl', '2.3-xl'] as const;
+// Allow-list of exposed QuBins image tags (current + 2 prior, -xl size, plus
+// the current minor's light -small image). Pre-2.0 Qiskit APIs differ enough
+// that the tutorials won't run, so we don't expose older.
+export const SUPPORTED_QISKIT_TAGS = ['2.5-xl', '2.5-small', '2.4-xl', '2.3-xl'] as const;
 export type QiskitTag = typeof SUPPORTED_QISKIT_TAGS[number];
+// The light image (QuBins versions/2.5-small/requirements.txt): qiskit,
+// qiskit-aer and an unpinned qiskit-ibm-runtime only, so it ships the newest
+// runtime (0.50.0 as of 2026-10-10) while 2.5-xl is held below 0.50 by
+// qiskit-serverless (QuBins#148). No addons, no matplotlib/pylatexenc, no
+// graphviz, and no nbgitpuller or git (see qiskitTagHasNbgitpuller). Offered
+// to pages that need a newer runtime than the default image has
+// (src/config/pageRequirements.json).
+export const LIGHT_QISKIT_TAG: QiskitTag = '2.5-small';
+/** Lowest qiskit-ibm-runtime LIGHT_QISKIT_TAG ships (unpinned there, so it only rises). */
+export const LIGHT_QISKIT_RUNTIME = '0.50';
+/** QuBins -small images ship neither nbgitpuller nor git, so "Open in JupyterLab" cannot git-pull into them. */
+export function qiskitTagHasNbgitpuller(tag: QiskitTag): boolean {
+  return !tag.endsWith('-small');
+}
 // Default Binder image tag = current Qiskit level. MUST stay in lockstep with
 // the QuBins tag Dockerfile.jupyter builds the CE/Docker image FROM.
 // A CI guard (ci.yml "qiskit-lockstep") fails the build if they diverge, so a
@@ -920,10 +934,16 @@ function buildNbgitpullerQuery(notebookPath: string, locale?: string): string {
 export function getBinderLabUrl(config: JupyterConfig, notebookPath: string, locale?: string): string | null {
   if (!config.binderUrl) return null;
   const gitPullQuery = buildNbgitpullerQuery(notebookPath, locale);
+  // A light (-small) image has no nbgitpuller: a fresh launch from this link
+  // uses the default image instead (openBinderLab copies the notebook into a
+  // running light session through the contents API).
+  const binderUrl = config.environment === 'github-pages' && !qiskitTagHasNbgitpuller(getQiskitTag())
+    ? `https://mybinder.org/v2/gh/QuBins/qiskit-images/${DEFAULT_QISKIT_TAG}`
+    : config.binderUrl;
   // mybinder's `urlpath` query param is forwarded to the JupyterHub user
   // session as the post-launch URL. The whole nbgitpuller query is
   // URL-encoded once into that param.
-  return `${config.binderUrl}?urlpath=${encodeURIComponent(gitPullQuery)}`;
+  return `${binderUrl}?urlpath=${encodeURIComponent(gitPullQuery)}`;
 }
 
 // ── Binder session reuse ──
@@ -1239,6 +1259,34 @@ function formatElapsedCompact(s: number): string {
   return r > 0 ? `${m}m ${r}s` : `${m}m`;
 }
 
+/**
+ * Copy one notebook from its notebooks branch into a running session's home
+ * directory (Jupyter contents API) and return the Lab URL that opens it. Used
+ * for light images, which cannot git-pull. On failure, returns the Lab root.
+ */
+async function copyNotebookIntoSession(session: BinderSession, notebookPath: string, locale?: string): Promise<string> {
+  const token = encodeURIComponent(session.token);
+  const { repoUrl, branch } = getNotebookContentRepo(locale);
+  const path = mapBinderNotebookPath(notebookPath);
+  const name = path.split('/').pop() || path;
+  try {
+    const repo = repoUrl.replace('https://github.com/', '');
+    const resp = await fetch(`https://raw.githubusercontent.com/${repo}/${branch}/${path}`);
+    if (!resp.ok) throw new Error(`notebook fetch ${resp.status}`);
+    const content = await resp.json();
+    const put = await fetch(`${session.url}api/contents/${encodeURIComponent(name)}?token=${token}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ type: 'notebook', format: 'json', content }),
+    });
+    if (!put.ok) throw new Error(`contents PUT ${put.status}`);
+    return `${session.url}lab/tree/${encodeURIComponent(name)}?token=${token}`;
+  } catch (err) {
+    console.warn('[jupyter] could not copy the notebook into the session:', err);
+    return `${session.url}lab?token=${token}`;
+  }
+}
+
 export function openBinderLab(
   config: JupyterConfig,
   notebookPath: string,
@@ -1285,13 +1333,17 @@ export function openBinderLab(
         if (warn) warn.style.display = 'block';
       }
     } catch { /* tab navigated away */ }
-  }).then((session) => {
+  }).then(async (session) => {
     if (timerInterval) clearInterval(timerInterval);
     let labUrl: string;
     if (isCE) {
       // CE has notebooks baked into the image at /home/jovyan/{locale}/{path}.
       const encodedNbPath = nbPath.split('/').map(encodeURIComponent).join('/');
       labUrl = `${session.url}lab/tree/${encodedNbPath}?token=${encodeURIComponent(session.token)}`;
+    } else if (!qiskitTagHasNbgitpuller(getQiskitTag())) {
+      // A light (-small) image has no nbgitpuller: copy this one notebook into
+      // the session through the Jupyter contents API instead.
+      labUrl = await copyNotebookIntoSession(session, notebookPath, locale);
     } else {
       // QuBins image has no notebooks — nbgitpuller clones them in.
       const gitPullQuery = buildNbgitpullerQuery(notebookPath, locale);
