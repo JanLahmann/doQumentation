@@ -15,6 +15,13 @@
  *      images  wrap very wide output images (circuit drawings with
  *              fold=-1) in a horizontally scrollable box, so they keep a
  *              legible height instead of shrinking to a sliver.
+ *      anchors upstream marks link targets with `<span id="…"></span>` and
+ *              `<a id="…"></a>`. MDX renders JSX html tags as plain
+ *              elements, so Docusaurus never registers those ids and
+ *              reports every link to them as a broken anchor. Render them
+ *              through <AnchorTarget> (src/theme/MDXComponents), which
+ *              registers the id; the page source and its PO entries stay
+ *              as they are.
  *
  * The broken-link ratchet (scripts/check-broken-links.py) fails CI when a
  * build reports a broken link that is not in its baseline.
@@ -150,6 +157,20 @@ function isWideImage(url, staticDir) {
   return !!dims && dims.height > 0 && dims.width / dims.height > WIDE_RATIO;
 }
 
+// --------------------------------------------------------------- anchors
+
+const ANCHOR_TAGS = new Set(['span', 'a']);
+
+/** `<span id="x">` / `<a id="x">` (no href) → `<AnchorTarget as="span" id="x">`. */
+function fixAnchorTarget(node) {
+  if (!ANCHOR_TAGS.has(node.name)) return;
+  const attrs = node.attributes.filter((a) => a.type === 'mdxJsxAttribute');
+  if (attrs.some((a) => a.name === 'href')) return;
+  if (!attrs.some((a) => a.name === 'id' && typeof a.value === 'string' && a.value)) return;
+  node.attributes.push({type: 'mdxJsxAttribute', name: 'as', value: node.name});
+  node.name = 'AnchorTarget';
+}
+
 // ------------------------------------------------------------ the plugin
 
 function remarkContentFixes(options = {}) {
@@ -165,6 +186,7 @@ function remarkContentFixes(options = {}) {
             a.value = fixUrl(a.value, filePath);
           }
         }
+        fixAnchorTarget(node);
       }
       if (!node.children) return;
       node.children.forEach(walk);
@@ -194,4 +216,4 @@ function remarkContentFixes(options = {}) {
   };
 }
 
-module.exports = {remarkContentFixes, fixTablesPreprocessor, fixTables, fixUrl, readDims};
+module.exports = {remarkContentFixes, fixTablesPreprocessor, fixTables, fixUrl, fixAnchorTarget, readDims};
