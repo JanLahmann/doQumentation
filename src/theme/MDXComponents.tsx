@@ -1,5 +1,7 @@
 import React from 'react';
 import MDXComponents from '@theme-original/MDXComponents';
+import useBrokenLinks from '@docusaurus/useBrokenLinks';
+import {useAnchorTargetClassName} from '@docusaurus/theme-common';
 import Admonition from '@theme/Admonition';
 import DefinitionTooltip from '@site/src/components/CourseComponents/DefinitionTooltip';
 import Figure from '@site/src/components/CourseComponents/Figure';
@@ -37,6 +39,16 @@ function AccordionItem({ title, children }: { title?: string; children?: React.R
   );
 }
 
+// Upstream's `<span id="…"></span>` / `<a id="…"></a>` link targets, renamed to
+// this by plugins/content-fixes: registers the id with Docusaurus's broken-anchor
+// check (a plain JSX html tag in MDX is never registered).
+function AnchorTarget({ as: Tag = 'span', className, ...props }: React.HTMLAttributes<HTMLElement> & { as?: 'span' | 'a' }) {
+  useBrokenLinks().collectAnchor(props.id);
+  const anchorTargetClassName = useAnchorTargetClassName(props.id);
+  const cls = [anchorTargetClassName, className].filter(Boolean).join(' ') || undefined;
+  return <Tag className={cls} {...props} />;
+}
+
 export default {
   ...MDXComponents,
   Admonition,
@@ -55,4 +67,5 @@ export default {
   BookmarksList,
   Accordion,
   AccordionItem,
+  AnchorTarget,
 };

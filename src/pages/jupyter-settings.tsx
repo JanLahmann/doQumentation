@@ -11,6 +11,7 @@
 import React, { useState, useEffect } from 'react';
 import Layout from '@theme/Layout';
 import Link from '@docusaurus/Link';
+import useBrokenLinks from '@docusaurus/useBrokenLinks';
 import Translate, {translate} from '@docusaurus/Translate';
 import InfoIcon from '@site/src/components/InfoIcon';
 import {
@@ -153,6 +154,13 @@ const FALLBACK_BACKENDS = [
   { name: 'FakeFez', qubits: 156 },
   { name: 'FakeMarrakesh', qubits: 156 },
 ];
+
+// A section heading other pages link to (`/jupyter-settings#code-engine`):
+// registers its id so Docusaurus's broken-anchor check knows it exists.
+function SectionHeading({ as: Tag, id, ...props }: React.HTMLAttributes<HTMLHeadingElement> & { as: 'h2' | 'h3'; id: string }) {
+  useBrokenLinks().collectAnchor(id);
+  return <Tag id={id} {...props} />;
+}
 
 export default function JupyterSettings(): React.JSX.Element {
   const [config, setConfig] = useState<JupyterConfig | null>(null);
@@ -582,9 +590,9 @@ export default function JupyterSettings(): React.JSX.Element {
             ];
             return (
             <>
-              <h3 id="backend-selection" style={{ marginTop: '1.5rem' }}>
+              <SectionHeading as="h3" id="backend-selection" style={{ marginTop: '1.5rem' }}>
                 <Translate id="settings.backend.heading">Server Backend</Translate>
-              </h3>
+              </SectionHeading>
               <p style={{ fontSize: '0.9rem' }}>
                 <Translate id="settings.backend.description">
                   Choose which backend to use for code execution:
@@ -662,11 +670,11 @@ export default function JupyterSettings(): React.JSX.Element {
           {(backendOverride === 'code-engine' || backendOverride === 'custom' ||
             config?.environment === 'code-engine' || config?.environment === 'custom') && (
           <div style={{ marginTop: '1rem', padding: '1rem', border: '1px solid var(--ifm-color-emphasis-200)', borderRadius: '8px' }}>
-              <h3 id="code-engine-config" style={{ marginTop: 0 }}>
+              <SectionHeading as="h3" id="code-engine-config" style={{ marginTop: 0 }}>
                 {(backendOverride === 'custom' || (config?.environment === 'custom' && backendOverride !== 'code-engine'))
                   ? <Translate id="settings.server.customHeading">Custom Server</Translate>
                   : <Translate id="settings.ce.quickHeading">IBM Cloud Code Engine</Translate>}
-              </h3>
+              </SectionHeading>
               {ceDaysRemaining >= 0 && backendOverride !== 'custom' && (
                 <div className="alert alert--info margin-bottom--md">
                   <Translate id="settings.ce.daysRemaining" values={{days: ceDaysRemaining}}>
@@ -761,10 +769,10 @@ export default function JupyterSettings(): React.JSX.Element {
           {/* Execution Mode */}
           <hr style={{ margin: '2rem 0', borderColor: 'var(--ifm-color-emphasis-200)' }} />
 
-          <h2 id="execution-mode" style={{ marginTop: '2rem' }}>
+          <SectionHeading as="h2" id="execution-mode" style={{ marginTop: '2rem' }}>
             <Translate id="settings.executionMode.heading">Execution Mode</Translate>
             <InfoIcon tooltip={translate({id: 'settings.info.executionMode', message: 'Choose how quantum circuits are executed when you click Run on tutorial pages.'})} />
-          </h2>
+          </SectionHeading>
 
           <p>
             <Translate id="settings.executionMode.desc">
@@ -853,9 +861,9 @@ export default function JupyterSettings(): React.JSX.Element {
           {/* IBM Quantum Account */}
           <details className="jupyter-settings__details" open={executionMode === 'credentials' || ibmDaysRemaining >= 0}>
             <summary>
-              <h3 id="ibm-quantum" className="jupyter-settings__details-heading">
+              <SectionHeading as="h3" id="ibm-quantum" className="jupyter-settings__details-heading">
                 <Translate id="settings.ibm.heading">IBM Quantum Account</Translate>
-              </h3>
+              </SectionHeading>
             </summary>
             <div className="jupyter-settings__details-content">
 
@@ -1083,7 +1091,7 @@ QiskitRuntimeService.save_account(
           {/* Display Preferences */}
           <hr style={{ margin: '2rem 0', borderColor: 'var(--ifm-color-emphasis-200)' }} />
 
-          <h2 id="display" style={{ marginTop: '2rem' }}><Translate id="settings.display.heading">Display Preferences</Translate></h2>
+          <SectionHeading as="h2" id="display" style={{ marginTop: '2rem' }}><Translate id="settings.display.heading">Display Preferences</Translate></SectionHeading>
 
           <h3><Translate id="settings.display.fontSize.heading">Code Font Size</Translate></h3>
           <div className="dq-font-size-control">
@@ -1190,7 +1198,7 @@ QiskitRuntimeService.save_account(
 
           <hr style={{ margin: '2rem 0', borderColor: 'var(--ifm-color-emphasis-200)' }} />
 
-          <h2 id="manage-data" style={{ marginTop: '2rem' }}><Translate id="settings.data.heading">Manage Your Data</Translate></h2>
+          <SectionHeading as="h2" id="manage-data" style={{ marginTop: '2rem' }}><Translate id="settings.data.heading">Manage Your Data</Translate></SectionHeading>
 
           <p style={{ fontSize: '0.9rem', color: 'var(--ifm-color-emphasis-600)' }}>
             <Translate id="settings.data.privacyCompact">
@@ -1393,16 +1401,16 @@ QiskitRuntimeService.save_account(
 
           <hr style={{ margin: '2rem 0', borderColor: 'var(--ifm-color-emphasis-200)' }} />
 
-          <h2 id="advanced-settings" style={{ marginTop: '2.5rem' }}>
+          <SectionHeading as="h2" id="advanced-settings" style={{ marginTop: '2.5rem' }}>
             <Translate id="settings.advancedSettings.heading">Advanced Settings</Translate>
-          </h2>
+          </SectionHeading>
 
           {/* Code Engine */}
           <details className="jupyter-settings__details" open={config?.environment === 'code-engine' || ceDaysRemaining >= 0}>
             <summary>
-              <h3 id="code-engine" className="jupyter-settings__details-heading">
+              <SectionHeading as="h3" id="code-engine" className="jupyter-settings__details-heading">
                 <Translate id="settings.ce.heading">IBM Cloud Code Engine</Translate>
-              </h3>
+              </SectionHeading>
             </summary>
             <div className="jupyter-settings__details-content">
               <p>
@@ -1593,9 +1601,9 @@ QiskitRuntimeService.save_account(
           {/* Binder Packages */}
           <details className="jupyter-settings__details">
             <summary>
-              <h3 id="binder-packages" className="jupyter-settings__details-heading">
+              <SectionHeading as="h3" id="binder-packages" className="jupyter-settings__details-heading">
                 <Translate id="settings.binder.heading">Binder Packages</Translate>
-              </h3>
+              </SectionHeading>
             </summary>
             <div className="jupyter-settings__details-content">
               <p>
@@ -1641,9 +1649,9 @@ qiskit-ibm-catalog, qiskit-addon-utils, pyscf`}</code>
           {/* Setup Help */}
           <details className="jupyter-settings__details">
             <summary>
-              <h3 id="setup-help" className="jupyter-settings__details-heading">
+              <SectionHeading as="h3" id="setup-help" className="jupyter-settings__details-heading">
                 <Translate id="settings.help.heading">Setup Help</Translate>
-              </h3>
+              </SectionHeading>
             </summary>
             <div className="jupyter-settings__details-content">
               <h4><Translate id="settings.help.rasqberry.heading">RasQberry Setup</Translate></h4>
