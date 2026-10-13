@@ -87,6 +87,11 @@ export function qiskitTagHasNbgitpuller(tag: QiskitTag): boolean {
 // the QuBins tag Dockerfile.jupyter builds the CE/Docker image FROM.
 // A CI guard (ci.yml "qiskit-lockstep") fails the build if they diverge, so a
 // bump of one can't silently leave the other on an older Qiskit.
+// QuBins/qiskit-images keeps this image warm on mybinder (at least daily) by
+// naming the tag in its own warm list; doQumentation has no warm-up of its
+// own since 2026-10. Before changing the default, ask QuBins to warm the new
+// tag. The other SUPPORTED_QISKIT_TAGS are not guaranteed warm; the Settings
+// page says so.
 export const DEFAULT_QISKIT_TAG: QiskitTag = '2.5-xl';
 
 // Workshop pool (multiple CE instances for classroom use)

@@ -12,8 +12,9 @@ This check fails the build if they differ, so a bump of one can't silently
 leave the other on an older Qiskit.
 
 It also fails when a hard-coded QuBins tag elsewhere differs from the default:
-the daily Binder warm-up kept 2.3-xl hot (and the admin page linked to it) long
-after the site had moved to 2.5-xl, because "bump in lockstep" was a comment.
+our old daily Binder warm-up kept 2.3-xl hot (and the admin page linked to it)
+long after the site had moved to 2.5-xl, because "bump in lockstep" was a
+comment. Warming is QuBins' job now (see DEFAULT_QISKIT_TAG).
 Run by CI (ci.yml). Exit 0 = in lockstep, exit 1 = drift.
 """
 import re
@@ -25,7 +26,6 @@ DOCKERFILE = ROOT / "Dockerfile.jupyter"
 JUP = ROOT / "src" / "config" / "jupyter.ts"
 # Files that name the default QuBins tag literally; every tag they name must be it.
 TAG_USERS = [
-    ROOT / ".github" / "workflows" / "binder-warmup.yml",
     ROOT / "src" / "pages" / "admin.tsx",
 ]
 

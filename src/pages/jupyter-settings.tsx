@@ -669,6 +669,15 @@ export default function JupyterSettings(): React.JSX.Element {
                       {'The light image has only Qiskit, Qiskit Aer and IBM Runtime {runtime}: it suits the guides that need IBM Runtime {runtime}, which the default image does not have yet. Pages that use Qiskit addons, or draw circuits and plots with Matplotlib, may not run there; use the default image for them.'}
                     </Translate>
                   </p>
+                  {/* QuBins keeps only the default image warm on mybinder
+                      (DEFAULT_QISKIT_TAG in src/config/jupyter.ts). */}
+                  {qiskitTag !== DEFAULT_QISKIT_TAG && (
+                    <p className="alert alert--warning" style={{ fontSize: '0.85rem', marginTop: '0.5rem', padding: '0.5rem 0.75rem' }}>
+                      <Translate id="settings.qiskit.notWarm">
+                        Only the default version (✓) is kept ready on Binder. This one may have to be prepared first, so its first start can take several minutes (up to about 10).
+                      </Translate>
+                    </p>
+                  )}
                 </div>
               )}
 
