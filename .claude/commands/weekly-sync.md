@@ -30,7 +30,10 @@ Run the locale sync for the open "sync: upstream content …" PR (branch
    added sidebar categories: add the keys it lists to each
    `i18n/<locale>/docusaurus-plugin-content-docs/current.json` (translator
    agents fill the labels; product names stay English) and push to the PR.
-7. Report what you did in a few sentences.
+7. If the sync removed or renamed pages, refresh the 404 page's redirects with
+   `python3 scripts/generate-retired-pages.py` and commit
+   `src/theme/NotFound/Content/retiredPages.json` to the PR.
+8. Report what you did in a few sentences.
 
 Never hand-edit PO files or rendered pages, never edit `docs/`, and never
 push to main.

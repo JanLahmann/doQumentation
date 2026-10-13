@@ -7,6 +7,8 @@
  * in Docusaurus' own route table and, if a real page matches (slash stripped,
  * IBM-style /docs/en/… mapped), switch to it with a client-side history.replace:
  * no server round trip, so the GH Pages folder redirect cannot bounce us back.
+ * A page IBM retired or moved (retiredPages.json) goes on to its successor:
+ * here when we mirror it, else on IBM Quantum (window.location.replace).
  * Otherwise: a search box, near matches, and links to the main sections.
  * Works the same on every language subdomain (each build has its own routes).
  */
@@ -18,7 +20,16 @@ import {useHistory, useLocation} from '@docusaurus/router';
 import Heading from '@theme/Heading';
 import routes from '@generated/routes';
 import type {Props} from '@theme/NotFound/Content';
-import {collectPagePaths, findRedirect, ibmUrlFor, searchTermFromPath, suggestPages, type RouteLike} from './resolve';
+import {
+  collectPagePaths,
+  findRedirect,
+  findRetiredRedirect,
+  ibmUrlFor,
+  searchTermFromPath,
+  suggestPages,
+  type RouteLike,
+} from './resolve';
+import retiredPages from './retiredPages.json';
 import styles from './styles.module.css';
 
 let pageSet: Set<string> | null = null;
@@ -33,9 +44,14 @@ export default function NotFoundContent({className}: Props): React.JSX.Element {
 
   useEffect(() => {
     const target = findRedirect(location.pathname, pages());
-    if (target) {
+    const retired = target ? null : findRetiredRedirect(location.pathname, pages(), retiredPages.redirects);
+    if (target || retired?.kind === 'internal') {
       setState({path: location.pathname, redirecting: true});
-      history.replace(target + location.search + location.hash);
+      history.replace((target ?? retired!.to) + location.search + location.hash);
+    } else if (retired) {
+      // A page IBM retired or moved to a page not mirrored here.
+      setState({path: location.pathname, redirecting: true});
+      window.location.replace(retired.to);
     } else {
       setState({path: location.pathname, redirecting: false});
     }
