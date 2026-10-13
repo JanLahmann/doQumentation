@@ -1227,3 +1227,23 @@ def test_select_examples_rewrites_naturalness_only_on_fail_pages():
     # asked for explicitly (round.py repair passes 1)
     assert fix.select_examples({"verdict": "MINOR_ISSUES", "examples": [nat]}, naturalness_min=1) == [nat]
     assert fix.select_examples({"verdict": "MINOR_ISSUES", "examples": [nat, nat]}, naturalness_min=3) == []
+
+
+def test_translate_reapply_keeps_a_fix_made_since_the_first_apply(fix_env):
+    """sync.py finish re-applies every batch on each run. An entry the first
+    apply wrote and fix.py corrected afterwards must keep the correction."""
+    import polib
+    fix, tr, pairs = fix_env
+    _mark_fuzzy("guides/noise.mdx", 2, "Run the cell twice.")
+    d = io.WORK_DIR / "de"
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "batch-000-sonnet.ids.json").write_text(json.dumps(["guides/noise.mdx#2"]))
+    (d / "batch-000-sonnet.json").write_text(json.dumps([{"en": "Run the cell twice."}]))
+    (d / "batch-000-sonnet.out.json").write_text(json.dumps(["Führe die Zelle zweimal aus"], ensure_ascii=False))
+    assert tr.apply("de") == 0
+    path = str(io.po_path("de", "guides/noise.mdx"))
+    po = polib.pofile(path, wrapwidth=0)
+    po[2].msgstr = "Führe die Zelle zweimal aus."                 # what fix.py would write
+    po.save(path)
+    assert tr.apply("de") == 0
+    assert polib.pofile(path, wrapwidth=0)[2].msgstr == "Führe die Zelle zweimal aus."
