@@ -1968,7 +1968,7 @@ export default function ExecutableCode({
   }, []);
 
   // Per-phase timeout thresholds (seconds) — exceeding triggers slow startup warning.
-  // The QuBins images are warmed on mybinder after every publish: a launch
+  // QuBins keeps the default image warm on mybinder (daily): a launch
   // measured 10–40 s warm and 1.5–2.5 min cold. Past 3 min in one phase
   // (building/pushing: 10 min — repo2docker pulls ~0.9 GB from GHCR and pushes
   // it to the federation member's registry)
@@ -2578,7 +2578,7 @@ export default function ExecutableCode({
                     id="executable.versionCheck.lightImage"
                     values={{ pkg: <code>{p.dist}</code>, runtime: LIGHT_QISKIT_RUNTIME }}
                   >
-                    {'Or switch Binder to the light Qiskit image, which already has {pkg} {runtime} (it lacks the Qiskit addons and Matplotlib; change it back in Settings).'}
+                    {'Or switch Binder to the light Qiskit image, which already has {pkg} {runtime} (it lacks the Qiskit addons and Matplotlib, and is not kept ready, so its first start can take several minutes; change it back in Settings).'}
                   </Translate>
                   {' '}
                   <button
