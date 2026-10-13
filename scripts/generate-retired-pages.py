@@ -55,6 +55,23 @@ IBM = "https://quantum.cloud.ibm.com"
 MANUAL = {
     # Removed upstream in 5b24bb708 "Post selection changes" (#5737).
     "/guides/post-selection": f"{IBM}/docs/addons/qiskit-mitigation/guides/postselection-with-non-markovian-error-checks",
+    # Tutorials IBM renamed to shorter slugs without redirecting the old ones;
+    # each successor is the same tutorial (same title topic, same addon).
+    "/guides/colibri-td-pde": "/guides/colibritd-pde",
+    "/tutorials/build-repetition-codes": "/tutorials/repetition-codes",
+    "/tutorials/colibri-td-pde": "/tutorials/colibritd-pde",
+    "/tutorials/combine-error-mitigation-options-with-the-estimator-primitive": "/tutorials/combine-error-mitigation-techniques",
+    "/tutorials/generating-long-range-entanglement-with-measurements": "/tutorials/long-range-entanglement",
+    "/tutorials/improved-trotterized-time-evolution-with-approximate-quantum-compilation": "/tutorials/approximate-quantum-compilation-for-time-evolution",
+    "/tutorials/improving-energy-estimation-of-a-fermionic-hamiltonian-with-sqd": "/tutorials/sample-based-quantum-diagonalization",
+    "/tutorials/improving-estimation-of-expectation-values-with-operator-backpropagation": "/tutorials/operator-back-propagation",
+    "/tutorials/krylov-subspace-expansion": "/tutorials/krylov-quantum-diagonalization",
+    "/tutorials/long-range-entanglement-with-limited-qubit-connectivity": "/tutorials/long-range-entanglement",
+    "/tutorials/reduce-transpiled-circuit-depth-with-circuit-cutting": "/tutorials/depth-reduction-with-circuit-cutting",
+    "/tutorials/scaling-periodic-boundary-problems-with-circuit-cutting": "/tutorials/periodic-boundary-conditions-with-circuit-cutting",
+    "/tutorials/solving-maxcut-with-reduced-qubit-requirements-using-pauli-correlation-encoding": "/tutorials/pauli-correlation-encoding-for-qaoa",
+    "/tutorials/utility-scale-error-mitigation-with-probabilistic-error-amplification": "/tutorials/probabilistic-error-amplification",
+    "/tutorials/wire-cutting-to-improve-performance": "/tutorials/wire-cutting",
 }
 
 PAGE_EXT = (".mdx", ".md", ".ipynb")
@@ -144,6 +161,10 @@ def main() -> int:
     args = ap.parse_args()
 
     up = Path(args.upstream)
+    # A shallow clone hides most deletions: on a 376-commit clone the
+    # candidates fell from 96 to 58 and 38 redirects silently vanished.
+    if git(up, "rev-parse", "--is-shallow-repository")[0] == "true":
+        sys.exit(f"{up} is a shallow clone; run: git -C {up} fetch --unshallow --filter=blob:none origin")
     ref = args.ref
     if ref is None:
         try:
