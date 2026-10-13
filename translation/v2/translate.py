@@ -758,7 +758,7 @@ def apply(locale: str, prefix: str = "batch", note: str | None = None,
     # publishes stale translations (see the fuzzy note below).
     if confirm_fuzzy is None:
         confirm_fuzzy = prefix != "fix"
-    accepted = rejected = skipped = unchanged = english = withdrawn = 0
+    accepted = rejected = skipped = unchanged = english = withdrawn = kept = 0
     reversions: dict[str, list[dict]] = {}
     by_page: dict[str, list[tuple[int, str]]] = {}
     cache: dict[str, polib.POFile] = {}
@@ -809,6 +809,16 @@ def apply(locale: str, prefix: str = "batch", note: str | None = None,
             # would publish a translation of the PREVIOUS English.
             if final == e.msgstr and ("fuzzy" not in e.flags or not confirm_fuzzy):
                 unchanged += 1
+                continue
+            # A translate batch only ever holds entries that were pending when
+            # it was prepared (update.py's worklist). One that is no longer
+            # pending was written already — by an earlier apply of this same
+            # batch, and if its text now differs, it was corrected since (fix.py
+            # after a gate failure). sync.py finish re-applies every batch on
+            # each run, and on the 2026-10-12 sync that silently reverted four
+            # locales' fix.py repairs to the rejected-by-review originals.
+            if prefix == "batch" and not was_pending:
+                kept += 1
                 continue
             # A copy-only msgid (bare markup, math, an image) has nothing to
             # translate, so a msgstr equal to it is correct. Those turn up here
@@ -886,6 +896,7 @@ def apply(locale: str, prefix: str = "batch", note: str | None = None,
             po.save(str(io.po_path(locale, page)))
     print(f"{locale}: accepted {accepted}, rejected {rejected}, unfilled {skipped}"
           + (f", unchanged {unchanged}" if unchanged else "")
+          + (f", kept {kept} corrected since an earlier apply" if kept else "")
           + (f", REPLACED BY ENGLISH {english}" if english else "")
           + (f", review verdicts withdrawn {withdrawn}" if withdrawn else ""))
     if reversions:
