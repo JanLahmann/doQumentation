@@ -1,6 +1,6 @@
 # Translation Status
 
-*Auto-generated on 2026-10-15 by `translation-status.py --write-status`.*
+*Auto-generated on 2026-10-16 by `translation-status.py --write-status`.*
 *Do not edit manually — regenerate with:*
 
 ```bash
@@ -17,7 +17,7 @@ deep-review verdict in their PO header (`CONTRIBUTING-REVIEWS.md`).
 
 | Locale | Code | Pages | Entries | Fuzzy | Untranslated | Pages mid-update | Reviewed pages |
 |--------|------|------:|--------:|------:|-------------:|-----------------:|---------------:|
-| German | `de` | 456/456 | 28549 | 0 | 0 | 0 | 414 |
+| German | `de` | 456/456 | 28549 | 0 | 0 | 0 | 456 |
 | Spanish | `es` | 456/456 | 28549 | 0 | 0 | 0 | 414 |
 | Ukrainian | `uk` | 456/456 | 28549 | 0 | 0 | 0 | 414 |
 | Japanese | `ja` | 456/456 | 28549 | 0 | 0 | 0 | 414 |
@@ -41,11 +41,11 @@ deep-review verdict in their PO header (`CONTRIBUTING-REVIEWS.md`).
 
 | Section | Pages | Entries | Fuzzy | Untranslated | Reviewed pages |
 |---------|------:|--------:|------:|-------------:|---------------:|
-| Tutorials | 65/65 | 5387 | 0 | 0 | 54 |
-| Guides | 191/191 | 7890 | 0 | 0 | 167 |
-| Courses | 164/164 | 11683 | 0 | 0 | 160 |
-| Modules | 15/15 | 2300 | 0 | 0 | 14 |
-| Other | 21/21 | 1289 | 0 | 0 | 19 |
+| Tutorials | 65/65 | 5387 | 0 | 0 | 65 |
+| Guides | 191/191 | 7890 | 0 | 0 | 191 |
+| Courses | 164/164 | 11683 | 0 | 0 | 164 |
+| Modules | 15/15 | 2300 | 0 | 0 | 15 |
+| Other | 21/21 | 1289 | 0 | 0 | 21 |
 
 ### Spanish (`es`)
 

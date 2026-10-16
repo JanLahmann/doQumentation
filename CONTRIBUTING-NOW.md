@@ -1,6 +1,6 @@
 # What we need right now
 
-*Auto-generated on 2026-10-15 by `translation/scripts/contributing-status.py`.*
+*Auto-generated on 2026-10-16 by `translation/scripts/contributing-status.py`.*
 *Do not edit by hand — it will be overwritten. Regenerate with:*
 
 ```bash
@@ -55,7 +55,7 @@ pages whose last verdict was FAIL first (the first column here).
 |---|---|---|---|
 | `fr` | **1** | 42 | 2026-07-05 |
 | `ar` | **1** | 42 | 2026-08-29 |
-| `de` | **1** | 42 | 2026-09-29 |
+| `de` | **1** | 0 | 2026-09-29 |
 | `es` | **0** | 42 | 2026-06-26 |
 | `pl` | **0** | 42 | 2026-06-28 |
 | `pt` | **0** | 42 | 2026-07-05 |
@@ -89,7 +89,6 @@ delta pool.
 |---|---|---|---|
 | `ar` | **8** | 34 | 414/456 (90%) |
 | `cs` | **8** | 34 | 414/456 (90%) |
-| `de` | **8** | 34 | 414/456 (90%) |
 | `es` | **8** | 34 | 414/456 (90%) |
 | `fr` | **8** | 34 | 414/456 (90%) |
 | `he` | **8** | 34 | 414/456 (90%) |
@@ -105,18 +104,24 @@ delta pool.
 | `tl` | **8** | 34 | 414/456 (90%) |
 | `uk` | **8** | 34 | 414/456 (90%) |
 
+**Nearly exhausted** (fewer than 25 eligible) — still worth
+a short round, but expect to re-sweep files that already carry a
+verdict, or to accept a round smaller than 25:
+
+- `de` — 0 never read, 0 delta (456/456 reviewed)
+
 ---
 
 ## What recent rounds found
 
 | Round (seed) | Files | FAIL | Rate |
 |---|---|---|---|
+| `2026101601-de-JanLahmann` | 42 | 0 | 0.0% |
 | `2026100104-uk-JanLahmann` | 3 | 0 | 0.0% |
 | `2026100104-tl-JanLahmann` | 3 | 0 | 0.0% |
 | `2026100104-th-JanLahmann` | 3 | 0 | 0.0% |
 | `2026100104-ro-JanLahmann` | 3 | 0 | 0.0% |
 | `2026100104-pt-JanLahmann` | 3 | 0 | 0.0% |
-| `2026100104-pl-JanLahmann` | 3 | 0 | 0.0% |
 
 Typical FAIL rate is around **0%**. If your round comes
 in far above that, stop and tell the maintainer before fixing — it
