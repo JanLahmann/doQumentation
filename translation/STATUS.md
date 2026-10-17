@@ -1,6 +1,6 @@
 # Translation Status
 
-*Auto-generated on 2026-10-16 by `translation-status.py --write-status`.*
+*Auto-generated on 2026-10-17 by `translation-status.py --write-status`.*
 *Do not edit manually — regenerate with:*
 
 ```bash
@@ -18,11 +18,11 @@ deep-review verdict in their PO header (`CONTRIBUTING-REVIEWS.md`).
 | Locale | Code | Pages | Entries | Fuzzy | Untranslated | Pages mid-update | Reviewed pages |
 |--------|------|------:|--------:|------:|-------------:|-----------------:|---------------:|
 | German | `de` | 456/456 | 28549 | 0 | 0 | 0 | 456 |
-| Spanish | `es` | 456/456 | 28549 | 0 | 0 | 0 | 414 |
-| Ukrainian | `uk` | 456/456 | 28549 | 0 | 0 | 0 | 414 |
-| Japanese | `ja` | 456/456 | 28549 | 0 | 0 | 0 | 414 |
-| French | `fr` | 456/456 | 28549 | 0 | 0 | 0 | 414 |
-| Italian | `it` | 456/456 | 28549 | 0 | 0 | 0 | 414 |
+| Spanish | `es` | 456/456 | 28549 | 0 | 0 | 0 | 456 |
+| Ukrainian | `uk` | 456/456 | 28549 | 0 | 0 | 0 | 456 |
+| Japanese | `ja` | 456/456 | 28549 | 0 | 0 | 0 | 456 |
+| French | `fr` | 456/456 | 28549 | 0 | 0 | 0 | 456 |
+| Italian | `it` | 456/456 | 28549 | 0 | 0 | 0 | 456 |
 | Portuguese | `pt` | 456/456 | 28549 | 0 | 0 | 0 | 414 |
 | Tagalog | `tl` | 456/456 | 28549 | 0 | 0 | 0 | 414 |
 | Arabic | `ar` | 456/456 | 28549 | 0 | 0 | 0 | 414 |
@@ -51,51 +51,51 @@ deep-review verdict in their PO header (`CONTRIBUTING-REVIEWS.md`).
 
 | Section | Pages | Entries | Fuzzy | Untranslated | Reviewed pages |
 |---------|------:|--------:|------:|-------------:|---------------:|
-| Tutorials | 65/65 | 5387 | 0 | 0 | 54 |
-| Guides | 191/191 | 7890 | 0 | 0 | 167 |
-| Courses | 164/164 | 11683 | 0 | 0 | 160 |
-| Modules | 15/15 | 2300 | 0 | 0 | 14 |
-| Other | 21/21 | 1289 | 0 | 0 | 19 |
+| Tutorials | 65/65 | 5387 | 0 | 0 | 65 |
+| Guides | 191/191 | 7890 | 0 | 0 | 191 |
+| Courses | 164/164 | 11683 | 0 | 0 | 164 |
+| Modules | 15/15 | 2300 | 0 | 0 | 15 |
+| Other | 21/21 | 1289 | 0 | 0 | 21 |
 
 ### Ukrainian (`uk`)
 
 | Section | Pages | Entries | Fuzzy | Untranslated | Reviewed pages |
 |---------|------:|--------:|------:|-------------:|---------------:|
-| Tutorials | 65/65 | 5387 | 0 | 0 | 54 |
-| Guides | 191/191 | 7890 | 0 | 0 | 167 |
-| Courses | 164/164 | 11683 | 0 | 0 | 160 |
-| Modules | 15/15 | 2300 | 0 | 0 | 14 |
-| Other | 21/21 | 1289 | 0 | 0 | 19 |
+| Tutorials | 65/65 | 5387 | 0 | 0 | 65 |
+| Guides | 191/191 | 7890 | 0 | 0 | 191 |
+| Courses | 164/164 | 11683 | 0 | 0 | 164 |
+| Modules | 15/15 | 2300 | 0 | 0 | 15 |
+| Other | 21/21 | 1289 | 0 | 0 | 21 |
 
 ### Japanese (`ja`)
 
 | Section | Pages | Entries | Fuzzy | Untranslated | Reviewed pages |
 |---------|------:|--------:|------:|-------------:|---------------:|
-| Tutorials | 65/65 | 5387 | 0 | 0 | 54 |
-| Guides | 191/191 | 7890 | 0 | 0 | 167 |
-| Courses | 164/164 | 11683 | 0 | 0 | 160 |
-| Modules | 15/15 | 2300 | 0 | 0 | 14 |
-| Other | 21/21 | 1289 | 0 | 0 | 19 |
+| Tutorials | 65/65 | 5387 | 0 | 0 | 65 |
+| Guides | 191/191 | 7890 | 0 | 0 | 191 |
+| Courses | 164/164 | 11683 | 0 | 0 | 164 |
+| Modules | 15/15 | 2300 | 0 | 0 | 15 |
+| Other | 21/21 | 1289 | 0 | 0 | 21 |
 
 ### French (`fr`)
 
 | Section | Pages | Entries | Fuzzy | Untranslated | Reviewed pages |
 |---------|------:|--------:|------:|-------------:|---------------:|
-| Tutorials | 65/65 | 5387 | 0 | 0 | 54 |
-| Guides | 191/191 | 7890 | 0 | 0 | 167 |
-| Courses | 164/164 | 11683 | 0 | 0 | 160 |
-| Modules | 15/15 | 2300 | 0 | 0 | 14 |
-| Other | 21/21 | 1289 | 0 | 0 | 19 |
+| Tutorials | 65/65 | 5387 | 0 | 0 | 65 |
+| Guides | 191/191 | 7890 | 0 | 0 | 191 |
+| Courses | 164/164 | 11683 | 0 | 0 | 164 |
+| Modules | 15/15 | 2300 | 0 | 0 | 15 |
+| Other | 21/21 | 1289 | 0 | 0 | 21 |
 
 ### Italian (`it`)
 
 | Section | Pages | Entries | Fuzzy | Untranslated | Reviewed pages |
 |---------|------:|--------:|------:|-------------:|---------------:|
-| Tutorials | 65/65 | 5387 | 0 | 0 | 54 |
-| Guides | 191/191 | 7890 | 0 | 0 | 167 |
-| Courses | 164/164 | 11683 | 0 | 0 | 160 |
-| Modules | 15/15 | 2300 | 0 | 0 | 14 |
-| Other | 21/21 | 1289 | 0 | 0 | 19 |
+| Tutorials | 65/65 | 5387 | 0 | 0 | 65 |
+| Guides | 191/191 | 7890 | 0 | 0 | 191 |
+| Courses | 164/164 | 11683 | 0 | 0 | 164 |
+| Modules | 15/15 | 2300 | 0 | 0 | 15 |
+| Other | 21/21 | 1289 | 0 | 0 | 21 |
 
 ### Portuguese (`pt`)
 

@@ -1,6 +1,6 @@
 # What we need right now
 
-*Auto-generated on 2026-10-16 by `translation/scripts/contributing-status.py`.*
+*Auto-generated on 2026-10-17 by `translation/scripts/contributing-status.py`.*
 *Do not edit by hand — it will be overwritten. Regenerate with:*
 
 ```bash
@@ -53,23 +53,23 @@ pages whose last verdict was FAIL first (the first column here).
 
 | Locale | Last verdict FAIL | Never read | Oldest verdict |
 |---|---|---|---|
-| `fr` | **1** | 42 | 2026-07-05 |
+| `fr` | **2** | 0 | 2026-07-05 |
 | `ar` | **1** | 42 | 2026-08-29 |
 | `de` | **1** | 0 | 2026-09-29 |
-| `es` | **0** | 42 | 2026-06-26 |
 | `pl` | **0** | 42 | 2026-06-28 |
 | `pt` | **0** | 42 | 2026-07-05 |
 | `id` | **0** | 42 | 2026-09-12 |
-| `ja` | **0** | 42 | 2026-09-28 |
-| `it` | **0** | 42 | 2026-09-28 |
 | `ko` | **0** | 42 | 2026-09-28 |
-| `uk` | **0** | 42 | 2026-09-29 |
 | `tl` | **0** | 42 | 2026-09-29 |
 | `he` | **0** | 42 | 2026-09-29 |
 | `ms` | **0** | 42 | 2026-09-29 |
 | `th` | **0** | 42 | 2026-09-29 |
 | `ro` | **0** | 42 | 2026-09-29 |
 | `cs` | **0** | 42 | 2026-09-29 |
+| `es` | **0** | 0 | 2026-06-26 |
+| `ja` | **0** | 0 | 2026-09-28 |
+| `it` | **0** | 0 | 2026-09-28 |
+| `uk` | **0** | 0 | 2026-09-29 |
 
 **`--max-leaks` currently filters nothing, and that is expected.** A
 leak is a term the locale's `translation/glossary/<loc>.json` records
@@ -89,12 +89,8 @@ delta pool.
 |---|---|---|---|
 | `ar` | **8** | 34 | 414/456 (90%) |
 | `cs` | **8** | 34 | 414/456 (90%) |
-| `es` | **8** | 34 | 414/456 (90%) |
-| `fr` | **8** | 34 | 414/456 (90%) |
 | `he` | **8** | 34 | 414/456 (90%) |
 | `id` | **8** | 34 | 414/456 (90%) |
-| `it` | **8** | 34 | 414/456 (90%) |
-| `ja` | **8** | 34 | 414/456 (90%) |
 | `ko` | **8** | 34 | 414/456 (90%) |
 | `ms` | **8** | 34 | 414/456 (90%) |
 | `pl` | **8** | 34 | 414/456 (90%) |
@@ -102,13 +98,17 @@ delta pool.
 | `ro` | **8** | 34 | 414/456 (90%) |
 | `th` | **8** | 34 | 414/456 (90%) |
 | `tl` | **8** | 34 | 414/456 (90%) |
-| `uk` | **8** | 34 | 414/456 (90%) |
 
 **Nearly exhausted** (fewer than 25 eligible) — still worth
 a short round, but expect to re-sweep files that already carry a
 verdict, or to accept a round smaller than 25:
 
 - `de` — 0 never read, 0 delta (456/456 reviewed)
+- `es` — 0 never read, 0 delta (456/456 reviewed)
+- `fr` — 0 never read, 0 delta (456/456 reviewed)
+- `it` — 0 never read, 0 delta (456/456 reviewed)
+- `ja` — 0 never read, 0 delta (456/456 reviewed)
+- `uk` — 0 never read, 0 delta (456/456 reviewed)
 
 ---
 
@@ -116,12 +116,12 @@ verdict, or to accept a round smaller than 25:
 
 | Round (seed) | Files | FAIL | Rate |
 |---|---|---|---|
+| `2026101606-it-JanLahmann` | 42 | 0 | 0.0% |
+| `2026101605-fr-JanLahmann` | 42 | 1 | 2.4% |
+| `2026101604-ja-JanLahmann` | 42 | 0 | 0.0% |
+| `2026101603-uk-JanLahmann` | 42 | 0 | 0.0% |
+| `2026101602-es-JanLahmann` | 42 | 0 | 0.0% |
 | `2026101601-de-JanLahmann` | 42 | 0 | 0.0% |
-| `2026100104-uk-JanLahmann` | 3 | 0 | 0.0% |
-| `2026100104-tl-JanLahmann` | 3 | 0 | 0.0% |
-| `2026100104-th-JanLahmann` | 3 | 0 | 0.0% |
-| `2026100104-ro-JanLahmann` | 3 | 0 | 0.0% |
-| `2026100104-pt-JanLahmann` | 3 | 0 | 0.0% |
 
 Typical FAIL rate is around **0%**. If your round comes
 in far above that, stop and tell the maintainer before fixing — it
