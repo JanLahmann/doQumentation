@@ -1,6 +1,6 @@
 # What we need right now
 
-*Auto-generated on 2026-10-17 by `translation/scripts/contributing-status.py`.*
+*Auto-generated on 2026-10-18 by `translation/scripts/contributing-status.py`.*
 *Do not edit by hand — it will be overwritten. Regenerate with:*
 
 ```bash
@@ -36,9 +36,8 @@ A claim is one open issue labelled `translation-claim` (template:
 stop; it is the only reservation there is. List them any time with
 `gh issue list --repo JanLahmann/doQumentation --label translation-claim`.
 
-| Locale | Who | Doing | Since | Issue |
-|---|---|---|---|---|
-| `all` | @JanLahmann | ? | 2026-10-01 | [#918](https://github.com/JanLahmann/doQumentation/issues/918) |
+*(Could not reach GitHub while generating this file — check the
+[open claims](https://github.com/JanLahmann/doQumentation/issues?q=is%3Aissue+is%3Aopen+label%3Atranslation-claim) directly.)*
 
 ---
 
