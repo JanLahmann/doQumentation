@@ -829,6 +829,19 @@ function markCellExecuting(cell: Element): void {
   armSafetyNet();
 }
 
+/** Put the cursor in the next code cell's editor (after Shift+Enter). */
+function focusNextCell(cell: Element): void {
+  const cells = Array.from(document.querySelectorAll('.thebelab-cell'));
+  const next = cells[cells.indexOf(cell) + 1];
+  const editor = (next?.querySelector('.CodeMirror') as (Element & { CodeMirror?: { focus(): void } }) | null)?.CodeMirror;
+  if (!next || !editor) return;
+  // After thebelab's own Shift-Enter handler, so the key lands in this cell.
+  setTimeout(() => {
+    editor.focus();
+    next.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+  }, 0);
+}
+
 /** Whether a cell's output area shows anything (text or an image). */
 function cellHasOutput(cell: Element): boolean {
   const output = cell.querySelector(OUTPUT_SELECTOR);
@@ -872,13 +885,16 @@ function setupCellFeedback(attempt = 0): void {
         runBtn.addEventListener('click', handler);
         feedbackCleanupFns.push(() => runBtn.removeEventListener('click', handler));
       }
-      // Also handle Shift+Enter (thebelab's CodeMirror keybinding)
+      // Also handle Shift+Enter (thebelab's CodeMirror keybinding). As in
+      // Jupyter, it then moves on to the next cell, so a reader can step
+      // through the page by keyboard.
       const cm = cell.querySelector('.CodeMirror');
       if (cm) {
         const handler = (e: Event) => {
           const ke = e as KeyboardEvent;
           if (ke.shiftKey && ke.key === 'Enter') {
             markCellExecuting(cell);
+            focusNextCell(cell);
           }
         };
         cm.addEventListener('keydown', handler);
