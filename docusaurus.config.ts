@@ -6,6 +6,15 @@ import remarkMath from 'remark-math';
 import rehypeKatex from 'rehype-katex';
 import {remarkContentFixes, fixTablesPreprocessor} from './plugins/content-fixes';
 import {collectFallbackRoutes} from './plugins/hreflang';
+import upstreamFileMeta from './src/config/upstreamFileMeta.json';
+
+/** Route → date its English source last changed ("guides/x.mdx" → "/guides/x"). */
+function pageDates(): Map<string, string> {
+  const files = upstreamFileMeta.files as Record<string, {en_date?: string}>;
+  return new Map(Object.entries(files)
+    .filter(([, m]) => m.en_date)
+    .map(([file, m]) => ['/' + file.replace(/\.(mdx?|ipynb)$/, '').replace(/(^|\/)index$/, ''), m.en_date!]));
+}
 
 // Umami analytics, unless the build is for an offline image
 // (Dockerfile.jupyter sets DOQ_ANALYTICS=0 for jupyter-local).
@@ -225,10 +234,12 @@ const config: Config = {
     // Exposes per-page upstream/EN/translation-base dates via globalData.
     // Read by src/theme/DocItem/Footer to render the source-date block.
     './plugins/page-dates',
-    // Injects per-page hreflang alternate links into static HTML at build
-    // time (international SEO). Subdomain-per-locale means paths are identical
-    // across locales, so each page links to the same path on every subdomain.
+    // Noindexes untranslated-fallback pages and points robots.txt at the
+    // build's own sitemap (Docusaurus itself emits the hreflang alternates).
     './plugins/hreflang',
+    // Static redirect pages for retired routes (retiredPages.json), so
+    // crawlers get a redirect instead of a 404.
+    './plugins/retired-redirects',
     // Bundles src/kernel/*.py (kernel patches) as strings.
     './plugins/python-source',
     // Keeps src/config/pageIndex.json (the append-only page list behind the
@@ -278,18 +289,23 @@ const config: Config = {
           customCss: './src/css/custom.css',
         },
         sitemap: {
-          // Daily changefreq fits the weekly retranslation + upstream sync cadence.
-          changefreq: 'daily',
-          priority: 0.5,
+          // Google ignores changefreq and priority; leave them out.
+          changefreq: null,
+          priority: null,
           // Keep noindex/utility pages out of the sitemap. The admin page is
-          // password-gated and Disallow-ed in robots.txt; the search page and
-          // Docusaurus' tag pages add no SEO value.
-          ignorePatterns: ['/admin', '/admin/**', '/search', '/tags/**', '/404*'],
+          // password-gated and Disallow-ed in robots.txt; the search page,
+          // Docusaurus' tag pages, the Settings page and the workshop host
+          // pages add no search value.
+          ignorePatterns: ['/admin', '/admin/**', '/search', '/tags/**', '/404*',
+            '/jupyter-settings', '/workshop-*'],
           filename: 'sitemap.xml',
           // A locale build serves EN content (noindex) for pages not yet
           // translated in that language; list only pages meant for indexing.
           // The locale is read from the item URLs' host (each locale is built
-          // with its own subdomain as site url).
+          // with its own subdomain as site url). <lastmod> is the date the
+          // page's English source last changed upstream (upstreamFileMeta.json,
+          // written by sync-content.py), the same for every locale; git
+          // history is no use here, as the deploy checkout is shallow.
           createSitemapItems: async ({defaultCreateSitemapItems, ...params}) => {
             const items = await defaultCreateSitemapItems(params);
             if (items.length === 0) return items;
@@ -297,11 +313,13 @@ const config: Config = {
             const locale = Object.entries(config.i18n?.localeConfigs ?? {})
               .find(([, c]) => c?.url && new URL(c.url).hostname === host)?.[0];
             const fallbacks: Set<string> = collectFallbackRoutes(__dirname, locale);
-            if (fallbacks.size === 0) return items;
-            return items.filter((item) => {
-              const route = new URL(item.url).pathname.replace(/\/$/, '') || '/';
-              return !fallbacks.has(route);
-            });
+            const dates = pageDates();
+            return items
+              .filter((item) => !fallbacks.has(new URL(item.url).pathname.replace(/\/$/, '') || '/'))
+              .map((item) => {
+                const date = dates.get(new URL(item.url).pathname.replace(/\/$/, '') || '/');
+                return date ? {...item, lastmod: date} : item;
+              });
           },
         },
       } satisfies Preset.Options,
@@ -316,12 +334,8 @@ const config: Config = {
     metadata: [
       { property: 'og:type', content: 'website' },
       { property: 'og:site_name', content: 'doQumentation' },
-      { name: 'twitter:title', content: 'doQumentation' },
-      {
-        name: 'twitter:description',
-        content:
-          'Open-source frontend for IBM Quantum tutorials, courses, and documentation with live code execution.',
-      },
+      // No site-wide twitter:title/description: they would override every
+      // page's own og:title/og:description in link previews.
       { name: 'theme-color', content: '#161616' },
     ],
 
