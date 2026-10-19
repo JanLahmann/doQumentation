@@ -1,27 +1,12 @@
 /**
- * Docusaurus plugin that injects per-page hreflang alternate links into the
- * static HTML at build time, for international SEO.
+ * Docusaurus plugin for the per-locale SEO of the subdomain sites
+ * (https://<locale>.doqumentation.org, each built alone with --locale XX).
  *
- * Why a postBuild HTML rewrite (and not headTags / injectHtmlTags)?
- *   - Each locale is deployed to its OWN subdomain (https://<locale>.doqumentation.org)
- *     and built in isolation via `docusaurus build --locale XX`. A build only
- *     knows its own locale + URL, so Docusaurus's built-in path-based hreflang
- *     (which assumes /de/, /es/ under one domain) does not apply here.
- *   - Because routing is subdomain-per-locale, a page's PATH is identical across
- *     every locale — only the subdomain changes. So the equivalent of
- *     `/guides/foo` in German is `https://de.doqumentation.org/guides/foo`.
- *   - hreflang must be in the crawled HTML <head>; client-side injection is
- *     unreliable for SEO. headTags/injectHtmlTags are global (no per-page path),
- *     so we walk the emitted HTML in postBuild and inject path-aware tags.
+ * hreflang: Docusaurus itself emits one full set of alternates per page
+ * (every locale's i18n.localeConfigs url + x-default), so this plugin adds
+ * none. It used to inject a second set, which left every page with two.
  *
- * Emits, into every indexable page's <head>:
- *   <link rel="alternate" hreflang="<locale>" href="https://<sub>.doqumentation.org<path>" />  (× all locales)
- *   <link rel="alternate" hreflang="x-default" href="https://doqumentation.org<path>" />        (EN canonical)
- *
- * The locale → subdomain URL map is read from i18n.localeConfigs (the single
- * source of truth in docusaurus.config.ts), so adding a locale there is enough.
- *
- * Also: NOINDEXES untranslated-fallback pages.
+ * NOINDEXES untranslated-fallback pages.
  *   A non-EN locale build serves EN content (with a "not yet translated"
  *   banner) for any page not yet genuinely translated. Indexing that page would
  *   put EN text under a non-EN subdomain — thin/duplicate content. We detect
@@ -29,9 +14,9 @@
  *   the i18n MDX source (the marker is stripped from the rendered HTML, so we
  *   read the source at build time) and inject
  *   `<meta name="robots" content="noindex, follow">` into the page.
- *   `follow` keeps link equity flowing. Fallback pages are then also skipped for
- *   hreflang (Google: don't list noindex pages as alternates). EN builds have no
- *   fallbacks, so nothing is noindexed there.
+ *   `follow` keeps link equity flowing. docusaurus.config.ts also leaves them
+ *   out of the sitemap. EN builds have no fallbacks, so nothing is noindexed
+ *   there.
  *
  * Also: points robots.txt at THIS build's sitemap.
  *   static/robots.txt names https://doqumentation.org/sitemap.xml, and every
@@ -47,19 +32,9 @@ const PLUGIN_NAME = "hreflang";
 
 const FALLBACK_MARKER = "{/* doqumentation-untranslated-fallback */}";
 
-// Pages that must not advertise alternates / should not be crawled.
+// Pages that should not be crawled.
 // Mirrors robots.txt Disallow and Docusaurus' generated utility pages.
 const EXCLUDE_PATHS = new Set(["/admin", "/404", "/search"]);
-
-// hreflang values must be BCP-47. Map internal locale codes that differ to
-// valid tags; everything else is passed through unchanged (de, es, fr, ...).
-const HREFLANG_OVERRIDES = {
-  tl: "fil", // Filipino
-};
-
-function toHreflang(locale) {
-  return HREFLANG_OVERRIDES[locale] || locale;
-}
 
 /** Recursively collect every .html file under dir. */
 function walkHtml(dir, acc) {
@@ -152,21 +127,8 @@ module.exports = function hreflangPlugin(context, _options) {
   const currentLocale = i18n.currentLocale;
   const fallbackRoutes = collectFallbackRoutes(siteDir, currentLocale);
 
-  // Build [hreflang, baseUrl] pairs once. baseUrl has no trailing slash.
-  const alternates = Object.entries(localeConfigs)
-    .filter(([, cfg]) => cfg && cfg.url)
-    .map(([locale, cfg]) => ({
-      hreflang: toHreflang(locale),
-      base: String(cfg.url).replace(/\/$/, ""),
-    }));
-
   const ownBase = String(
     (localeConfigs[currentLocale] && localeConfigs[currentLocale].url) || context.siteConfig.url
-  ).replace(/\/$/, "");
-
-  const enBase = (localeConfigs.en && localeConfigs.en.url
-    ? String(localeConfigs.en.url)
-    : "https://doqumentation.org"
   ).replace(/\/$/, "");
 
   return {
@@ -180,10 +142,7 @@ module.exports = function hreflangPlugin(context, _options) {
         if (updated !== text) fs.writeFileSync(robots, updated, "utf8");
       }
 
-      if (alternates.length === 0) return;
-
       const files = walkHtml(outDir, []);
-      let injected = 0;
       let noindexed = 0;
 
       for (const file of files) {
@@ -217,37 +176,16 @@ module.exports = function hreflangPlugin(context, _options) {
           continue;
         }
 
-        // Skip pages the build marked noindex (e.g. password-gated admin), and
-        // drop the site-wide "index, follow" robots tag there so the page does
-        // not carry two conflicting robots metas.
+        // Pages the build marked noindex (e.g. password-gated admin): drop the
+        // site-wide "index, follow" robots tag there so the page does not
+        // carry two conflicting robots metas.
         if (/<meta[^>]+name=["']robots["'][^>]+noindex/i.test(html)) {
           const cleaned = dropIndexRobots(html);
           if (cleaned !== html) fs.writeFileSync(file, cleaned, "utf8");
-          continue;
-        }
-        // Idempotent: don't double-inject on re-runs.
-        if (html.includes('data-rh-hreflang')) continue;
-
-        const links = alternates
-          .map(
-            (a) =>
-              `<link data-rh-hreflang rel="alternate" hreflang="${a.hreflang}" href="${a.base}${route === "/" ? "/" : route}" />`
-          )
-          .join("");
-        const xDefault = `<link data-rh-hreflang rel="alternate" hreflang="x-default" href="${enBase}${route === "/" ? "/" : route}" />`;
-
-        const tags = links + xDefault;
-        const updated = html.replace(/<\/head>/i, `${tags}</head>`);
-        if (updated !== html) {
-          fs.writeFileSync(file, updated, "utf8");
-          injected++;
         }
       }
 
-      console.log(
-        `[${PLUGIN_NAME}] ${currentLocale}: injected alternates into ${injected} page(s) ` +
-          `(${alternates.length} locales + x-default); noindexed ${noindexed} fallback page(s)`
-      );
+      console.log(`[${PLUGIN_NAME}] ${currentLocale}: noindexed ${noindexed} fallback page(s)`);
     },
   };
 };
