@@ -153,7 +153,7 @@ def main() -> int:
     counts: dict[str, int] = {}
     for cat in pages.values():
         counts[cat] = counts.get(cat, 0) + 1
-    print(f"{args.out.relative_to(REPO)}: {len(pages)} pages {dict(sorted(counts.items()))}")
+    print(f"{args.out.relative_to(REPO) if args.out.is_relative_to(REPO) else args.out}: {len(pages)} pages {dict(sorted(counts.items()))}")
     print(f"  no label: {skipped}")
     return 0
 
