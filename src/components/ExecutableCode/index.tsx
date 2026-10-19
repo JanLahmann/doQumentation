@@ -296,10 +296,23 @@ function waitForKernelIdle(): Promise<void> {
     let sawBusy = false;
     let debounce: ReturnType<typeof setTimeout> | null = null;
     let fallback: ReturnType<typeof setTimeout> | null = null;
+    // The cell's own request: the first execute_input after the click carries
+    // its msg_id, and the kernel's idle status for that msg_id ends it, as in
+    // JupyterLab. The global status alone can stay at "busy" after a fast cell
+    // (it follows every status message, in arrival order), and Run All then
+    // waited on a one-line assert in guides/hello-world until clicked by hand.
+    let requestId: string | null = null;
+    const onIopub = (_: unknown, msg: any) => {
+      const parent = msg?.parent_header?.msg_id;
+      if (!requestId && msg?.header?.msg_type === 'execute_input') requestId = parent ?? null;
+      if (requestId && parent === requestId && msg?.header?.msg_type === 'status'
+          && msg?.content?.execution_state === 'idle') finish();
+    };
     const finish = () => {
       if (debounce) clearTimeout(debounce);
       if (fallback) clearTimeout(fallback);
       realKernel.statusChanged.disconnect(handler);
+      realKernel.iopubMessage?.disconnect?.(onIopub);
       idleWaiterInterrupts.delete(finish);
       resolve();
     };
@@ -317,6 +330,7 @@ function waitForKernelIdle(): Promise<void> {
       }
     };
     realKernel.statusChanged.connect(handler);
+    realKernel.iopubMessage?.connect?.(onIopub);
     // Connection loss or a kernel restart releases the wait at once.
     idleWaiterInterrupts.add(finish);
 
