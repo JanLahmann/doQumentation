@@ -34,17 +34,29 @@ def _dq_active_qubits(circuit):
 
 def _dq_add_fractional_gates(dev):
     """Heron devices offer rx and rzz to jobs that ask for fractional gates;
-    the fake devices' targets lack them, so add them (rzz on the cz edges)."""
+    the fake devices' targets lack them, so add them (rzz on the cz edges).
+    Each takes the duration and error of the native gate it stands beside (rx
+    those of sx, rzz those of cz, as on Heron): scheduling passes and
+    estimate_duration() need a duration on every gate."""
     from qiskit.circuit import Parameter
     from qiskit.circuit.library import RXGate, RZZGate
+    from qiskit.transpiler import InstructionProperties
     target = dev.target
+
+    def like(gate, qargs):
+        props = target[gate].get(qargs) if gate in target.operation_names else None
+        if props is None:
+            return None
+        return InstructionProperties(duration=props.duration, error=props.error)
+
     if "rx" not in target.operation_names:
         target.add_instruction(RXGate(Parameter("theta")),
-                               {(q,): None for q in range(dev.num_qubits)})
+                               {(q,): like("sx", (q,)) for q in range(dev.num_qubits)})
     two_q = next((g for g in ("cz", "ecr", "cx") if g in target.operation_names), None)
     if two_q and "rzz" not in target.operation_names:
         target.add_instruction(RZZGate(Parameter("theta")),
-                               {qargs: None for qargs in target.qargs_for_operation_name(two_q)})
+                               {qargs: like(two_q, qargs)
+                                for qargs in target.qargs_for_operation_name(two_q)})
 
 
 def _dq_device(cls_name, fractional=False):
@@ -200,6 +212,11 @@ try:
     _qic.QiskitServerless = _dq_needs_cloud("Qiskit Serverless (QiskitServerless)")
 except ImportError:
     pass
+try:
+    import qrmi as _dq_qrmi
+    _dq_qrmi.QuantumResource = _dq_needs_cloud("QRMI (QuantumResource, a QPU provisioned to your job)")
+except ImportError:
+    pass
 
 # Executor has an experimental local mode: switch it on, so executor
 # notebooks run on the stand-in device instead of failing.
@@ -245,6 +262,38 @@ try:
         _dq_rqp_mod.run_quantum_program = _dq_run_quantum_program
         if hasattr(_dq_ls, "run_quantum_program"):
             _dq_ls.run_quantum_program = _dq_run_quantum_program
+except (ImportError, AttributeError):
+    pass
+
+# A local result lacks what only the QPU reports: when it ran each pub
+# (metadata["execution"]) and the compiler's scheduler timing
+# (metadata["compilation"]). Say so instead of a bare KeyError.
+_DQ_QPU_ONLY = {"execution": "the execution spans (when the QPU ran each pub)",
+                "compilation": "the compilation metadata (the QPU's scheduler timing)"}
+
+
+class _DQ_Metadata(dict):
+    def __missing__(self, key):
+        if key in _DQ_QPU_ONLY:
+            raise _DQ_NeedsIBMCloud(f"result metadata[{key!r}], {_DQ_QPU_ONLY[key]},")
+        raise KeyError(key)
+
+
+try:
+    from qiskit_ibm_runtime.fake_provider.local_runtime_job import LocalRuntimeJob as _DQ_LRJ
+    if not getattr(_DQ_LRJ.result, "_dq_meta", False):
+        _DQ_lrj_result = _DQ_LRJ.result
+
+        def _dq_job_result(self, *a, **kw):
+            res = _DQ_lrj_result(self, *a, **kw)
+            for obj in (res, *getattr(res, "_pub_results", ())):
+                meta = getattr(obj, "_metadata", None)
+                if type(meta) is dict:
+                    obj._metadata = _DQ_Metadata(meta)
+            return res
+
+        _dq_job_result._dq_meta = True
+        _DQ_LRJ.result = _dq_job_result
 except (ImportError, AttributeError):
     pass
 
