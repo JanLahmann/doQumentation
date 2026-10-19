@@ -221,6 +221,33 @@ try:
 except (ImportError, AttributeError):
     pass
 
+# The executor primitives (qiskit-ibm-runtime 0.50's executor_estimator and
+# executor_sampler, and Executor) simulate locally through
+# AerSamplerV2.from_backend(device), a simulator of their own that bypasses
+# the device's run() above. They measure every qubit of the device, so
+# statevector runs out of memory on any device over 28 qubits and the result
+# comes back empty ("could not broadcast input array from shape (0,20)").
+# Hand them the device's simulator instead, on matrix_product_state there.
+try:
+    from qiskit_ibm_runtime.fake_provider import local_service as _dq_ls
+    _dq_rqp_mod = importlib.import_module("qiskit_ibm_runtime.fake_provider.executor.run_quantum_program")
+    _DQ_rqp = _dq_rqp_mod.run_quantum_program
+    if not getattr(_DQ_rqp, "_dq_mps", False):
+
+        def _dq_run_quantum_program(backend, program, options):
+            if any(backend is d for d in _dq_devices.values()) and backend.num_qubits > 28:
+                from qiskit_aer import AerSimulator as _DQ_Aer
+                backend = (_DQ_Aer.from_backend(backend, method="matrix_product_state")
+                           if _DQ_NOISE else _DQ_Aer(method="matrix_product_state"))
+            return _DQ_rqp(backend, program, options)
+
+        _dq_run_quantum_program._dq_mps = True
+        _dq_rqp_mod.run_quantum_program = _dq_run_quantum_program
+        if hasattr(_dq_ls, "run_quantum_program"):
+            _dq_ls.run_quantum_program = _dq_run_quantum_program
+except (ImportError, AttributeError):
+    pass
+
 # IBM's local simulation rejects these in __init__ with a bare ValueError;
 # say why and what to do. Patched on the class, so every import path sees it.
 for _dq_mod, _dq_cls in (("noise_learner", "NoiseLearner"), ("noise_learner_v3", "NoiseLearnerV3"),
