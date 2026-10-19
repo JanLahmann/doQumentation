@@ -45,6 +45,7 @@ import {
   type BinderSession,
 } from '../../config/jupyter';
 import {
+  cpuThreadsCode,
   isSimulatorExemptPath,
   pageSimulatorDevice,
   saveAccountGuardCode,
@@ -1400,6 +1401,9 @@ async function injectKernelSetup(kernelObj: unknown): Promise<void> {
   // Every mode, including none: a placeholder save_account() must never write
   // to ~/.qiskit (a Workshop container is shared by all participants, #966).
   await executeOnKernel(kernelObj, saveAccountGuardCode());
+  // Every mode: on a CPU quota (Binder: 1 of 48 reported CPUs) Aer's default
+  // thread count made simulations ~70× slower.
+  await executeOnKernel(kernelObj, cpuThreadsCode());
   // Installs only what is missing; instant when the image has everything.
   if (pageInstallCode) await executeOnKernel(kernelObj, pageInstallCode);
 

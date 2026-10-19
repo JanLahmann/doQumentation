@@ -126,7 +126,8 @@ def check_placeholders() -> list[str]:
 def run_page(page: str, mode: str, cfg: dict) -> list[str]:
     path = "/" + page
     exempt = any(page_matches(path, p) for p in cfg["exempt"])
-    prelude = [(KERNEL / "save_account_guard.py").read_text()]
+    prelude = [(KERNEL / "save_account_guard.py").read_text(),
+               (KERNEL / "cpu_threads.py").read_text()]
     device = None
     if not exempt:
         device = device_for(path, cfg)

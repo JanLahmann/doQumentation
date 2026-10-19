@@ -5,6 +5,7 @@
  * site injects. Keep these functions free of browser state: the check mirrors
  * them in Python.
  */
+import cpuThreadsPy from './cpu_threads.py';
 import saveAccountGuardPy from './save_account_guard.py';
 import simulatorPatchPy from './simulator_patch.py';
 import pages from './pages.json';
@@ -27,6 +28,11 @@ export function pageSimulatorDevice(path: string): string | null {
 
 export function saveAccountGuardCode(): string {
   return saveAccountGuardPy;
+}
+
+/** Caps Aer/OpenBLAS/OpenMP threads at the kernel's CPU quota (Binder: 1 of 48). */
+export function cpuThreadsCode(): string {
+  return cpuThreadsPy;
 }
 
 /** device: a qiskit_ibm_runtime.fake_provider class name; pinned: the page pins
