@@ -78,36 +78,7 @@ async function sha256(input: string): Promise<string> {
     .join('');
 }
 
-/** Decrypt an AES-256-GCM + PBKDF2 encrypted base64 blob with a password. */
-async function decryptWithPassword(encryptedBase64: string, password: string): Promise<string | null> {
-  try {
-    const packed = Uint8Array.from(atob(encryptedBase64), (c) => c.charCodeAt(0));
-    const salt = packed.slice(0, 16);
-    const iv = packed.slice(16, 28);
-    const ciphertext = packed.slice(28);
-
-    const keyMaterial = await crypto.subtle.importKey(
-      'raw', new TextEncoder().encode(password), 'PBKDF2', false, ['deriveKey']
-    );
-    const key = await crypto.subtle.deriveKey(
-      { name: 'PBKDF2', salt, iterations: 100_000, hash: 'SHA-256' },
-      keyMaterial,
-      { name: 'AES-GCM', length: 256 },
-      false,
-      ['decrypt']
-    );
-
-    const plaintext = await crypto.subtle.decrypt({ name: 'AES-GCM', iv }, key, ciphertext);
-    return new TextDecoder().decode(plaintext);
-  } catch {
-    return null;
-  }
-}
-
-const AdminPasswordContext = React.createContext<string>('');
-
 const SESSION_KEY = 'dq-admin-auth';
-const SESSION_PWD_KEY = 'dq-admin-pwd';
 
 function AdminGate({ children }: { children: React.ReactNode }) {
   const { siteConfig } = useDocusaurusContext();
@@ -117,7 +88,6 @@ function AdminGate({ children }: { children: React.ReactNode }) {
   const [checking, setChecking] = useState(true);
   const [input, setInput] = useState('');
   const [error, setError] = useState(false);
-  const [adminPassword, setAdminPassword] = useState('');
 
   // Check sessionStorage on mount
   useEffect(() => {
@@ -129,8 +99,6 @@ function AdminGate({ children }: { children: React.ReactNode }) {
     const stored = sessionStorage.getItem(SESSION_KEY);
     if (stored === expectedHash) {
       setAuthorized(true);
-      const pwd = sessionStorage.getItem(SESSION_PWD_KEY);
-      if (pwd) setAdminPassword(pwd);
     }
     setChecking(false);
   }, [expectedHash]);
@@ -141,8 +109,6 @@ function AdminGate({ children }: { children: React.ReactNode }) {
     const hash = await sha256(input);
     if (hash === expectedHash) {
       sessionStorage.setItem(SESSION_KEY, hash);
-      sessionStorage.setItem(SESSION_PWD_KEY, input);
-      setAdminPassword(input);
       setAuthorized(true);
     } else {
       setError(true);
@@ -203,55 +169,7 @@ function AdminGate({ children }: { children: React.ReactNode }) {
     );
   }
 
-  return (
-    <AdminPasswordContext.Provider value={adminPassword}>
-      {children}
-    </AdminPasswordContext.Provider>
-  );
-}
-
-/** A link whose URL is decrypted from an AES-256-GCM blob using the admin password. */
-function DecryptedLink({ encrypted, label, description }: { encrypted: string; label: string; description?: string }) {
-  const password = React.useContext(AdminPasswordContext);
-  const [url, setUrl] = useState<string | null>(null);
-
-  useEffect(() => {
-    if (!encrypted || !password) return;
-    decryptWithPassword(encrypted, password).then(setUrl);
-  }, [encrypted, password]);
-
-  if (!encrypted) {
-    return (
-      <li style={{ marginBottom: '0.5rem' }}>
-        <span style={{ color: 'var(--ifm-color-emphasis-500)' }}>{label} — not configured</span>
-      </li>
-    );
-  }
-  if (!url) {
-    return (
-      <li style={{ marginBottom: '0.5rem' }}>
-        <span style={{ color: 'var(--ifm-color-emphasis-500)' }}>{label} — decrypting...</span>
-      </li>
-    );
-  }
-  return (
-    <li style={{ marginBottom: '0.5rem' }}>
-      <a href={url} target="_blank" rel="noopener noreferrer">{label}</a>
-      {description && <span style={{ color: 'var(--ifm-color-emphasis-600)', marginLeft: '0.5rem' }}>— {description}</span>}
-    </li>
-  );
-}
-
-function EncryptedUmamiLink() {
-  const { siteConfig } = useDocusaurusContext();
-  const encrypted = (siteConfig.customFields?.adminEncryptedUmamiShareUrl as string) || '';
-  return (
-    <DecryptedLink
-      encrypted={encrypted}
-      label="Shared Dashboard (read-only)"
-      description="Public link — share with workshop hosts"
-    />
-  );
+  return <>{children}</>;
 }
 
 export default function AdminPage(): React.JSX.Element {
@@ -385,7 +303,6 @@ export default function AdminPage(): React.JSX.Element {
               <a href="https://cloud.umami.is" target="_blank" rel="noopener noreferrer">Umami Dashboard (admin)</a>
               <span style={{ color: 'var(--ifm-color-emphasis-600)', marginLeft: '0.5rem' }}>— Full dashboard — requires login</span>
             </li>
-            <EncryptedUmamiLink />
             <li style={{ marginBottom: '0.5rem' }}>
               <a href="https://search.google.com/search-console?resource_id=sc-domain%3Adoqumentation.org" target="_blank" rel="noopener noreferrer">Google Search Console</a>
               <span style={{ color: 'var(--ifm-color-emphasis-600)', marginLeft: '0.5rem' }}>— Search performance, indexing &amp; coverage (sc-domain:doqumentation.org) — requires Google login</span>

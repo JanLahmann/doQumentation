@@ -172,9 +172,6 @@ const config: Config = {
     adminPasswordHash: process.env.ADMIN_PASSWORD
       ? require('crypto').createHash('sha256').update(process.env.ADMIN_PASSWORD).digest('hex')
       : '',
-    // AES-256-GCM encrypted URLs, decrypted client-side with the admin password.
-    // Generate with: ADMIN_PASSWORD=secret node scripts/encrypt-for-admin.mjs "https://..."
-    adminEncryptedUmamiShareUrl: process.env.ADMIN_ENCRYPTED_UMAMI_SHARE_URL || '',
   },
 
   scripts: [
@@ -186,13 +183,20 @@ const config: Config = {
     // src/components/ExecutableCode/loadThebelab.ts loads it when a session
     // starts, so pages that never run code don't download and parse it.
     // Umami analytics — shared Fun with Quantum family property. Left out of
-    // offline builds (DOQ_ANALYTICS=0, the jupyter-local image).
-    ...(ANALYTICS ? [{
-      src: 'https://cloud.umami.is/script.js',
-      defer: true,
-      'data-website-id': '97f347ac-e7ba-4be3-b26f-ab4b328bdbf2',
-      'data-domains': 'doqumentation.org',
-    }] : []),
+    // offline builds (DOQ_ANALYTICS=0, the jupyter-local image). The family's
+    // standard filter (static/umami-before-send.js) loads first: it drops
+    // headless browsers and bots, and ?notrack / ?track switch tracking off
+    // and on for this browser.
+    ...(ANALYTICS ? [
+      { src: '/umami-before-send.js' },
+      {
+        src: 'https://cloud.umami.is/script.js',
+        defer: true,
+        'data-website-id': '97f347ac-e7ba-4be3-b26f-ab4b328bdbf2',
+        'data-domains': 'doqumentation.org',
+        'data-before-send': 'fwqUmamiBeforeSend',
+      },
+    ] : []),
   ],
 
   // KaTeX CSS for math rendering: the version rehype-katex renders with,
