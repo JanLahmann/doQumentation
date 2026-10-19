@@ -86,6 +86,8 @@ def main() -> int:
     ap.add_argument("--drop-matching", action="append", default=[], metavar="REGEX",
                     help="no label for a failure whose 'ename: evalue' matches REGEX, e.g. one "
                          "fixed in the image since the sweep (repeatable)")
+    ap.add_argument("--any-arch", action="store_true",
+                    help="accept a report not swept on x86_64 (not for the published labels)")
     ap.add_argument("--out", type=Path, default=OUT)
     args = ap.parse_args()
 
@@ -105,12 +107,19 @@ def main() -> int:
     swept_ref = subprocess.run(["git", "-C", str(REPO), "rev-parse", swept_ref],
                                capture_output=True, text=True).stdout.strip()
 
+    records = json.loads(args.report.read_text())
+    archs = sorted({rec.get("arch", "unknown") for rec in records})
+    if archs != ["x86_64"] and not args.any_arch:
+        sys.exit(f"{args.report} ran on {', '.join(archs)}; Binder runs x86_64 (amd64), and an "
+                 "arm64 image lacks packages without arm64 wheels. Sweep on amd64 "
+                 "(.github/workflows/notebook-sweep.yml), or pass --any-arch to look anyway.")
+
     shown = banner_notebooks()
     pages: dict[str, str] = {}
     details: dict[str, str] = {}
     skipped = {"no banner": 0, "changed since sweep": 0, "gone": 0, "dropped by --drop-matching": 0}
     drop = [re.compile(p) for p in args.drop_matching]
-    for rec in json.loads(args.report.read_text()):
+    for rec in records:
         path = rec["notebook"].removeprefix("/repo/")
         if path not in shown:
             skipped["no banner"] += 1
@@ -133,6 +142,7 @@ def main() -> int:
         "_generated_by": "scripts/notebook-sweep/make_page_status.py from a Pass S sweep; do not edit by hand",
         "sweepDate": date,
         "image": image,
+        "arch": archs[0] if len(archs) == 1 else archs,
         "notebooksRef": swept_ref[:10],
         "droppedPatterns": args.drop_matching,
         "pages": dict(sorted(pages.items())),

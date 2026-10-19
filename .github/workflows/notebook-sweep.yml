@@ -1,0 +1,118 @@
+name: Notebook sweep
+
+# Pass S of the notebook sweep (scripts/notebook-sweep/) on GitHub's amd64
+# runners, the platform Binder runs: every notebook on the notebooks branch,
+# in the site's QuBins image, with the site's own Simulator Mode patch, on
+# Binder's 1 CPU and 2 GB. The merged report feeds
+#   python3 scripts/notebook-sweep/make_page_status.py --report <artifact>/passS-aer/report.json
+# which refuses a report that did not run on x86_64 (an arm64 image lacks
+# packages without arm64 wheels, so a Mac sweep mislabels those pages).
+
+on:
+  # A change to this workflow runs it once with the defaults, as its own test.
+  pull_request:
+    paths:
+      - '.github/workflows/notebook-sweep.yml'
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: 'QuBins tag (empty: DEFAULT_QISKIT_TAG from src/config/jupyter.ts)'
+        default: ''
+      sim_mode:
+        description: 'Simulator Mode: aer (ideal, the default) or fake (noisy)'
+        type: choice
+        default: aer
+        options: [aer, fake]
+      cell_timeout:
+        description: 'Per-cell timeout in seconds ("heavy" beyond it)'
+        default: '300'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: notebook-sweep
+  cancel-in-progress: false
+
+env:
+  SHARDS: 16
+  # Inputs are empty on pull_request; these are the defaults.
+  SIM_MODE: ${{ inputs.sim_mode || 'aer' }}
+  CELL_TIMEOUT: ${{ inputs.cell_timeout || '300' }}
+  IMAGE_TAG: ${{ inputs.image_tag }}
+
+jobs:
+  shard:
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7
+        with:
+          ref: notebooks
+          path: nball
+
+      - name: Run this shard's notebooks
+        run: |
+          tag="$IMAGE_TAG"
+          [ -n "$tag" ] || tag=$(sed -n "s/^export const DEFAULT_QISKIT_TAG: QiskitTag = '\(.*\)';/\1/p" src/config/jupyter.ts)
+          test -n "$tag" || { echo "DEFAULT_QISKIT_TAG not found in src/config/jupyter.ts"; exit 1; }
+          image="ghcr.io/qubins/images:$tag"
+          echo "$image" > image.txt
+          # The same notebooks as sweep.py's discover_all(); shard i takes every SHARDS-th.
+          (cd nball && find tutorials guides learning -name '*.ipynb' -not -path '*/.ipynb_checkpoints/*' \
+            | LC_ALL=C sort) | awk -v n="$SHARDS" -v i=${{ matrix.shard }} 'NR % n == i {print "/repo/" $0}' > list.txt
+          echo "$(wc -l < list.txt) notebooks in shard ${{ matrix.shard }}"
+          mkdir -p out
+          docker run --rm --user root --cpus 1 --memory 2g \
+            -v "$PWD/nball:/repo:ro" -v "$PWD/scripts/notebook-sweep:/shim:ro" \
+            -v "$PWD/src:/src:ro" -v "$PWD/scripts:/scripts:ro" -v "$PWD/out:/out" \
+            -e DOQ_CELL_TIMEOUT="$CELL_TIMEOUT" -e DOQ_SHIM=site \
+            -e DOQ_SIM_MODE="$SIM_MODE" \
+            --entrypoint python3 "$image" /shim/run_all.py /out/batch-${{ matrix.shard }} $(cat list.txt)
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: shard-${{ matrix.shard }}
+          path: |
+            out/
+            image.txt
+
+  merge:
+    needs: shard
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7
+        with:
+          ref: notebooks
+          path: nball
+      - uses: actions/download-artifact@v8
+        with:
+          path: shards
+      - name: Merge the shards into one Pass S report
+        run: |
+          d=sweep/passS-$SIM_MODE
+          mkdir -p "$d"
+          cp -r shards/shard-*/out/batch-* "$d"/
+          ls "$d" | grep -c batch- | xargs -I{} echo "{} of $SHARDS shards reported"
+          python3 scripts/notebook-sweep/merge_reports.py "$d"
+          python3 - "$d" "$(cat shards/shard-0/image.txt)" "$(git -C nball rev-parse HEAD)" <<'PY'
+          import json, os, sys, time
+          d, image, ref = sys.argv[1:]
+          json.dump({"date": time.strftime("%Y-%m-%d", time.gmtime()), "image": image, "pass": "S",
+                     "sim_mode": os.environ["SIM_MODE"], "notebooks_ref": ref,
+                     "cell_timeout_s": int(os.environ["CELL_TIMEOUT"]), "platform": "linux/amd64",
+                     "limits": "1 CPU, 2 GB (Binder)"},
+                    open(f"{d}/meta.json", "w"), indent=2)
+          PY
+          cat "$d/report.md" >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: notebook-sweep
+          path: sweep/

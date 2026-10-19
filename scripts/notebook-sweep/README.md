@@ -43,13 +43,27 @@ The "Open in" banner on each notebook page shows one line from the last
 Pass S run: **runs**, **needs-ibm** (a cell needs IBM Quantum), **heavy**
 (a cell timed out or ran out of memory) or **issue** (anything else, with the
 error and a report link). The data is `src/config/pageRunStatus.json`; it is
-one sweep's snapshot, so refresh it after an image bump or a content sync:
+one sweep's snapshot, so refresh it after an image bump or a content sync.
+
+The labels describe Binder, so the sweep must run on **amd64 with 1 CPU and
+2 GB**, the way Binder does. A sweep of the native arm64 image on a Mac
+mislabelled pages as "issue" (missing `gem_suite`, `tenpy`: no arm64
+wheels), and `make_page_status.py` now refuses a report not run on x86_64.
+Run the **Notebook sweep** workflow (`.github/workflows/notebook-sweep.yml`,
+16 amd64 shards, about an hour), download its `notebook-sweep` artifact, then:
 
 ```bash
 git fetch origin notebooks
+python3 scripts/notebook-sweep/make_page_status.py --report <artifact>/passS-aer/report.json
+```
+
+Locally, `sweep.py` runs `--platform linux/amd64 --cpus 1 --memory 2g` by
+default (`DOQ_PLATFORM`, `DOQ_BINDER_LIMITS=0` to change), which an arm64 Mac
+emulates, slowly:
+
+```bash
 mkdir -p /tmp/nb && git archive origin/notebooks tutorials guides learning | tar -x -C /tmp/nb
 DOQ_NB_ROOT=/tmp/nb DOQ_NB_REF=origin/notebooks python3 scripts/notebook-sweep/sweep.py S
-python3 scripts/notebook-sweep/make_page_status.py --report .sweep-out/passS-aer/report.json
 ```
 
 `sweep.py` records the date, image and notebooks commit in the pass's
