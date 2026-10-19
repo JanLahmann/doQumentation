@@ -1,6 +1,6 @@
 # What we need right now
 
-*Auto-generated on 2026-10-18 by `translation/scripts/contributing-status.py`.*
+*Auto-generated on 2026-10-19 by `translation/scripts/contributing-status.py`.*
 *Do not edit by hand — it will be overwritten. Regenerate with:*
 
 ```bash
@@ -36,8 +36,9 @@ A claim is one open issue labelled `translation-claim` (template:
 stop; it is the only reservation there is. List them any time with
 `gh issue list --repo JanLahmann/doQumentation --label translation-claim`.
 
-*(Could not reach GitHub while generating this file — check the
-[open claims](https://github.com/JanLahmann/doQumentation/issues?q=is%3Aissue+is%3Aopen+label%3Atranslation-claim) directly.)*
+| Locale | Who | Doing | Since | Issue |
+|---|---|---|---|---|
+| `all` | @JanLahmann | ? | 2026-10-01 | [#918](https://github.com/JanLahmann/doQumentation/issues/918) |
 
 ---
 
@@ -53,15 +54,14 @@ pages whose last verdict was FAIL first (the first column here).
 | Locale | Last verdict FAIL | Never read | Oldest verdict |
 |---|---|---|---|
 | `fr` | **2** | 0 | 2026-07-05 |
-| `ar` | **1** | 42 | 2026-08-29 |
+| `pt` | **1** | 0 | 2026-07-05 |
+| `ar` | **1** | 0 | 2026-08-29 |
 | `de` | **1** | 0 | 2026-09-29 |
+| `tl` | **1** | 0 | 2026-09-29 |
+| `he` | **1** | 0 | 2026-09-29 |
 | `pl` | **0** | 42 | 2026-06-28 |
-| `pt` | **0** | 42 | 2026-07-05 |
 | `id` | **0** | 42 | 2026-09-12 |
 | `ko` | **0** | 42 | 2026-09-28 |
-| `tl` | **0** | 42 | 2026-09-29 |
-| `he` | **0** | 42 | 2026-09-29 |
-| `ms` | **0** | 42 | 2026-09-29 |
 | `th` | **0** | 42 | 2026-09-29 |
 | `ro` | **0** | 42 | 2026-09-29 |
 | `cs` | **0** | 42 | 2026-09-29 |
@@ -69,6 +69,7 @@ pages whose last verdict was FAIL first (the first column here).
 | `ja` | **0** | 0 | 2026-09-28 |
 | `it` | **0** | 0 | 2026-09-28 |
 | `uk` | **0** | 0 | 2026-09-29 |
+| `ms` | **0** | 0 | 2026-09-29 |
 
 **`--max-leaks` currently filters nothing, and that is expected.** A
 leak is a term the locale's `translation/glossary/<loc>.json` records
@@ -86,27 +87,27 @@ delta pool.
 
 | Locale | Never read | Delta | Reviewed so far |
 |---|---|---|---|
-| `ar` | **8** | 34 | 414/456 (90%) |
 | `cs` | **8** | 34 | 414/456 (90%) |
-| `he` | **8** | 34 | 414/456 (90%) |
 | `id` | **8** | 34 | 414/456 (90%) |
 | `ko` | **8** | 34 | 414/456 (90%) |
-| `ms` | **8** | 34 | 414/456 (90%) |
 | `pl` | **8** | 34 | 414/456 (90%) |
-| `pt` | **8** | 34 | 414/456 (90%) |
 | `ro` | **8** | 34 | 414/456 (90%) |
 | `th` | **8** | 34 | 414/456 (90%) |
-| `tl` | **8** | 34 | 414/456 (90%) |
 
 **Nearly exhausted** (fewer than 25 eligible) — still worth
 a short round, but expect to re-sweep files that already carry a
 verdict, or to accept a round smaller than 25:
 
+- `ar` — 0 never read, 0 delta (456/456 reviewed)
 - `de` — 0 never read, 0 delta (456/456 reviewed)
 - `es` — 0 never read, 0 delta (456/456 reviewed)
 - `fr` — 0 never read, 0 delta (456/456 reviewed)
+- `he` — 0 never read, 0 delta (456/456 reviewed)
 - `it` — 0 never read, 0 delta (456/456 reviewed)
 - `ja` — 0 never read, 0 delta (456/456 reviewed)
+- `ms` — 0 never read, 0 delta (456/456 reviewed)
+- `pt` — 0 never read, 0 delta (456/456 reviewed)
+- `tl` — 0 never read, 0 delta (456/456 reviewed)
 - `uk` — 0 never read, 0 delta (456/456 reviewed)
 
 ---
@@ -115,14 +116,14 @@ verdict, or to accept a round smaller than 25:
 
 | Round (seed) | Files | FAIL | Rate |
 |---|---|---|---|
+| `2026101611-ms-JanLahmann` | 42 | 0 | 0.0% |
+| `2026101610-he-JanLahmann` | 42 | 1 | 2.4% |
+| `2026101609-ar-JanLahmann` | 42 | 0 | 0.0% |
+| `2026101608-tl-JanLahmann` | 42 | 1 | 2.4% |
+| `2026101607-pt-JanLahmann` | 42 | 1 | 2.4% |
 | `2026101606-it-JanLahmann` | 42 | 0 | 0.0% |
-| `2026101605-fr-JanLahmann` | 42 | 1 | 2.4% |
-| `2026101604-ja-JanLahmann` | 42 | 0 | 0.0% |
-| `2026101603-uk-JanLahmann` | 42 | 0 | 0.0% |
-| `2026101602-es-JanLahmann` | 42 | 0 | 0.0% |
-| `2026101601-de-JanLahmann` | 42 | 0 | 0.0% |
 
-Typical FAIL rate is around **0%**. If your round comes
+Typical FAIL rate is around **1%**. If your round comes
 in far above that, stop and tell the maintainer before fixing — it
 usually means the rubric drifted, not that the locale collapsed.
 
