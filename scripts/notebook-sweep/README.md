@@ -45,21 +45,27 @@ Pass S run: **runs**, **needs-ibm** (a cell needs IBM Quantum), **heavy**
 error and a report link). The data is `src/config/pageRunStatus.json`; it is
 one sweep's snapshot, so refresh it after an image bump or a content sync.
 
-The labels describe Binder, so the sweep must run on **amd64 with 1 CPU and
-2 GB**, the way Binder does. A sweep of the native arm64 image on a Mac
-mislabelled pages as "issue" (missing `gem_suite`, `tenpy`: no arm64
-wheels), and `make_page_status.py` now refuses a report not run on x86_64.
-Run the **Notebook sweep** workflow (`.github/workflows/notebook-sweep.yml`,
-16 amd64 shards, about an hour), download its `notebook-sweep` artifact, then:
+The labels say where the code runs, and that depends on the platform: an
+arm64 image (Apple silicon Macs, Raspberry Pi) lacks packages that have no
+arm64 wheels (`gem_suite`, `tenpy`, ...), which the amd64 image (Binder, Code
+Engine, Intel/AMD computers) has. So the sweep runs on **both**, each with
+Binder's 1 CPU and 2 GB. The banner shows the label for the visitor's backend
+(a local or RasQberry server counts as arm64, everything else as amd64) and
+adds the other platform's where it differs. `make_page_status.py` checks each
+report's arch. Run the **Notebook sweep** workflow
+(`.github/workflows/notebook-sweep.yml`, 16 shards per platform), download its
+`notebook-sweep` artifact, then:
 
 ```bash
 git fetch origin notebooks
-python3 scripts/notebook-sweep/make_page_status.py --report <artifact>/passS-aer/report.json
+python3 scripts/notebook-sweep/make_page_status.py \
+    --report <artifact>/amd64/passS-aer/report.json \
+    --report-arm64 <artifact>/arm64/passS-aer/report.json
 ```
 
 Locally, `sweep.py` runs `--platform linux/amd64 --cpus 1 --memory 2g` by
-default (`DOQ_PLATFORM`, `DOQ_BINDER_LIMITS=0` to change), which an arm64 Mac
-emulates, slowly:
+default (`DOQ_PLATFORM=linux/arm64` for the native arm64 run, `DOQ_BINDER_LIMITS=0`
+without limits); an arm64 Mac emulates amd64, slowly:
 
 ```bash
 mkdir -p /tmp/nb && git archive origin/notebooks tutorials guides learning | tar -x -C /tmp/nb

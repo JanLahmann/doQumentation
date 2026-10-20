@@ -4,7 +4,8 @@ Turn a Pass S sweep report into src/config/pageRunStatus.json: the label the
 "Open in" banner shows on each notebook page (does this page's code run here?).
 
   python3 scripts/notebook-sweep/make_page_status.py \\
-      --report .sweep-out/passS-aer/report.json
+      --report <artifact>/amd64/passS-aer/report.json \\
+      --report-arm64 <artifact>/arm64/passS-aer/report.json
 
 Pass S runs every notebook with the site's own Simulator Mode patch, which is
 what a visitor without an IBM Quantum account gets. Four honest categories:
@@ -86,8 +87,10 @@ def main() -> int:
     ap.add_argument("--drop-matching", action="append", default=[], metavar="REGEX",
                     help="no label for a failure whose 'ename: evalue' matches REGEX, e.g. one "
                          "fixed in the image since the sweep (repeatable)")
+    ap.add_argument("--report-arm64", type=Path,
+                    help="the same sweep's arm64 report: labels where arm64 differs")
     ap.add_argument("--any-arch", action="store_true",
-                    help="accept a report not swept on x86_64 (not for the published labels)")
+                    help="accept reports from another arch than named (not for the published labels)")
     ap.add_argument("--out", type=Path, default=OUT)
     args = ap.parse_args()
 
@@ -107,47 +110,68 @@ def main() -> int:
     swept_ref = subprocess.run(["git", "-C", str(REPO), "rev-parse", swept_ref],
                                capture_output=True, text=True).stdout.strip()
 
-    records = json.loads(args.report.read_text())
-    archs = sorted({rec.get("arch", "unknown") for rec in records})
-    if archs != ["x86_64"] and not args.any_arch:
-        sys.exit(f"{args.report} ran on {', '.join(archs)}; Binder runs x86_64 (amd64), and an "
-                 "arm64 image lacks packages without arm64 wheels. Sweep on amd64 "
-                 "(.github/workflows/notebook-sweep.yml), or pass --any-arch to look anyway.")
+    def load(report: Path, want: str) -> list[dict]:
+        records = json.loads(report.read_text())
+        archs = sorted({rec.get("arch", "unknown") for rec in records})
+        if archs != [want] and not args.any_arch:
+            sys.exit(f"{report} ran on {', '.join(archs)}, not {want}. The labels say where the "
+                     "code runs, and an arm64 image lacks packages without arm64 wheels. Use "
+                     ".github/workflows/notebook-sweep.yml, or pass --any-arch to look anyway.")
+        return records
 
     shown = banner_notebooks()
-    pages: dict[str, str] = {}
-    details: dict[str, str] = {}
-    skipped = {"no banner": 0, "changed since sweep": 0, "gone": 0, "dropped by --drop-matching": 0}
     drop = [re.compile(p) for p in args.drop_matching]
-    for rec in records:
-        path = rec["notebook"].removeprefix("/repo/")
-        if path not in shown:
-            skipped["no banner"] += 1
-            continue
-        if rec["status"] != "ok" and any(p.search(detail(rec)) for p in drop):
-            skipped["dropped by --drop-matching"] += 1
-            continue
-        now = code_cells(args.current_ref, path)
-        if now is None:
-            skipped["gone"] += 1
-            continue
-        if now != code_cells(swept_ref, path):
-            skipped["changed since sweep"] += 1
-            continue
-        pages[path] = classify(rec)
-        if pages[path] == "issue":
-            details[path] = detail(rec)
 
+    def labels(records: list[dict]) -> tuple[dict[str, str], dict[str, str], dict[str, int]]:
+        pages: dict[str, str] = {}
+        details: dict[str, str] = {}
+        skipped = {"no banner": 0, "changed since sweep": 0, "gone": 0, "dropped by --drop-matching": 0}
+        for rec in records:
+            path = rec["notebook"].removeprefix("/repo/")
+            if path not in shown:
+                skipped["no banner"] += 1
+                continue
+            if rec["status"] != "ok" and any(p.search(detail(rec)) for p in drop):
+                skipped["dropped by --drop-matching"] += 1
+                continue
+            now = code_cells(args.current_ref, path)
+            if now is None:
+                skipped["gone"] += 1
+                continue
+            if now != code_cells(swept_ref, path):
+                skipped["changed since sweep"] += 1
+                continue
+            pages[path] = classify(rec)
+            if pages[path] == "issue":
+                details[path] = detail(rec)
+        return pages, details, skipped
+
+    pages, details, skipped = labels(load(args.report, "x86_64"))
     data = {
         "_generated_by": "scripts/notebook-sweep/make_page_status.py from a Pass S sweep; do not edit by hand",
         "sweepDate": date,
         "image": image,
-        "arch": archs[0] if len(archs) == 1 else archs,
         "notebooksRef": swept_ref[:10],
         "droppedPatterns": args.drop_matching,
+        # amd64: Binder, Code Engine and Intel/AMD computers.
         "pages": dict(sorted(pages.items())),
         "details": dict(sorted(details.items())),
     }
+    if args.report_arm64:
+        arm_meta_file = args.report_arm64.parent / "meta.json"
+        arm_meta = json.loads(arm_meta_file.read_text()) if arm_meta_file.exists() else {}
+        if arm_meta.get("notebooks_ref", swept_ref) != swept_ref and subprocess.run(
+                ["git", "-C", str(REPO), "rev-parse", arm_meta["notebooks_ref"]],
+                capture_output=True, text=True).stdout.strip() != swept_ref:
+            sys.exit(f"{args.report_arm64} swept other notebooks ({arm_meta['notebooks_ref'][:10]}) "
+                     f"than {args.report} ({swept_ref[:10]})")
+        arm_pages, arm_details, _ = labels(load(args.report_arm64, "aarch64"))
+        # arm64 (Apple silicon Macs, Raspberry Pi): only where it differs.
+        data["arm64"] = {
+            "pages": {k: v for k, v in sorted(arm_pages.items()) if pages.get(k) != v},
+            "details": {k: v for k, v in sorted(arm_details.items())
+                        if pages.get(k) != arm_pages[k] or details.get(k) != v},
+        }
     args.out.write_text(json.dumps(data, indent=1, ensure_ascii=False) + "\n", encoding="utf-8")
 
     counts: dict[str, int] = {}
@@ -155,6 +179,8 @@ def main() -> int:
         counts[cat] = counts.get(cat, 0) + 1
     print(f"{args.out.relative_to(REPO) if args.out.is_relative_to(REPO) else args.out}: {len(pages)} pages {dict(sorted(counts.items()))}")
     print(f"  no label: {skipped}")
+    if "arm64" in data:
+        print(f"  arm64 differs on {len(data['arm64']['pages'])} pages: {data['arm64']['pages']}")
     return 0
 
 
