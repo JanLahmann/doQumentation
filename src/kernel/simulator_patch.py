@@ -297,6 +297,26 @@ try:
 except (ImportError, AttributeError):
     pass
 
+# Error mitigation (resilience_level >= 1, ZNE, PEC) runs on IBM Quantum's
+# servers; local simulation ignores those options, so a result has none of
+# ZNE's extra fields. Say so where a notebook reads one, e.g.
+# res[0].data.evs_noise_factors. An AttributeError, so hasattr() still works.
+_DQ_ZNE_FIELDS = ("evs_noise_factors", "stds_noise_factors", "ensemble_stds_noise_factors",
+                  "evs_extrapolated", "stds_extrapolated")
+try:
+    from qiskit.primitives.containers import DataBin as _DQ_DataBin
+    if "__getattr__" not in _DQ_DataBin.__dict__:
+
+        def _dq_databin_getattr(self, name):
+            if name in _DQ_ZNE_FIELDS:
+                raise AttributeError(str(_DQ_NeedsIBMCloud(
+                    f"result data.{name} (zero-noise extrapolation, which runs on IBM Quantum's servers)")))
+            raise AttributeError(f"{type(self).__name__!r} object has no attribute {name!r}")
+
+        _DQ_DataBin.__getattr__ = _dq_databin_getattr
+except ImportError:
+    pass
+
 # IBM's local simulation rejects these in __init__ with a bare ValueError;
 # say why and what to do. Patched on the class, so every import path sees it.
 for _dq_mod, _dq_cls in (("noise_learner", "NoiseLearner"), ("noise_learner_v3", "NoiseLearnerV3"),
