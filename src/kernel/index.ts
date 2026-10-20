@@ -6,6 +6,7 @@
  * them in Python.
  */
 import cpuThreadsPy from './cpu_threads.py';
+import latexFallbackPy from './latex_fallback.py';
 import saveAccountGuardPy from './save_account_guard.py';
 import simulatorPatchPy from './simulator_patch.py';
 import pages from './pages.json';
@@ -33,6 +34,11 @@ export function saveAccountGuardCode(): string {
 /** Caps Aer/OpenBLAS/OpenMP threads at the kernel's CPU quota (Binder: 1 of 48). */
 export function cpuThreadsCode(): string {
   return cpuThreadsPy;
+}
+
+/** Without pdflatex, circuit.draw(output="latex") says so and draws with matplotlib. */
+export function latexFallbackCode(): string {
+  return latexFallbackPy;
 }
 
 /** device: a qiskit_ibm_runtime.fake_provider class name; pinned: the page pins
