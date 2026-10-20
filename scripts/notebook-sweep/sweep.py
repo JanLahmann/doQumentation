@@ -107,13 +107,8 @@ def run_pass(label: str, image: str, sub: str, nbs: list[str], site: bool = Fals
         print("  (nothing to do)")
         return
 
-    procs = []
-    for b, batch in enumerate(chunk(nbs, PAR)):
-        if not batch:
-            continue
-        cbatch = [f"/repo/{nb}" for nb in batch]
-        logf = open(pass_out / f"batch-{b}.log", "w")
-        cmd = [
+    def podman(extra: list[str], args: list[str]) -> list[str]:
+        return [
             "podman", "run", "--rm",
             "--platform", PLATFORM, *LIMITS,
             "-v", f"{NB_ROOT}:/repo:ro",
@@ -124,9 +119,26 @@ def run_pass(label: str, image: str, sub: str, nbs: list[str], site: bool = Fals
                "-v", f"{REPO / 'scripts'}:/scripts:ro",
                "-e", "DOQ_SHIM=site",
                "-e", f"DOQ_SIM_MODE={os.environ.get('DOQ_SIM_MODE', 'aer')}"] if site else []),
+            *extra,
             "--entrypoint", "python3", image,
-            "/shim/run_all.py", f"/out/batch-{b}", *cbatch,
+            "/shim/run_all.py", *args,
         ]
+
+    # A notebook that would install something runs alone in a fresh container
+    # with installs on, as on the site (run_all.py needs_own_container); the
+    # rest share containers with installs off, so no install leaks.
+    own = subprocess.run(podman([], ["--needs-own-container", *[f"/repo/{nb}" for nb in nbs]]),
+                         capture_output=True, text=True).stdout.split()
+    own = [o.removeprefix("/repo/") for o in own]
+    shared = [nb for nb in nbs if nb not in own]
+    print(f"  {len(own)} notebooks install packages: each in its own container")
+
+    procs = []
+    for b, batch in enumerate(chunk(shared, PAR)):
+        if not batch:
+            continue
+        logf = open(pass_out / f"batch-{b}.log", "w")
+        cmd = podman([], [f"/out/batch-{b}", *[f"/repo/{nb}" for nb in batch]])
         procs.append((subprocess.Popen(cmd, stdout=logf, stderr=logf), logf, b))
 
     t0 = time.time()
@@ -134,6 +146,12 @@ def run_pass(label: str, image: str, sub: str, nbs: list[str], site: bool = Fals
         p.wait()
         logf.close()
         print(f"  batch-{b} exit={p.returncode} ({int(time.time()-t0)}s elapsed)")
+
+    for i, nb in enumerate(own, 1):
+        with open(pass_out / f"batch-own-{i}.log", "w") as logf:
+            rc = subprocess.run(podman(["-e", "DOQ_INSTALLS=1"], [f"/out/batch-own-{i}", f"/repo/{nb}"]),
+                                stdout=logf, stderr=logf).returncode
+        print(f"  {nb} (own container, installs on) exit={rc}")
 
     subprocess.run(
         [sys.executable, str(SHIM_DIR / "merge_reports.py"), str(pass_out)],

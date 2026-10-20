@@ -71,12 +71,28 @@ jobs:
             | LC_ALL=C sort) | awk -v n="$SHARDS" -v i=${{ matrix.shard }} 'NR % n == i {print "/repo/" $0}' > list.txt
           echo "$(wc -l < list.txt) notebooks in shard ${{ matrix.shard }}"
           mkdir -p out
-          docker run --rm --user root --cpus 1 --memory 2g \
-            -v "$PWD/nball:/repo:ro" -v "$PWD/scripts/notebook-sweep:/shim:ro" \
-            -v "$PWD/src:/src:ro" -v "$PWD/scripts:/scripts:ro" -v "$PWD/out:/out" \
-            -e DOQ_CELL_TIMEOUT="$CELL_TIMEOUT" -e DOQ_SHIM=site \
-            -e DOQ_SIM_MODE="$SIM_MODE" \
-            --entrypoint python3 "$image" /shim/run_all.py /out/batch-${{ matrix.shard }} $(cat list.txt)
+          run() {  # run <extra docker args...> -- <run_all.py args...>
+            local extra=(); while [ "$1" != -- ]; do extra+=("$1"); shift; done; shift
+            docker run --rm --user root --cpus 1 --memory 2g \
+              -v "$PWD/nball:/repo:ro" -v "$PWD/scripts/notebook-sweep:/shim:ro" \
+              -v "$PWD/src:/src:ro" -v "$PWD/scripts:/scripts:ro" -v "$PWD/out:/out" \
+              -e DOQ_CELL_TIMEOUT="$CELL_TIMEOUT" -e DOQ_SHIM=site \
+              -e DOQ_SIM_MODE="$SIM_MODE" "${extra[@]}" \
+              --entrypoint python3 "$image" /shim/run_all.py "$@"
+          }
+          # A notebook that would install something (its install cell lists a
+          # module this image lacks, or it pip-installs itself) runs alone in a
+          # fresh container with installs on, as on the site; the rest share one
+          # container with installs off, so no install leaks into another notebook.
+          run -- --needs-own-container $(cat list.txt) > own.txt
+          grep -vxF -f own.txt list.txt > shared.txt || true
+          echo "$(wc -l < own.txt) of them install packages: each in its own container"
+          [ ! -s shared.txt ] || run -- /out/batch-${{ matrix.shard }} $(cat shared.txt)
+          i=0
+          while read -r nb; do
+            i=$((i + 1))
+            run -e DOQ_INSTALLS=1 -- /out/batch-${{ matrix.shard }}-own-$i "$nb"
+          done < own.txt
 
       - uses: actions/upload-artifact@v7
         with:
@@ -105,7 +121,7 @@ jobs:
             d=sweep/$arch/passS-$SIM_MODE
             mkdir -p "$d"
             cp -r shards/shard-$arch-*/out/batch-* "$d"/ 2>/dev/null || true
-            echo "$arch: $(ls "$d" | grep -c batch-) of $SHARDS shards reported"
+            echo "$arch: $(ls "$d" | grep -c -E '^batch-[0-9]+$') of $SHARDS shards reported"
             python3 scripts/notebook-sweep/merge_reports.py "$d"
             python3 - "$d" "$(cat shards/shard-$arch-0/image.txt)" "$(git -C nball rev-parse HEAD)" "$arch" <<'PY'
           import json, os, sys, time

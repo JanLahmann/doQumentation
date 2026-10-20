@@ -7,9 +7,11 @@ The host driver (sweep.sh) mounts the repo read-only and this script
 read-only, then calls:
 
     run_all.py <report_dir> <notebook> [<notebook> ...]
+    run_all.py --needs-own-container <notebook> ...   # prints those that would install
 
 For each notebook: fresh kernel, sim_shim applied at kernel startup via a
-0th injected code cell, `!pip install` cell neutralised, per-cell timeout.
+0th injected code cell, `!pip install` lines neutralised (DOQ_INSTALLS=1 in a
+fresh container per notebook: installs run, as on the site), per-cell timeout.
 Writes <report_dir>/report.json (machine) and report.md (human).
 
 Capture-only: never edits notebooks, never fixes anything.
@@ -70,8 +72,13 @@ def site_bootstrap(nb_path: Path) -> str:
 
 # Any package install in any cell (#969): the gated prerequisites cell, but
 # also a notebook's own `%pip install -U ... "qiskit_ibm_runtime<0.42"`.
-# The sweep measures what the image provides, and an install would change
-# site-packages for the rest of the container.
+# In a container shared by many notebooks an install would change
+# site-packages for the rest of them, so installs are skipped there. A
+# notebook that would install something (needs_own_container) runs alone in
+# a fresh container with DOQ_INSTALLS=1 instead, installs on, as on the site:
+# its install cell pip-installs what the image lacks before the cells run.
+INSTALLS = __import__("os").environ.get("DOQ_INSTALLS") == "1"
+INSTALL_CELL_MARKER = "Added by doQumentation"
 INSTALL_LINE = re.compile(
     r"^(\s*)(?:[!%]\s*(?:pip3?|uv|conda|mamba)\b.*\binstall\b"
     r"|.*subprocess.*\bpip\b.*\binstall\b).*$")
@@ -90,6 +97,25 @@ def neutralise_installs(source: str) -> tuple[str, int]:
     return "\n".join(lines), n
 
 
+def needs_own_container(nb_path: Path) -> bool:
+    """True when running this notebook would install something here: its
+    install cell lists a module this image lacks, or another cell installs."""
+    import ast
+    import importlib.util
+    for cell in nbformat.read(nb_path, as_version=4).cells:
+        if cell.get("cell_type") != "code":
+            continue
+        src = "".join(cell.get("source", ""))
+        if INSTALL_CELL_MARKER in src:
+            m = re.search(r"^_needed = (\{.*\})$", src, re.M)
+            needed = ast.literal_eval(m.group(1)) if m else {}
+            if any(importlib.util.find_spec(mod) is None for mod in needed):
+                return True
+        elif any(INSTALL_LINE.match(line) for line in src.splitlines()):
+            return True
+    return False
+
+
 def run_one(nb_path: Path) -> dict:
     rec = {
         "notebook": str(nb_path),
@@ -99,19 +125,21 @@ def run_one(nb_path: Path) -> dict:
         "duration_s": 0.0,
         # Binder runs amd64; arm64 images lack packages without wheels there.
         "arch": platform.machine(),
+        "installs": INSTALLS,
     }
     t0 = time.time()
     try:
         nb = nbformat.read(nb_path, as_version=4)
 
-        # Neutralise every install, the prerequisites cell and the
-        # notebook's own (counted: a notebook that installs is noted).
-        installs = 0
-        for cell in nb.cells:
-            if cell.get("cell_type") == "code":
-                cell["source"], n = neutralise_installs("".join(cell.get("source", "")))
-                installs += n
-        rec["install_lines_skipped"] = installs
+        # In a shared container, neutralise every install, the prerequisites
+        # cell and the notebook's own (counted: a notebook that installs is noted).
+        if not INSTALLS:
+            installs = 0
+            for cell in nb.cells:
+                if cell.get("cell_type") == "code":
+                    cell["source"], n = neutralise_installs("".join(cell.get("source", "")))
+                    installs += n
+            rec["install_lines_skipped"] = installs
 
         # Inject shim bootstrap as a new first code cell.
         boot = nbformat.v4.new_code_cell(
@@ -157,6 +185,11 @@ def run_one(nb_path: Path) -> dict:
 
 
 def main(argv: list[str]) -> int:
+    if argv[1] == "--needs-own-container":
+        for nb in argv[2:]:
+            if needs_own_container(Path(nb)):
+                print(nb)
+        return 0
     report_dir = Path(argv[1])
     report_dir.mkdir(parents=True, exist_ok=True)
     notebooks = [Path(p) for p in argv[2:]]

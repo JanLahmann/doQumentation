@@ -63,6 +63,13 @@ python3 scripts/notebook-sweep/make_page_status.py \
     --report-arm64 <artifact>/arm64/passS-aer/report.json
 ```
 
+**Installs.** On the site, a page's install cell pip-installs what the image
+lacks before the cells run. The sweep does the same for exactly those
+notebooks: each one whose install cell lists a module the image lacks, or that
+pip-installs itself, runs alone in a fresh container with installs on
+(`DOQ_INSTALLS=1`). All others share containers with installs off, so no
+install leaks into another notebook (#969).
+
 Locally, `sweep.py` runs `--platform linux/amd64 --cpus 1 --memory 2g` by
 default (`DOQ_PLATFORM=linux/arm64` for the native arm64 run, `DOQ_BINDER_LIMITS=0`
 without limits); an arm64 Mac emulates amd64, slowly:
