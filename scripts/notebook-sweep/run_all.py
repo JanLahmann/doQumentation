@@ -17,6 +17,7 @@ Capture-only: never edits notebooks, never fixes anything.
 from __future__ import annotations
 
 import json
+import platform
 import re
 import sys
 import time
@@ -96,6 +97,8 @@ def run_one(nb_path: Path) -> dict:
         "cells_executed": 0,
         "failure": None,
         "duration_s": 0.0,
+        # Binder runs amd64; arm64 images lack packages without wheels there.
+        "arch": platform.machine(),
     }
     t0 = time.time()
     try:

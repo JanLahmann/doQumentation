@@ -2,12 +2,42 @@ import Link from '@docusaurus/Link';
 import {translate} from '@docusaurus/Translate';
 import useDocusaurusContext from '@docusaurus/useDocusaurusContext';
 import status from '../../config/pageRunStatus.json';
+import {detectJupyterConfig} from '../../config/jupyter';
 import './styles.css';
 
 type Category = 'runs' | 'needs-ibm' | 'heavy' | 'issue';
 
-const pages = status.pages as Record<string, Category>;
-const details = status.details as Record<string, string>;
+type Arch = 'amd64' | 'arm64';
+type Labels = {pages: Record<string, Category>; details: Record<string, string>};
+
+// amd64: Binder, Code Engine, Intel/AMD computers. arm64 (Apple silicon Macs,
+// Raspberry Pi) lacks packages without arm64 wheels; the sweep lists only the
+// pages where it differs.
+const amd64: Labels = {pages: status.pages as Labels['pages'], details: status.details};
+const arm64Diff = (status as {arm64?: Labels}).arm64;
+
+function labelsFor(arch: Arch, notebookPath: string): {category?: Category; detail?: string} {
+  if (arch === 'arm64' && arm64Diff?.pages[notebookPath]) {
+    return {category: arm64Diff.pages[notebookPath], detail: arm64Diff.details[notebookPath]};
+  }
+  return {category: amd64.pages[notebookPath], detail: amd64.details[notebookPath]};
+}
+
+/** The platform this visitor's code runs on: a local or RasQberry server is
+ *  most likely a Mac or a Pi; Binder and Code Engine are amd64. */
+function backendArch(): Arch {
+  try {
+    return detectJupyterConfig().environment === 'rasqberry' ? 'arm64' : 'amd64';
+  } catch {
+    return 'amd64';
+  }
+}
+
+function otherArchNote(arch: Arch, label: string): string {
+  return arch === 'arm64'
+    ? translate({id: 'runStatus.onArm64', message: 'On arm64 (Apple silicon Macs, Raspberry Pi): {label}'}, {label})
+    : translate({id: 'runStatus.onAmd64', message: 'On amd64 (Binder, Intel and AMD computers): {label}'}, {label});
+}
 
 const ICONS: Record<Category, string> = {
   runs: '✓',        // ✓
@@ -69,8 +99,12 @@ function reportUrl(notebookPath: string, detail: string): string {
  */
 export default function PageRunStatus({ notebookPath }: { notebookPath: string }) {
   const { i18n: { currentLocale } } = useDocusaurusContext();
-  const category = pages[notebookPath];
+  const arch = backendArch();
+  const other: Arch = arch === 'arm64' ? 'amd64' : 'arm64';
+  const {category, detail} = labelsFor(arch, notebookPath);
   if (!category) return null;
+  const otherLabels = labelsFor(other, notebookPath);
+  const otherCategory = otherLabels.category !== category ? otherLabels.category : undefined;
 
   let date = status.sweepDate;
   try {
@@ -79,16 +113,24 @@ export default function PageRunStatus({ notebookPath }: { notebookPath: string }
     });
   } catch { /* unknown locale: keep the ISO date */ }
 
-  const detail = details[notebookPath];
   return (
     <details className={`dq-run-status dq-run-status--${category}`}>
       <summary>
         <span className="dq-run-status__icon" aria-hidden="true">{ICONS[category]}</span>
         {label(category)}
+        {otherCategory && (
+          <span className="dq-run-status__other"> · {otherArchNote(other, label(otherCategory))}</span>
+        )}
       </summary>
       <div className="dq-run-status__body">
         <p>{explanation(category, date)}</p>
         {detail && <p><code dir="ltr">{detail}</code></p>}
+        {otherCategory && (
+          <p>
+            {otherArchNote(other, explanation(otherCategory, date))}
+            {otherLabels.detail && <> <code dir="ltr">{otherLabels.detail}</code></>}
+          </p>
+        )}
         <p className="dq-run-status__meta">
           {translate(
             {id: 'runStatus.meta', message: 'Tested with {image}. Results can change as the page or the environment is updated.'},

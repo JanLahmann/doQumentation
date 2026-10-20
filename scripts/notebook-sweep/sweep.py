@@ -56,6 +56,12 @@ STOCK_IMG = os.environ.get("DOQ_IMG") or default_image()
 NB_ROOT = Path(os.environ.get("DOQ_NB_ROOT") or REPO / "notebooks").resolve()
 PAR = int(os.environ.get("DOQ_PAR", "3"))
 CELL_TIMEOUT = os.environ.get("DOQ_CELL_TIMEOUT", "300")
+# Binder runs linux/amd64 on 1 CPU with 2 GB. The labels describe Binder, so
+# the sweep runs that platform (emulated on an arm64 Mac: slow, but an arm64
+# image lacks packages that have no arm64 wheels, e.g. gem_suite, tenpy).
+# .github/workflows/notebook-sweep.yml runs it natively on amd64.
+PLATFORM = os.environ.get("DOQ_PLATFORM", "linux/amd64")
+LIMITS = ["--cpus", "1", "--memory", "2g"] if os.environ.get("DOQ_BINDER_LIMITS", "1") == "1" else []
 
 
 def discover_all() -> list[str]:
@@ -109,6 +115,7 @@ def run_pass(label: str, image: str, sub: str, nbs: list[str], site: bool = Fals
         logf = open(pass_out / f"batch-{b}.log", "w")
         cmd = [
             "podman", "run", "--rm",
+            "--platform", PLATFORM, *LIMITS,
             "-v", f"{NB_ROOT}:/repo:ro",
             "-v", f"{SHIM_DIR}:/shim:ro",
             "-v", f"{pass_out}:/out",
