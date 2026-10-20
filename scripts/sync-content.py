@@ -523,19 +523,28 @@ EXTRA_REQUIREMENTS = [
     (r'qiskit_addon_mpf\.backends\.tenpy', 'tenpy', 'physics-tenpy'),
 ]
 
-# A package the notebook names as "<dist> @ git+https://..." (in its
-# Requirements text or its own pip line) is not on PyPI under that name, e.g.
-# qiskit-noise-learning from a GitHub branch. The install cell then installs
-# that spec ("dist@git+url": no spaces, so %pip gets one argument).
+# A package the notebook installs from git (in its Requirements text or its
+# own pip line) is not on PyPI under that name, e.g. qiskit-noise-learning
+# from a GitHub branch. The install cell then installs that source
+# ("dist@git+url" or the bare URL: no spaces, so %pip gets one argument).
 GIT_SPEC = re.compile(r'([A-Za-z0-9][A-Za-z0-9._-]*)(?:\[[^\]]*\])?\s*@\s*(git\+https://[^\s"\'`<>]+)')
 
 
+# A bare "git+https://github.com/<org>/<repo>.git@<ref>" (no "<dist> @"),
+# e.g. qaoa_training_pipeline: the repository name stands for the dist.
+GIT_URL = re.compile(r'(?<![@\w])(git\+https://[^\s"\'`<>]*/([A-Za-z0-9._-]+?)(?:\.git)?(?:@[^\s"\'`<>]+)?)(?=[\s"\'`<>]|$)')
+
+
 def notebook_git_specs(cells: list[dict]) -> dict[str, str]:
-    """Normalized dist name -> "dist@git+url" for every git spec a cell names."""
+    """Normalized dist name -> pip spec for every git source a cell names:
+    "dist@git+url" for "<dist> @ git+url", the bare URL otherwise."""
     specs: dict[str, str] = {}
     for cell in cells:
-        for m in GIT_SPEC.finditer(cell_source(cell)):
+        src = cell_source(cell)
+        for m in GIT_SPEC.finditer(src):
             specs.setdefault(m.group(1).lower().replace('_', '-'), f'{m.group(1)}@{m.group(2)}')
+        for m in GIT_URL.finditer(src):
+            specs.setdefault(m.group(2).lower().replace('_', '-'), m.group(1))
     return specs
 
 
