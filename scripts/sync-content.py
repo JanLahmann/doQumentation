@@ -523,6 +523,31 @@ EXTRA_REQUIREMENTS = [
     (r'qiskit_addon_mpf\.backends\.tenpy', 'tenpy', 'physics-tenpy'),
 ]
 
+# A package the notebook installs from git (in its Requirements text or its
+# own pip line) is not on PyPI under that name, e.g. qiskit-noise-learning
+# from a GitHub branch. The install cell then installs that source
+# ("dist@git+url" or the bare URL: no spaces, so %pip gets one argument).
+GIT_SPEC = re.compile(r'([A-Za-z0-9][A-Za-z0-9._-]*)(?:\[[^\]]*\])?\s*@\s*(git\+https://[^\s"\'`<>]+)')
+
+
+# A bare "git+https://github.com/<org>/<repo>.git@<ref>" (no "<dist> @"),
+# e.g. qaoa_training_pipeline: the repository name stands for the dist.
+GIT_URL = re.compile(r'(?<![@\w])(git\+https://[^\s"\'`<>]*/([A-Za-z0-9._-]+?)(?:\.git)?(?:@[^\s"\'`<>]+)?)(?=[\s"\'`<>]|$)')
+
+
+def notebook_git_specs(cells: list[dict]) -> dict[str, str]:
+    """Normalized dist name -> pip spec for every git source a cell names:
+    "dist@git+url" for "<dist> @ git+url", the bare URL otherwise."""
+    specs: dict[str, str] = {}
+    for cell in cells:
+        src = cell_source(cell)
+        for m in GIT_SPEC.finditer(src):
+            specs.setdefault(m.group(1).lower().replace('_', '-'), f'{m.group(1)}@{m.group(2)}')
+        for m in GIT_URL.finditer(src):
+            specs.setdefault(m.group(2).lower().replace('_', '-'), m.group(1))
+    return specs
+
+
 def analyze_notebook_imports(cells: list[dict]) -> list[str]:
     """Pip package names of notebook_requirements()."""
     return [pip for _module, pip in notebook_requirements(cells)]
@@ -585,6 +610,7 @@ def notebook_requirements(cells: list[dict]) -> list[tuple[str, str]]:
 
     # Filter out stdlib
     stdlib = sys.stdlib_module_names if hasattr(sys, 'stdlib_module_names') else set()
+    git_specs = notebook_git_specs(cells)
 
     missing: list[tuple[str, str]] = []
     for name in sorted(import_names):
@@ -597,7 +623,7 @@ def notebook_requirements(cells: list[dict]) -> list[tuple[str, str]]:
         # Skip if notebook already installs it
         if pip_name.lower() in already_installed or name.lower() in already_installed:
             continue
-        missing.append((name, pip_name))
+        missing.append((name, git_specs.get(pip_name.lower(), pip_name)))
     for module, pip in extras:
         if pip.lower() not in already_installed and (module, pip) not in missing:
             missing.append((module, pip))
