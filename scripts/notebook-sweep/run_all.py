@@ -62,7 +62,8 @@ def site_bootstrap(nb_path: Path) -> str:
     cfg = chk.pages_config()
     page = "/" + str(nb_path.relative_to("/repo").with_suffix(""))
     code = [(chk.KERNEL / "save_account_guard.py").read_text(),
-            (chk.KERNEL / "cpu_threads.py").read_text()]
+            (chk.KERNEL / "cpu_threads.py").read_text(),
+            (chk.KERNEL / "latex_fallback.py").read_text()]
     if not any(chk.page_matches(page, p) for p in cfg["exempt"]):
         mode = os.environ.get("DOQ_SIM_MODE", "aer")
         code.append(chk.simulator_patch_code(chk.device_for(page, cfg), noise=mode == "fake",

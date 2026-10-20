@@ -46,6 +46,7 @@ import {
 } from '../../config/jupyter';
 import {
   cpuThreadsCode,
+  latexFallbackCode,
   isSimulatorExemptPath,
   pageSimulatorDevice,
   saveAccountGuardCode,
@@ -1420,6 +1421,8 @@ async function injectKernelSetup(kernelObj: unknown): Promise<void> {
   // Every mode: on a CPU quota (Binder: 1 of 48 reported CPUs) Aer's default
   // thread count made simulations ~70× slower.
   await executeOnKernel(kernelObj, cpuThreadsCode());
+  // Every mode: without pdflatex, draw(output="latex") says so and uses matplotlib.
+  await executeOnKernel(kernelObj, latexFallbackCode());
   // Installs only what is missing; instant when the image has everything.
   if (pageInstallCode) await executeOnKernel(kernelObj, pageInstallCode);
 
