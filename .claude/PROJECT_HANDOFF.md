@@ -56,7 +56,7 @@ All content comes from IBM's open-source [Qiskit documentation](https://github.c
 - All MDX (EN + 17 i18n locales) reference the same files via absolute paths — no per-locale duplication. New locale = zero PNG copies.
 - Migration: 2026-05-06 (PR #34, branch `feat/dedupe-output-images`). Saved ~12 MB / 1,800 relative refs. (One-shot script `scripts/migrate_output_imgs.py` deleted 2026-06-04 after the migration completed; in git history.)
 - `convert_notebook()` enforces this for new notebooks; future syncs can't reintroduce the legacy layout.
-- **Other image trees (untouched)**: `docs/qiskit-addons/images/`, `docs/qiskit-addons/_static/`, `static/img/logo.svg`, `static/img/rasqberry-social-card.png`.
+- **Other image trees (untouched)**: `docs/qiskit-addons/images/`, `docs/qiskit-addons/_static/`, `static/img/logo.svg`, `static/img/doqumentation-social-card.png`.
 - **CI guard**: `.github/workflows/lint-image-paths.yml` fails any PR introducing `](./_<stem>_imgs/...)` refs or `_*_imgs/` dirs under `docs/`/`i18n/`.
 - For new hand-added images: `static/img/<section>/<descriptive-name>/...` with absolute paths.
 
@@ -206,7 +206,7 @@ Data flow:
 - **Analytics** — Umami Cloud (cookie-free, GDPR, no consent banner). `src/config/analytics.ts`. Page views are Umami's automatic ones (locale = hostname; no custom Pageview event). Custom events follow the Fun with Quantum family naming v2 (`<Site>: <what happened>`, see Fun-with-Quantum `family/EVENTS.md`), all mapped centrally in `analytics.ts` from the internal names passed to `trackEvent()`: `doQumentation: code run`, `doQumentation: run all` (`page`), `doQumentation: notebook launch` (`target` binder|colab, `notebook`, `page`), `doQumentation: notebook download` (`notebook`, `page`), `doQumentation: tutorial feedback` / `doQumentation: translation feedback` (`rating`, `page`), `doQumentation: outbound click`, the footer's `doQumentation: family footer click` (`to`; name built from the family manifest in `family-footer.ts`), and `doQumentation: play box click` (`game`, `page`, `locale`; data attributes in `PlayBox`). Every JS event also carries `locale`. Auto-disabled on localhost/Docker.
   - **Outbound link tracking** (`src/clientModules/outboundTracker.ts`): single capture-phase listener (mousedown + auxclick — middle/cmd-click). Skips same-host + `*.doqumentation.org`. One event (`doQumentation: outbound click`) for every host. Categories: `quantum-platform`, `quantum-docs`, `quantum-learning`, `ibm-cloud`, `ibm-marketing`, `ibm-video`, `ibm-other`, `github`, `external-other`. Path-aware (`quantum.cloud.ibm.com/docs/*` → `quantum-docs`, etc.). Properties: `category`, `host`, `path`, `url`, `from`, `locale`.
 - **Styling** — Carbon Design (IBM Plex, `#0f62fe`).
-- **SEO & social** — OG + Twitter Card, JSON-LD (Organization/WebPage/SoftwareApplication), AI-indexing robots meta, preconnect hints, social card 1200×630.
+- **SEO & social** — OG + Twitter Card, JSON-LD (Organization/WebPage/SoftwareApplication), AI-indexing robots meta, preconnect hints, social card 1200×630 (`static/img/doqumentation-social-card.png`, #1052), apple-touch-icon, `/favicon.ico`.
 - **Keyboard accessibility** — `focus-visible` outlines; light blue variant on dark navbar.
 
 ---
