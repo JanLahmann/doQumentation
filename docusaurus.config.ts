@@ -50,6 +50,11 @@ const config: Config = {
   },
 
   headTags: [
+    // Home-screen icon (iOS); /favicon.ico is in static/ for clients that ask for it.
+    {
+      tagName: 'link',
+      attributes: { rel: 'apple-touch-icon', sizes: '180x180', href: '/apple-touch-icon.png' },
+    },
     // Hide the beta notice / translation-feedback banners before first paint
     // when they were dismissed this session. They are in the static HTML so
     // they don't shift the page when they appear (src/components/BetaNotice).
@@ -327,13 +332,16 @@ const config: Config = {
   ],
 
   themeConfig: {
-    // Social card image
-    image: 'img/rasqberry-social-card.png',
+    // Social card (og:image and twitter:image on every page, in every locale)
+    image: 'img/doqumentation-social-card.png',
 
     // Global meta tags for social sharing and SEO
     metadata: [
       { property: 'og:type', content: 'website' },
       { property: 'og:site_name', content: 'doQumentation' },
+      { property: 'og:image:width', content: '1200' },
+      { property: 'og:image:height', content: '630' },
+      { property: 'og:image:alt', content: 'doQumentation: run Qiskit tutorials and courses right in your browser, in 18 languages' },
       // No site-wide twitter:title/description: they would override every
       // page's own og:title/og:description in link previews.
       { name: 'theme-color', content: '#161616' },
