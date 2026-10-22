@@ -36,7 +36,9 @@ in one JSON state file, and refuses to run out of order. Commit messages and
 PR bodies are built from that state and the records, never typed.
 
 State lives in translation/v2/work/rounds/<seed>/ (ignored), next to the
-baked workflow scripts. Worktrees default to $TMPDIR/doq-rounds/.
+baked workflow scripts. Worktrees default to ~/.cache/doq-rounds/ ($XDG_CACHE_HOME):
+not $TMPDIR, which macOS purges after three days of no access, taking a
+paused round's review inputs with it (round 2026101612, id).
 """
 
 from __future__ import annotations
@@ -49,7 +51,6 @@ import os
 import re
 import subprocess
 import sys
-import tempfile
 import zlib
 from datetime import date, timedelta
 from pathlib import Path
@@ -373,7 +374,8 @@ def cmd_start(a) -> int:
     seed = a.seed or new_seed(date.today().strftime("%Y%m%d"), used_seeds(), os.getpid() % 100)
     if (state_dir(seed) / "state.json").exists():
         sys.exit(f"round {seed} exists; pick another --seed")
-    wt_root = Path(a.worktrees or Path(tempfile.gettempdir()) / "doq-rounds")
+    cache = Path(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache")
+    wt_root = Path(a.worktrees or cache / "doq-rounds")
     st = {"seed": str(seed), "handle": a.handle, "claim": a.claim, "trailers": a.trailer or [],
           "per_locale": a.per_locale, "order": a.order, "locales": {}}
     run(["git", "fetch", "-q", "origin", "main"], REPO)
