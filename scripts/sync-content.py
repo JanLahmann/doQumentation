@@ -658,6 +658,21 @@ def install_cell_source(reqs: list[tuple[str, str]]) -> str:
     )
 
 
+# A ```python fence inside a markdown cell is an illustrative snippet (a
+# `pip install` line, `with Session(...): ...`, code for a named QPU), not a
+# cell of the notebook: on the page it must not run. Only code cells run, so
+# Run All executes exactly what the notebook sweep tests (#1040 labels).
+MARKDOWN_PY_FENCE = re.compile(r'^(\s*```(?:python3?|py|ipython3?))(?=[ \t]|$)([^\n]*)$', re.M)
+
+
+def static_python_fences(markdown: str) -> str:
+    """Mark the Python fences of a markdown cell ``noexec`` (CodeBlock swizzle)."""
+    def mark(m: re.Match) -> str:
+        meta = m.group(2)
+        return m.group(0) if re.search(r'\b(no-?exec|exec(utable)?)\b', meta) else f'{m.group(1)} noexec{meta}'
+    return MARKDOWN_PY_FENCE.sub(mark, markdown)
+
+
 def convert_notebook(ipynb_path: Path, output_path: Path,
                      notebook_path: Optional[str] = None,
                      slug: Optional[str] = None,
@@ -727,7 +742,7 @@ def convert_notebook(ipynb_path: Path, output_path: Path,
                         if h1_match:
                             title = h1_match.group(1).strip()
 
-                body_parts.append(source)
+                body_parts.append(static_python_fences(source))
 
             elif cell_type == 'code':
                 if not source.strip():
