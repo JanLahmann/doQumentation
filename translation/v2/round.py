@@ -546,6 +546,20 @@ def gate(wt: Path, locale: str, baseline: Path) -> tuple[list[str], list[str], d
     return failed, new, log
 
 
+def still_english(wt: Path, locale: str, key: str) -> bool:
+    """Whether entry "<file>#<n>" (n: the page's n-th live PO entry, as the
+    reviewers number them) still has its English as the translation. True
+    when it cannot be read, so a warning is never dropped by mistake."""
+    try:
+        import polib
+        page, n = key.rsplit("#", 1)
+        po = polib.pofile(str(wt / "i18n" / locale / "po" / Path(page).with_suffix(".po")))
+        entry = [e for e in po if not e.obsolete][int(n)]
+        return entry.msgstr == entry.msgid
+    except Exception:
+        return True
+
+
 def cmd_finish(a) -> int:
     st = load_state(a.seed)
     ls = locale_state(st, a.locale, ("fill", "triage"))
@@ -561,9 +575,11 @@ def cmd_finish(a) -> int:
             sys.exit(f"{ap['unfilled']} entries unfilled: re-run the fill (resume its run), then finish again")
         prev = ls.get("apply")
         if prev:  # a follow-up pass on top of an earlier one: keep both in the record
+            # An earlier "now equals English" entry a repair pass changed back no longer counts.
+            earlier = [(k, v) for k, v in prev.get("english", []) if still_english(wt, a.locale, k)]
             ap = {**ap, "accepted": prev["accepted"] + ap["accepted"], "rejected": ap["rejected"],
                   "unchanged": prev["unchanged"] + ap["unchanged"],
-                  "english": prev.get("english", []) + ap["english"]}
+                  "english": earlier + ap["english"]}
         ls.setdefault("applies", []).append(text[-4000:])
         ls["apply"] = ap
         print(f"{a.locale}: accepted {ap['accepted']}, rejected {ap['rejected']}, unchanged {ap['unchanged']}")
