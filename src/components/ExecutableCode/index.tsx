@@ -46,6 +46,7 @@ import {
 } from '../../config/jupyter';
 import {
   cpuThreadsCode,
+  importCompatCode,
   latexFallbackCode,
   isSimulatorExemptPath,
   pageSimulatorDevice,
@@ -1440,6 +1441,8 @@ async function injectKernelSetup(kernelObj: unknown): Promise<void> {
   await executeOnKernel(kernelObj, cpuThreadsCode());
   // Every mode: without pdflatex, draw(output="latex") says so and uses matplotlib.
   await executeOnKernel(kernelObj, latexFallbackCode());
+  // Every mode: old Qiskit import paths a PyPI package still uses (qiskit-ibm-transpiler).
+  await executeOnKernel(kernelObj, importCompatCode());
   // Installs only what is missing; instant when the image has everything.
   if (pageInstallCode) await executeOnKernel(kernelObj, pageInstallCode);
 
