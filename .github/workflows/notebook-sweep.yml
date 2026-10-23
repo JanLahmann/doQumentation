@@ -44,7 +44,31 @@ env:
   IMAGE_TAG: ${{ inputs.image_tag }}
 
 jobs:
+  # The tag is resolved to its digest once, here, so every shard runs the same
+  # image even if QuBins moves the tag during the sweep (it rebuilds nightly).
+  image:
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.r.outputs.tag }}
+      digest: ${{ steps.r.outputs.digest }}
+    steps:
+      - uses: actions/checkout@v7
+      - id: r
+        run: |
+          tag="$IMAGE_TAG"
+          [ -n "$tag" ] || tag=$(sed -n "s/^export const DEFAULT_QISKIT_TAG: QiskitTag = '\(.*\)';/\1/p" src/config/jupyter.ts)
+          test -n "$tag" || { echo "DEFAULT_QISKIT_TAG not found in src/config/jupyter.ts"; exit 1; }
+          image="ghcr.io/qubins/images:$tag"
+          # The multi-arch index digest: the same for both platforms' shards.
+          digest=$(docker buildx imagetools inspect "$image" --format '{{json .Manifest}}' \
+            | python3 -c 'import json, sys; print(json.load(sys.stdin)["digest"])')
+          case "$digest" in sha256:*) ;; *) echo "no digest for $image"; exit 1 ;; esac
+          echo "tag=$image" >> "$GITHUB_OUTPUT"
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+          echo "Sweeping $image@$digest" >> "$GITHUB_STEP_SUMMARY"
+
   shard:
+    needs: image
     runs-on: ${{ matrix.arch == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-latest' }}
     timeout-minutes: 300
     strategy:
@@ -61,10 +85,7 @@ jobs:
 
       - name: Run this shard's notebooks
         run: |
-          tag="$IMAGE_TAG"
-          [ -n "$tag" ] || tag=$(sed -n "s/^export const DEFAULT_QISKIT_TAG: QiskitTag = '\(.*\)';/\1/p" src/config/jupyter.ts)
-          test -n "$tag" || { echo "DEFAULT_QISKIT_TAG not found in src/config/jupyter.ts"; exit 1; }
-          image="ghcr.io/qubins/images:$tag"
+          image="${{ needs.image.outputs.tag }}@${{ needs.image.outputs.digest }}"
           echo "$image" > image.txt
           # The same notebooks as sweep.py's discover_all(); shard i takes every SHARDS-th.
           (cd nball && find tutorials guides learning -name '*.ipynb' -not -path '*/.ipynb_checkpoints/*' \
@@ -148,7 +169,9 @@ jobs:
             python3 - "$d" "$(cat shards/shard-$arch-0/image.txt)" "$(git -C nball rev-parse HEAD)" "$arch" <<'PY'
           import json, os, sys, time
           d, image, ref, arch = sys.argv[1:]
-          json.dump({"date": time.strftime("%Y-%m-%d", time.gmtime()), "image": image, "pass": "S",
+          image, _, digest = image.partition("@")
+          json.dump({"date": time.strftime("%Y-%m-%d", time.gmtime()), "image": image,
+                     "image_digest": digest or None, "pass": "S",
                      "sim_mode": os.environ["SIM_MODE"], "notebooks_ref": ref,
                      "cell_timeout_s": int(os.environ["CELL_TIMEOUT"]), "platform": f"linux/{arch}",
                      "limits": "1 CPU, 2 GB (Binder)"},

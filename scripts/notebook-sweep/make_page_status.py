@@ -151,6 +151,8 @@ def main() -> int:
         "_generated_by": "scripts/notebook-sweep/make_page_status.py from a Pass S sweep; do not edit by hand",
         "sweepDate": date,
         "image": image,
+        # The exact image (the tag moves when QuBins rebuilds), when the sweep recorded it.
+        **({"imageDigest": meta["image_digest"]} if meta.get("image_digest") else {}),
         "notebooksRef": swept_ref[:10],
         "droppedPatterns": args.drop_matching,
         # amd64: Binder, Code Engine and Intel/AMD computers.
