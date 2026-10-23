@@ -4,6 +4,7 @@
 # functions it needs are still exported by qiskit.synthesis.linear. Map the old
 # module name to that package, so the AI transpiler pages run. Costs nothing
 # until something imports one of these names. Runs on every kernel, in every mode.
+# Also: progress bars as text (end of file).
 def _dq_import_compat():
     import importlib
     import importlib.abc
@@ -44,3 +45,23 @@ def _dq_import_compat():
 
 _dq_import_compat()
 del _dq_import_compat
+
+
+# tqdm.auto picks the ipywidgets progress bar when ipywidgets is installed,
+# but the page's widget manager cannot draw it ("Class HTMLStyleModel not
+# found"), so a download's progress (e.g. the AI transpiler's models) showed
+# nothing and logged errors. Use the text bar, which every page shows.
+def _dq_text_progress_bars():
+    try:
+        import tqdm.auto
+        import tqdm.autonotebook
+        import tqdm.std
+    except ImportError:
+        return
+    for mod in (tqdm.auto, tqdm.autonotebook):
+        mod.tqdm = tqdm.std.tqdm
+        mod.trange = tqdm.std.trange
+
+
+_dq_text_progress_bars()
+del _dq_text_progress_bars
