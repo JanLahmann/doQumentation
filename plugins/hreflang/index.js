@@ -121,6 +121,16 @@ function dropIndexRobots(html) {
   return html.replace(/<meta[^>]+name=["']robots["'][^>]+content=["']index,[^"']*["'][^>]*>/gi, "");
 }
 
+/** Percent-encode spaces in the canonical, hreflang and og:url URLs. Docusaurus
+ *  writes a route with spaces (the workshop notebooks' file names) into them
+ *  raw, and Google then picks a canonical of its own. */
+function encodeHeadUrls(html) {
+  return html.replace(
+    /(<link[^>]+rel=["'](?:canonical|alternate)["'][^>]*\bhref=["']|<meta[^>]+property=["']og:url["'][^>]*\bcontent=["'])([^"']*)/gi,
+    (_, tag, url) => tag + url.replace(/ /g, "%20")
+  );
+}
+
 module.exports = function hreflangPlugin(context, _options) {
   const { i18n, siteDir } = context;
   const localeConfigs = i18n.localeConfigs || {};
@@ -154,6 +164,12 @@ module.exports = function hreflangPlugin(context, _options) {
           html = fs.readFileSync(file, "utf8");
         } catch {
           continue;
+        }
+
+        const encoded = encodeHeadUrls(html);
+        if (encoded !== html) {
+          fs.writeFileSync(file, encoded, "utf8");
+          html = encoded;
         }
 
         // Untranslated fallback (EN content under a non-EN subdomain): noindex

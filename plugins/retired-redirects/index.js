@@ -22,6 +22,25 @@ function hasPage(outDir, route) {
   return [`${rel}.html`, path.join(rel, "index.html")].some((f) => fs.existsSync(path.join(outDir, f)));
 }
 
+/** Every <route>.html page (not <dir>/index.html, not the assets). */
+function htmlPages(outDir) {
+  const out = [];
+  const walk = (dir) => {
+    for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+      const full = path.join(dir, e.name);
+      if (e.isDirectory()) {
+        if (!["assets", "img", "notebooks"].includes(e.name) || dir !== outDir) walk(full);
+      } else if (e.name.endsWith(".html") && e.name !== "index.html") {
+        const html = fs.readFileSync(full, "utf8");
+        // Skip the redirect stubs written above: their old route stays a 404.
+        if (!html.includes('http-equiv="refresh"')) out.push(full);
+      }
+    }
+  };
+  walk(outDir);
+  return out;
+}
+
 function escapeAttr(s) {
   return s.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;");
 }
@@ -51,6 +70,22 @@ module.exports = function retiredRedirectsPlugin(context) {
         written++;
       }
       console.log(`[retired-redirects] ${context.i18n.currentLocale}: ${written} redirect page(s)`);
+
+      // trailingSlash is false, so a page is <route>.html, and GitHub Pages
+      // answers <route>/ (an old link, a hand-typed URL) with 404: it only
+      // looks for <route>/index.html. Give every page that stub, pointing at
+      // the page.
+      let slashed = 0;
+      for (const file of htmlPages(outDir)) {
+        const route = "/" + path.relative(outDir, file).split(path.sep).join("/").replace(/\.html$/, "");
+        if (route === "/404" || route === "/index") continue;
+        const index = path.join(outDir, route.slice(1), "index.html");
+        if (fs.existsSync(index)) continue;
+        fs.mkdirSync(path.dirname(index), { recursive: true });
+        fs.writeFileSync(index, stub(site + encodeURI(route)), "utf8");
+        slashed++;
+      }
+      console.log(`[retired-redirects] ${context.i18n.currentLocale}: ${slashed} trailing-slash redirect(s)`);
     },
   };
 };

@@ -72,6 +72,10 @@ MANUAL = {
     "/tutorials/solving-maxcut-with-reduced-qubit-requirements-using-pauli-correlation-encoding": "/tutorials/pauli-correlation-encoding-for-qaoa",
     "/tutorials/utility-scale-error-mitigation-with-probabilistic-error-amplification": "/tutorials/probabilistic-error-amplification",
     "/tutorials/wire-cutting-to-improve-performance": "/tutorials/wire-cutting",
+    # Removed upstream in b179a8c4 "Separate out primitives" (#4640): its
+    # content moved into the options overview (and the Sampler/Estimator
+    # options pages it links).
+    "/guides/specify-runtime-options": "/guides/runtime-options-overview",
 }
 
 PAGE_EXT = (".mdx", ".md", ".ipynb")
