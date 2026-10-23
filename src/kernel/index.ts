@@ -6,6 +6,7 @@
  * them in Python.
  */
 import cpuThreadsPy from './cpu_threads.py';
+import importCompatPy from './import_compat.py';
 import latexFallbackPy from './latex_fallback.py';
 import saveAccountGuardPy from './save_account_guard.py';
 import simulatorPatchPy from './simulator_patch.py';
@@ -34,6 +35,11 @@ export function saveAccountGuardCode(): string {
 /** Caps Aer/OpenBLAS/OpenMP threads at the kernel's CPU quota (Binder: 1 of 48). */
 export function cpuThreadsCode(): string {
   return cpuThreadsPy;
+}
+
+/** Old import paths a PyPI package still uses after Qiskit removed them. */
+export function importCompatCode(): string {
+  return importCompatPy;
 }
 
 /** Without pdflatex, circuit.draw(output="latex") says so and draws with matplotlib. */

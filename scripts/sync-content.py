@@ -515,12 +515,31 @@ IMPORT_TO_PIP = {
     'github': 'PyGithub',
     'oqs': 'liboqs-python',
     'dotenv': 'python-dotenv',  # the "dotenv" on PyPI is a different package
+    # qiskit-ibm-transpiler 0.18 pins qiskit-serverless~=0.30 and
+    # networkx==2.8.5, which would downgrade the image's packages; its other
+    # requirements come from EXTRA_REQUIREMENTS. With Qiskit 2.5 it also needs
+    # src/kernel/import_compat.py.
+    'qiskit_ibm_transpiler': '--no-deps qiskit-ibm-transpiler',
 }
 
 # Requirements an import scan cannot see: optional extras a submodule needs.
 # (pattern in the code, module to check, pip package)
 EXTRA_REQUIREMENTS = [
     (r'qiskit_addon_mpf\.backends\.tenpy', 'tenpy', 'physics-tenpy'),
+    # qiskit-ibm-transpiler (installed --no-deps, see IMPORT_TO_PIP): what its
+    # local AI passes import. qiskit-gym's twisterl wants torch with CUDA (GBs);
+    # the CPU build is enough and fits Binder (about 770 MB peak with AI routing).
+    (r'qiskit_ibm_transpiler', 'qiskit_ibm_ai_local_transpiler', '--no-deps qiskit-ibm-ai-local-transpiler'),
+    (r'qiskit_ibm_transpiler', 'qiskit_gym', '--no-deps qiskit-gym'),
+    (r'qiskit_ibm_transpiler', 'twisterl', '--no-deps twisterl'),
+    (r'qiskit_ibm_transpiler', 'torch', 'torch --index-url https://download.pytorch.org/whl/cpu'),
+    (r'qiskit_ibm_transpiler', 'tensorboard', 'tensorboard'),
+    (r'qiskit_ibm_transpiler', 'gymnasium', 'gymnasium'),
+    (r'qiskit_ibm_transpiler', 'loguru', 'loguru'),
+    (r'qiskit_ibm_transpiler', 'safetensors', 'safetensors'),
+    (r'qiskit_ibm_transpiler', 'backoff', 'backoff'),
+    (r'qiskit_ibm_transpiler', 'huggingface_hub', 'huggingface-hub~=0.34.4'),
+    (r'qiskit_ibm_transpiler', 'qiskit_qasm3_import', 'qiskit-qasm3-import'),
 ]
 
 # A package the notebook installs from git (in its Requirements text or its

@@ -76,7 +76,7 @@ def discover_all() -> list[str]:
 
 
 def chunk(lst: list[str], n: int) -> list[list[str]]:
-    per = (len(lst) + n - 1) // n
+    per = max(1, (len(lst) + n - 1) // n)
     return [lst[i:i + per] for i in range(0, len(lst), per)] or [[]]
 
 
