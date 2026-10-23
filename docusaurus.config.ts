@@ -487,13 +487,21 @@ const config: Config = {
     },
     
     prism: {
-      // GitHub's comment grey (#999988) is 2.6:1 on the code background; axe
-      // wants 4.5:1. Same theme with a darker grey for comments.
+      // GitHub's token colours on its #f6f8fa background are as low as 2.6:1;
+      // axe wants 4.5:1. Same theme, each low colour darkened to pass.
       theme: {
         ...prismThemes.github,
-        styles: prismThemes.github.styles.map((s) =>
-          s.types.includes('comment') ? {...s, style: {...s.style, color: '#57606a'}} : s,
-        ),
+        styles: prismThemes.github.styles.map((s) => {
+          const darker: Record<string, string> = {
+            '#999988': '#57606a', // comment 2.7 -> 6.0
+            '#e3116c': '#c4105f', // string 4.3 -> 5.5
+            '#36acaa': '#1a7a78', // number, boolean, constant 2.6 -> 4.8
+            '#00a4db': '#0074a6', // keyword, at-rule 2.7 -> 4.9
+            '#d73a49': '#c22d3c', // function, tag 4.3 -> 5.3
+          };
+          const color = s.style.color && darker[s.style.color.toLowerCase()];
+          return color ? {...s, style: {...s.style, color}} : s;
+        }),
       },
       darkTheme: prismThemes.dracula,
       additionalLanguages: ['python', 'bash', 'json', 'shell-session', 'yaml', 'toml', 'diff', 'markup'],
