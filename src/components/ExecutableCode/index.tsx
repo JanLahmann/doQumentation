@@ -381,6 +381,12 @@ function detectCellError(cell: Element): { type: string; name?: string } | null 
     return { type: 'session' };
   }
 
+  // Simulator Mode's own "needs IBM Quantum" message (src/kernel/simulator_patch.py):
+  // a known limit of local simulation, not a bug in the page.
+  if (/needs IBM Quantum and has no offline equivalent/.test(text)) {
+    return { type: 'needsIbm' };
+  }
+
   // No IBM Quantum account (expected on hello-world's hardware cell without credentials)
   if (/AccountNotFoundError|IBMNotAuthorizedError|Unable to find account/.test(text)) {
     return { type: 'account' };
@@ -516,6 +522,17 @@ function showErrorHint(cell: Element, error: { type: string; name?: string }): v
     settingsLink.style.textDecoration = 'underline';
     div.appendChild(settingsLink);
     div.append(translate({id: 'executable.error.sessionSettingsAfter', message: ' to automatically convert Session calls to job mode.'}));
+  } else if (error.type === 'needsIbm') {
+    div.append(translate({id: 'executable.errorHint.needsIbmPrefix', message: 'This cell needs IBM Quantum: Simulator Mode cannot run it. '}));
+    const settingsLink = document.createElement('a');
+    settingsLink.href = '/jupyter-settings#ibm-quantum';
+    settingsLink.textContent = translate({id: 'executable.errorHint.accountLink', message: 'Add your API key in Settings'});
+    settingsLink.style.textDecoration = 'underline';
+    div.appendChild(settingsLink);
+    div.append(translate({id: 'executable.errorHint.needsIbmAfter', message: ' and switch Simulator Mode off to run it on real hardware. Otherwise skip it: the cells after it may still run.'}));
+    // A known limit of local simulation, not a bug: no "Report this error" link.
+    cell.appendChild(div);
+    return;
   } else if (error.type === 'account') {
     div.append(translate({id: 'executable.errorHint.accountPrefix', message: 'This cell needs an IBM Quantum account. '}));
     const settingsLink = document.createElement('a');
