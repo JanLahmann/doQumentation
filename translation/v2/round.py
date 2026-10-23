@@ -36,7 +36,9 @@ in one JSON state file, and refuses to run out of order. Commit messages and
 PR bodies are built from that state and the records, never typed.
 
 State lives in translation/v2/work/rounds/<seed>/ (ignored), next to the
-baked workflow scripts. Worktrees default to $TMPDIR/doq-rounds/.
+baked workflow scripts. Worktrees default to ~/.cache/doq-rounds/ ($XDG_CACHE_HOME):
+not $TMPDIR, which macOS purges after three days of no access, taking a
+paused round's review inputs with it (round 2026101612, id).
 """
 
 from __future__ import annotations
@@ -49,7 +51,6 @@ import os
 import re
 import subprocess
 import sys
-import tempfile
 import zlib
 from datetime import date, timedelta
 from pathlib import Path
@@ -373,7 +374,8 @@ def cmd_start(a) -> int:
     seed = a.seed or new_seed(date.today().strftime("%Y%m%d"), used_seeds(), os.getpid() % 100)
     if (state_dir(seed) / "state.json").exists():
         sys.exit(f"round {seed} exists; pick another --seed")
-    wt_root = Path(a.worktrees or Path(tempfile.gettempdir()) / "doq-rounds")
+    cache = Path(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache")
+    wt_root = Path(a.worktrees or cache / "doq-rounds")
     st = {"seed": str(seed), "handle": a.handle, "claim": a.claim, "trailers": a.trailer or [],
           "per_locale": a.per_locale, "order": a.order, "locales": {}}
     run(["git", "fetch", "-q", "origin", "main"], REPO)
@@ -544,6 +546,20 @@ def gate(wt: Path, locale: str, baseline: Path) -> tuple[list[str], list[str], d
     return failed, new, log
 
 
+def still_english(wt: Path, locale: str, key: str) -> bool:
+    """Whether entry "<file>#<n>" (n: the page's n-th live PO entry, as the
+    reviewers number them) still has its English as the translation. True
+    when it cannot be read, so a warning is never dropped by mistake."""
+    try:
+        import polib
+        page, n = key.rsplit("#", 1)
+        po = polib.pofile(str(wt / "i18n" / locale / "po" / Path(page).with_suffix(".po")))
+        entry = [e for e in po if not e.obsolete][int(n)]
+        return entry.msgstr == entry.msgid
+    except Exception:
+        return True
+
+
 def cmd_finish(a) -> int:
     st = load_state(a.seed)
     ls = locale_state(st, a.locale, ("fill", "triage"))
@@ -559,9 +575,11 @@ def cmd_finish(a) -> int:
             sys.exit(f"{ap['unfilled']} entries unfilled: re-run the fill (resume its run), then finish again")
         prev = ls.get("apply")
         if prev:  # a follow-up pass on top of an earlier one: keep both in the record
+            # An earlier "now equals English" entry a repair pass changed back no longer counts.
+            earlier = [(k, v) for k, v in prev.get("english", []) if still_english(wt, a.locale, k)]
             ap = {**ap, "accepted": prev["accepted"] + ap["accepted"], "rejected": ap["rejected"],
                   "unchanged": prev["unchanged"] + ap["unchanged"],
-                  "english": prev.get("english", []) + ap["english"]}
+                  "english": earlier + ap["english"]}
         ls.setdefault("applies", []).append(text[-4000:])
         ls["apply"] = ap
         print(f"{a.locale}: accepted {ap['accepted']}, rejected {ap['rejected']}, unchanged {ap['unchanged']}")
