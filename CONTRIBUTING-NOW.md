@@ -1,6 +1,6 @@
 # What we need right now
 
-*Auto-generated on 2026-10-21 by `translation/scripts/contributing-status.py`.*
+*Auto-generated on 2026-10-23 by `translation/scripts/contributing-status.py`.*
 *Do not edit by hand — it will be overwritten. Regenerate with:*
 
 ```bash
@@ -44,32 +44,32 @@ stop; it is the only reservation there is. List them any time with
 
 ## Pick a locale
 
-Every locale below has pages waiting for a read: pages never read, or
-*delta* pages whose retranslated entries no reviewer has seen yet (the
-pool table further down). Pick one that is not claimed above, open
-your claim issue, then follow `CONTRIBUTING-REVIEWS.md`. When a
-locale's pool runs dry, sample with `--order risk`: it re-reads the
-pages whose last verdict was FAIL first (the first column here).
+Nearly every page of every locale now carries a review verdict, so the
+work is **re-reading where a read is most likely to find something**.
+Sample with `--order risk` (and without `--exclude-reviewed`): it takes
+pages whose last verdict was FAIL first (they were fixed but never
+re-read), then pages never read, then the oldest verdicts.
+`translation/v2/round.py start --order risk` does this for you.
 
 | Locale | Last verdict FAIL | Never read | Oldest verdict |
 |---|---|---|---|
+| `cs` | **3** | 0 | 2026-09-29 |
 | `fr` | **2** | 0 | 2026-07-05 |
 | `pt` | **1** | 0 | 2026-07-05 |
 | `ar` | **1** | 0 | 2026-08-29 |
 | `de` | **1** | 0 | 2026-09-29 |
 | `tl` | **1** | 0 | 2026-09-29 |
 | `he` | **1** | 0 | 2026-09-29 |
-| `pl` | **0** | 42 | 2026-06-28 |
-| `id` | **0** | 42 | 2026-09-12 |
-| `ko` | **0** | 42 | 2026-09-28 |
-| `th` | **0** | 42 | 2026-09-29 |
-| `ro` | **0** | 42 | 2026-09-29 |
-| `cs` | **0** | 42 | 2026-09-29 |
 | `es` | **0** | 0 | 2026-06-26 |
+| `pl` | **0** | 0 | 2026-06-28 |
+| `id` | **0** | 0 | 2026-09-12 |
 | `ja` | **0** | 0 | 2026-09-28 |
 | `it` | **0** | 0 | 2026-09-28 |
+| `ko` | **0** | 0 | 2026-09-28 |
 | `uk` | **0** | 0 | 2026-09-29 |
 | `ms` | **0** | 0 | 2026-09-29 |
+| `th` | **0** | 0 | 2026-09-29 |
+| `ro` | **0** | 0 | 2026-09-29 |
 
 **`--max-leaks` currently filters nothing, and that is expected.** A
 leak is a term the locale's `translation/glossary/<loc>.json` records
@@ -79,34 +79,25 @@ do not count, and no locale currently records anything else, so
 every file scores 0. What limits a pool today is pages already
 reviewed with nothing written since, not leakage.
 
-*Never read* pages have no verdict yet: a full read. *Delta* pages
-were reviewed, and an English sync has since retranslated entries on
-them. The reviewer judges only those entries. A review's own fixes do
-not count as unread. A locale can be 100% reviewed and still have a
-delta pool.
-
-| Locale | Never read | Delta | Reviewed so far |
-|---|---|---|---|
-| `cs` | **8** | 34 | 414/456 (90%) |
-| `id` | **8** | 34 | 414/456 (90%) |
-| `ko` | **8** | 34 | 414/456 (90%) |
-| `pl` | **8** | 34 | 414/456 (90%) |
-| `ro` | **8** | 34 | 414/456 (90%) |
-| `th` | **8** | 34 | 414/456 (90%) |
-
 **Nearly exhausted** (fewer than 25 eligible) — still worth
 a short round, but expect to re-sweep files that already carry a
 verdict, or to accept a round smaller than 25:
 
 - `ar` — 0 never read, 0 delta (456/456 reviewed)
+- `cs` — 0 never read, 0 delta (456/456 reviewed)
 - `de` — 0 never read, 0 delta (456/456 reviewed)
 - `es` — 0 never read, 0 delta (456/456 reviewed)
 - `fr` — 0 never read, 0 delta (456/456 reviewed)
 - `he` — 0 never read, 0 delta (456/456 reviewed)
+- `id` — 0 never read, 0 delta (456/456 reviewed)
 - `it` — 0 never read, 0 delta (456/456 reviewed)
 - `ja` — 0 never read, 0 delta (456/456 reviewed)
+- `ko` — 0 never read, 0 delta (456/456 reviewed)
 - `ms` — 0 never read, 0 delta (456/456 reviewed)
+- `pl` — 0 never read, 0 delta (456/456 reviewed)
 - `pt` — 0 never read, 0 delta (456/456 reviewed)
+- `ro` — 0 never read, 0 delta (456/456 reviewed)
+- `th` — 0 never read, 0 delta (456/456 reviewed)
 - `tl` — 0 never read, 0 delta (456/456 reviewed)
 - `uk` — 0 never read, 0 delta (456/456 reviewed)
 
@@ -116,12 +107,12 @@ verdict, or to accept a round smaller than 25:
 
 | Round (seed) | Files | FAIL | Rate |
 |---|---|---|---|
-| `2026101611-ms-JanLahmann` | 42 | 0 | 0.0% |
-| `2026101610-he-JanLahmann` | 42 | 1 | 2.4% |
-| `2026101609-ar-JanLahmann` | 42 | 0 | 0.0% |
-| `2026101608-tl-JanLahmann` | 42 | 1 | 2.4% |
-| `2026101607-pt-JanLahmann` | 42 | 1 | 2.4% |
-| `2026101606-it-JanLahmann` | 42 | 0 | 0.0% |
+| `2026102380-ko-JanLahmann` | 42 | 0 | 0.0% |
+| `2026102314-ro-JanLahmann` | 42 | 0 | 0.0% |
+| `2026102313-cs-JanLahmann` | 42 | 3 | 7.1% |
+| `2026102300-pl-JanLahmann` | 42 | 0 | 0.0% |
+| `2026102237-id-JanLahmann` | 42 | 0 | 0.0% |
+| `2026102218-th-JanLahmann` | 42 | 0 | 0.0% |
 
 Typical FAIL rate is around **1%**. If your round comes
 in far above that, stop and tell the maintainer before fixing — it
