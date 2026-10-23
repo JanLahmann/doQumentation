@@ -71,7 +71,10 @@ function PageDates({entry, locale, currentPath}: {
   const originalUrl = getOriginalPageUrl(currentPath);
   const enUrl =
     locale !== 'en'
-      ? `https://doqumentation.org${currentPath.replace(/^\/[a-z]{2}(-[a-z]+)?(?=\/)/, '')}`
+      ? `https://doqumentation.org${currentPath
+          .replace(/^\/[a-z]{2}(-[a-z]+)?(?=\/)/, '')
+          // A section index's path ends in "/"; the page is served without it.
+          .replace(/(.)\/$/, '$1')}`
       : null;
 
   const upstreamDate = formatDate(entry.upstreamDate, locale);

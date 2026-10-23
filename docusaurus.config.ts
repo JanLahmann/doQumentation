@@ -487,7 +487,14 @@ const config: Config = {
     },
     
     prism: {
-      theme: prismThemes.github,
+      // GitHub's comment grey (#999988) is 2.6:1 on the code background; axe
+      // wants 4.5:1. Same theme with a darker grey for comments.
+      theme: {
+        ...prismThemes.github,
+        styles: prismThemes.github.styles.map((s) =>
+          s.types.includes('comment') ? {...s, style: {...s.style, color: '#57606a'}} : s,
+        ),
+      },
       darkTheme: prismThemes.dracula,
       additionalLanguages: ['python', 'bash', 'json', 'shell-session', 'yaml', 'toml', 'diff', 'markup'],
     },

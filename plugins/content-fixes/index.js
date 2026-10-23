@@ -90,6 +90,41 @@ const RENAMED = {
   '/guides/configure-error-mitigation': '/guides/error-mitigation-and-suppression-techniques',
 };
 
+// Dead links in the imported content whose successor is clear: the target
+// moved (addon Sphinx docs from stubs/ to apidocs/, how_tos/ to guides/;
+// Qiskit's developer docs to docs/devguide/ in Qiskit/qiskit#17178) or the
+// page was replaced (get-started-with-primitives by
+// get-started-with-backend-primitives, upstream b179a8c4). Keyed without the
+// #fragment; `hash` maps an old fragment to the new page's.
+const DEAD = {
+  'https://docs.quantum.ibm.com/guides/get-started-with-primitives': {
+    to: '/guides/get-started-with-backend-primitives',
+    hash: {'#get-started-with-sampler': '#get-started-with-the-sampler-backend-primitive',
+           '#get-started-with-estimator': '#get-started-with-the-estimator-backend-primitive'},
+  },
+  'https://quantum.cloud.ibm.com/docs/guides/get-started-with-primitives': {
+    to: '/guides/get-started-with-backend-primitives',
+    hash: {'#get-started-with-sampler': '#get-started-with-the-sampler-backend-primitive',
+           '#get-started-with-estimator': '#get-started-with-the-estimator-backend-primitive'},
+  },
+  'https://docs.quantum.ibm.com/learning/': {to: 'https://quantum.cloud.ibm.com/learning'},
+  'https://docs.quantum.ibm.com/learning': {to: 'https://quantum.cloud.ibm.com/learning'},
+  'https://github.com/Qiskit/qiskit/blob/main/DEPRECATION.md':
+    {to: 'https://github.com/Qiskit/qiskit/blob/main/docs/devguide/deprecation.md'},
+  'https://github.com/Qiskit/qiskit/blob/main/MAINTAINING.md':
+    {to: 'https://github.com/Qiskit/qiskit/blob/main/docs/devguide/maintaining.md'},
+  'https://qiskit.github.io/qiskit-addon-utils/stubs/qiskit_addon_utils.problem_generators.html':
+    {to: 'https://qiskit.github.io/qiskit-addon-utils/apidocs/qiskit_addon_utils.problem_generators.html'},
+  'https://qiskit.github.io/qiskit-addon-mpf/stubs/qiskit_addon_mpf.costs.setup_exact_problem.html':
+    {to: 'https://qiskit.github.io/qiskit-addon-mpf/apidocs/qiskit_addon_mpf.costs.html#qiskit_addon_mpf.costs.setup_exact_problem'},
+  'https://qiskit.github.io/qiskit-addon-mpf/stubs/qiskit_addon_mpf.costs.setup_sum_of_squares_problem.html':
+    {to: 'https://qiskit.github.io/qiskit-addon-mpf/apidocs/qiskit_addon_mpf.costs.html#qiskit_addon_mpf.costs.setup_sum_of_squares_problem'},
+  'https://qiskit.github.io/qiskit-addon-sqd/how_tos/choose_subspace_dimension.html':
+    {to: 'https://qiskit.github.io/qiskit-addon-sqd/guides/choose_subspace_dimension.html'},
+  'https://qiskit.github.io/qiskit-addon-slc/tutorials/01_getting_started.html':
+    {to: 'https://qiskit.github.io/qiskit-addon-slc/guides/quickstart.html'},
+};
+
 function splitHash(url) {
   const i = url.search(/[?#]/);
   return i < 0 ? [url, ''] : [url.slice(0, i), url.slice(i)];
@@ -114,6 +149,11 @@ function fixUrl(url, filePath) {
       const target = path.posix.normalize(`tutorials/${p}`).replace(/\.(rst|ipynb)$/, '.html');
       return `https://qiskit.github.io/qiskit-addon-${addon[1]}/${target}${rest}`;
     }
+  }
+  {
+    const [base, hash] = splitHash(url);
+    const dead = DEAD[base];
+    if (dead) return dead.to.includes('#') ? dead.to : dead.to + ((dead.hash && dead.hash[hash]) || hash);
   }
   if (!url.startsWith('/')) return url;
   let [p, rest] = splitHash(url);

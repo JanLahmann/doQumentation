@@ -42,9 +42,10 @@ export default function BookmarkButton(): React.JSX.Element {
       title={bookmarked
         ? translate({id: 'bookmark.remove', message: 'Remove bookmark from homepage'})
         : translate({id: 'bookmark.add', message: 'Save to your bookmarks list on the homepage'})}
-      aria-label={bookmarked
-        ? translate({id: 'bookmark.remove', message: 'Remove bookmark from homepage'})
-        : translate({id: 'bookmark.add', message: 'Save to your bookmarks list on the homepage'})}
+      // The visible "Bookmark"/"Bookmarked" is the accessible name (an
+      // aria-label without that word fails label-content-name-mismatch);
+      // aria-pressed says the state, the title explains it.
+      aria-pressed={bookmarked}
     >
       <span className="dq-bookmark-button__icon" aria-hidden="true">
         {bookmarked ? '★' : '☆'}
