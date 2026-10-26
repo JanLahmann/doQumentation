@@ -47,7 +47,7 @@ $$
 H_C = \sum_{ij} Q_{ij} \, Z_i Z_j + \sum_i b_i \, Z_i.
 $$
 
-For the unweighted max-cut problem considered here, the linear coefficients vanish ($b_i = 0$) and $Q_{ij} = 1$ for each edge, leaving the simpler form $H_C = \sum_{(i,j) \in E} Z_i Z_j$ that you will build in code below. The more general form above is what you would need to adapt this workflow to weighted graphs or other QUBO-expressible problems.
+In this tutorial, you do not carry out this substitution by hand. The [Optimization Mapper Qiskit addon](https://qiskit.github.io/qiskit-addon-opt-mapper/) (`qiskit-addon-opt-mapper`) provides a `Maxcut` application class that models the problem directly from a graph, a converter that turns the model into a QUBO, and a translator that maps the QUBO to $H_C$. For the unweighted max-cut problem considered here, the linear coefficients vanish ($b_i = 0$) and each edge contributes a $\tfrac{1}{2} Z_i Z_j$ term, together with a constant offset that relates $\langle H_C \rangle$ to the cut value. The same pipeline handles weighted graphs and other QUBO-expressible problems without changing the rest of the workflow.
 
 ### How QAOA works
 
@@ -64,6 +64,7 @@ Before starting this tutorial, be sure you have the following installed:
 
 * Qiskit SDK v2.0 or later, with [visualization](https://docs.quantum.ibm.com/api/qiskit/visualization) support
 * Qiskit Runtime v0.22 or later (`pip install qiskit-ibm-runtime`)
+* Optimization Mapper Qiskit addon (`pip install qiskit-addon-opt-mapper`)
 
 In addition, you will need access to an instance on [IBM Quantum&reg; Platform](/guides/cloud-setup).
 ## Setup
@@ -72,7 +73,7 @@ In addition, you will need access to an instance on [IBM Quantum&reg; Platform](
 # Added by doQumentation — installs the packages this notebook needs if they are missing
 import importlib.util
 
-_needed = {"matplotlib": "matplotlib", "numpy": "numpy", "qiskit": "qiskit", "qiskit_ibm_runtime": "qiskit-ibm-runtime", "rustworkx": "rustworkx", "scipy": "scipy"}
+_needed = {"matplotlib": "matplotlib", "numpy": "numpy", "qiskit": "qiskit", "qiskit_addon_opt_mapper": "qiskit-addon-opt-mapper", "qiskit_ibm_runtime": "qiskit-ibm-runtime", "rustworkx": "rustworkx", "scipy": "scipy"}
 _missing = [pip for module, pip in _needed.items()
             if importlib.util.find_spec(module) is None]
 # One at a time, so a package that fails to install does not block the others
@@ -89,7 +90,6 @@ from rustworkx.visualization import mpl_draw as draw_graph
 import numpy as np
 from scipy.optimize import minimize
 from collections import defaultdict
-from typing import Sequence
 
 from qiskit.quantum_info import SparsePauliOp
 from qiskit.circuit.library import QAOAAnsatz
@@ -98,6 +98,10 @@ from qiskit.transpiler.preset_passmanagers import generate_preset_pass_manager
 from qiskit_ibm_runtime import QiskitRuntimeService
 from qiskit_ibm_runtime import Session, EstimatorV2 as Estimator
 from qiskit_ibm_runtime import SamplerV2 as Sampler
+
+from qiskit_addon_opt_mapper.applications import Maxcut
+from qiskit_addon_opt_mapper.converters import OptimizationProblemToQubo
+from qiskit_addon_opt_mapper.translators import to_ising
 ```
 
 ## Small-scale example
@@ -126,35 +130,46 @@ draw_graph(graph, node_size=600, with_labels=True)
 
 ### Step 1: Map classical inputs to a quantum problem
 
-Map the classical graph into quantum **circuits** and **operators**. As described in the [Background](#background), for unweighted max-cut the cost Hamiltonian reduces to $H_C = \sum_{(i,j) \in E} Z_i Z_j$, and QAOA uses a parametrized ansatz circuit to prepare candidate ground states of $H_C$.
-#### Build the cost Hamiltonian
+Map the classical graph into quantum **circuits** and **operators**. As described in the [Background](#background), max-cut is a QUBO problem whose cost Hamiltonian $H_C$ has a ground state that encodes the optimal cut, and QAOA uses a parametrized ansatz circuit to prepare candidate ground states of $H_C$. Use the Optimization Mapper addon to go from the graph to $H_C$ in three steps: model the problem, convert it to a QUBO, and translate the QUBO to an Ising Hamiltonian.
+#### Model the problem
 
-Convert the graph edges into Pauli $Z_iZ_j$ terms to construct $H_C$ (see [Background](#background) for the derivation).
+The `Maxcut` application class accepts the rustworkx graph directly and returns an `OptimizationProblem` whose objective is the cut value to maximize. Each edge $(i, j)$ contributes $x_i + x_j - 2 x_i x_j$ to the objective, exactly as in the [Background](#background).
 
 ```python
-def build_max_cut_paulis(
-    graph: rx.PyGraph,
-) -> list[tuple[str, list[int], float]]:
-    """Convert graph edges to a list of ZZ Pauli terms.
+maxcut = Maxcut(graph)
+maxcut_problem = maxcut.to_optimization_problem()
+print(maxcut_problem.prettyprint())
+```
 
-    The returned list is in the sparse format expected by
-    ``SparsePauliOp.from_sparse_list``: each element is
-    ``(pauli_string, qubit_indices, coefficient)``.
-    """
-    pauli_list = []
-    for edge in list(graph.edge_list()):
-        weight = graph.get_edge_data(edge[0], edge[1])
-        pauli_list.append(("ZZ", [edge[0], edge[1]], weight))
-    return pauli_list
+```text
+Problem name: Max-cut
 
-max_cut_paulis = build_max_cut_paulis(graph)
-cost_hamiltonian = SparsePauliOp.from_sparse_list(max_cut_paulis, n_small)
+Maximize
+  -2*x_0*x_1 - 2*x_0*x_2 - 2*x_0*x_4 - 2*x_1*x_2 - 2*x_2*x_3 - 2*x_3*x_4 + 3*x_0
+  + 2*x_1 + 3*x_2 + 2*x_3 + 2*x_4
+
+Subject to
+  No constraints
+
+  Binary variables (5)
+    x_0 x_1 x_2 x_3 x_4
+```
+
+#### Build the cost Hamiltonian
+
+Convert the problem to a QUBO with `OptimizationProblemToQubo`, then translate the QUBO to an Ising Hamiltonian with `to_ising`. The converter turns the maximization into a minimization of the negated cut value, and the translator applies the $x_i \to (1 - Z_i)/2$ substitution. It returns $H_C$ as a `SparsePauliOp` together with a scalar `offset` such that $\text{QUBO value} = \langle H_C \rangle + \text{offset}$. Because the QUBO minimizes the negated cut value, the cut value of any bitstring is $-(\langle H_C \rangle + \text{offset})$.
+
+```python
+qubo = OptimizationProblemToQubo().convert(maxcut_problem)
+cost_hamiltonian, offset = to_ising(qubo)
 print("Cost Function Hamiltonian:", cost_hamiltonian)
+print("Offset:", offset)
 ```
 
 ```text
 Cost Function Hamiltonian: SparsePauliOp(['IIIZZ', 'IIZIZ', 'ZIIIZ', 'IIZZI', 'IZZII', 'ZZIII'],
-              coeffs=[1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j])
+              coeffs=[0.5+0.j, 0.5+0.j, 0.5+0.j, 0.5+0.j, 0.5+0.j, 0.5+0.j])
+Offset: -3.0
 ```
 
 #### Build the QAOA ansatz circuit
@@ -265,9 +280,9 @@ with Session(backend=backend) as session:
 message: Return from COBYLA because the trust region radius reaches its lower bound.
  success: True
   status: 0
-     fun: -2.0402211719947774
-       x: [ 3.041e+00  1.212e+00  2.081e+00  4.471e+00]
-    nfev: 36
+     fun: -1.0164225323839062
+       x: [ 1.404e+00  1.174e+00  4.036e+00  2.969e+00]
+    nfev: 30
    maxcv: 0.0
 ```
 
@@ -318,12 +333,12 @@ print(final_distribution_int)
 ```
 
 ```text
-{18: 0.039, 5: 0.0665, 20: 0.0973, 29: 0.0063, 9: 0.0899, 13: 0.0379, 2: 0.0047, 1: 0.0153, 11: 0.0932, 14: 0.0327, 12: 0.0314, 25: 0.0193, 21: 0.0398, 6: 0.0224, 4: 0.0197, 10: 0.0387, 3: 0.0181, 26: 0.07, 17: 0.0327, 19: 0.0332, 22: 0.0914, 24: 0.007, 0: 0.0033, 8: 0.0066, 30: 0.0158, 28: 0.0169, 27: 0.0222, 16: 0.0073, 7: 0.0057, 23: 0.0062, 15: 0.0054, 31: 0.0041}
+{22: 0.1003, 15: 0.008, 9: 0.0934, 4: 0.02, 31: 0.004, 17: 0.0288, 18: 0.0327, 14: 0.0305, 10: 0.0358, 28: 0.0128, 5: 0.0868, 20: 0.09, 11: 0.0908, 13: 0.0321, 19: 0.0298, 27: 0.0186, 8: 0.0077, 30: 0.0211, 23: 0.0098, 26: 0.0839, 12: 0.0254, 21: 0.0315, 16: 0.0082, 25: 0.01, 6: 0.0131, 1: 0.0205, 2: 0.0145, 29: 0.0137, 7: 0.0059, 3: 0.0101, 24: 0.0078, 0: 0.0024}
 ```
 
 ### Step 4: Post-process and return result in desired classical format
 
-Extract the most likely bitstring from the sampled distribution. This represents the best cut found by QAOA.
+Extract the most likely bitstring from the sampled distribution. This represents the best cut found by QAOA. The `interpret` method of the `Maxcut` class decodes the bitstring into the two node sets of the partition.
 
 ```python
 # auxiliary functions to sample most likely bitstring
@@ -338,10 +353,14 @@ most_likely_bitstring = to_bitstring(most_likely, len(graph))
 most_likely_bitstring.reverse()
 
 print("Result bitstring:", most_likely_bitstring)
+
+partition = maxcut.interpret(np.array(most_likely_bitstring))
+print("Partition:", partition)
 ```
 
 ```text
-Result bitstring: [0, 0, 1, 0, 1]
+Result bitstring: [0, 1, 1, 0, 1]
+Partition: [[0, 3], [1, 2, 4]]
 ```
 
 ```python
@@ -384,50 +403,43 @@ plot_result(graph, most_likely_bitstring)
 
 ![Output of the previous code cell](/docs/images/tutorials/quantum-approximate-optimization-algorithm/extracted-outputs/33135970-8bc4-4fb2-ab87-08726a432ce4-0.avif)
 
-Now, calculate the value of the cut:
+Now, calculate the value of the cut. The objective of the `OptimizationProblem` is the cut value itself, so evaluate it directly on the bitstring. You can also compare it with the cut value implied by the optimizer's final cost, $-(\langle H_C \rangle + \text{offset})$, which is an average over the whole sampled distribution rather than the value of a single bitstring.
 
 ```python
-def evaluate_sample(x: Sequence[int], graph: rx.PyGraph) -> float:
-    assert len(x) == len(
-        list(graph.nodes())
-    ), "The length of x must coincide with the number of nodes in the graph."
-    return sum(
-        x[u] * (1 - x[v]) + x[v] * (1 - x[u])
-        for u, v in list(graph.edge_list())
-    )
-
-cut_value = evaluate_sample(most_likely_bitstring, graph)
+cut_value = maxcut_problem.objective.evaluate(np.array(most_likely_bitstring))
 print("The value of the cut is:", cut_value)
+print("Cut value implied by the optimized cost:", -(result.fun + offset))
 ```
 
 ```text
-The value of the cut is: 5
+The value of the cut is: 5.0
+Cut value implied by the optimized cost: 4.016422532383906
 ```
 
 For a graph this small, the true optimum is easy to brute-force, so you can double-check the results by comparing the QAOA result against the exact answer.
 
 ```python
 # Classical baseline: enumerate all 2**n_small bitstrings and take the best cut.
-def brute_force_max_cut(graph: rx.PyGraph) -> tuple[int, list[int]]:
-    n = len(list(graph.nodes()))
+def brute_force_max_cut(problem) -> tuple[int, list[int]]:
+    n = problem.get_num_vars()
     best_cut = -1
     best_x: list[int] = []
     for i in range(2**n):
-        x = [(i >> k) & 1 for k in range(n)]
-        cut = evaluate_sample(x, graph)
+        x = np.array([(i >> k) & 1 for k in range(n)])
+        cut = problem.objective.evaluate(x)
         if cut > best_cut:
             best_cut = int(cut)
-            best_x = x
+            best_x = x.tolist()
     return best_cut, best_x
 
-classical_best, classical_x = brute_force_max_cut(graph)
+classical_best, classical_x = brute_force_max_cut(maxcut_problem)
 print(f"Classical optimum (brute force): {classical_best}")
 print(f"QAOA cut value:                  {cut_value}")
 ```
 
 ```text
 Classical optimum (brute force): 5
-QAOA cut value:                  5
+QAOA cut value:                  5.0
 ```
 
 ## Large-scale hardware example
@@ -502,23 +514,25 @@ def samples_to_objective_values(samples, hamiltonian):
     return objective_values
 ```
 
-**Step 1**: Build the graph, cost Hamiltonian, and ansatz.
+**Step 1**: Build the graph from the backend's coupling map, then map it to the cost Hamiltonian with the Optimization Mapper addon and build the ansatz.
 
 ```python
 # Step 1: build the 100-node graph, cost Hamiltonian, and QAOA ansatz.
 n_large = 100
 graph_100 = rx.PyGraph()
 graph_100.add_nodes_from(np.arange(0, n_large, 1))
-elist = []
-for edge in backend.coupling_map:
-    if edge[0] < n_large and edge[1] < n_large:
-        elist.append((edge[0], edge[1], 1.0))
-graph_100.add_edges_from(elist)
+elist = set()
+for u, v in backend.coupling_map:
+    # The coupling map lists both directions of each coupler, so sort
+    # the endpoints to avoid adding the same edge twice.
+    if u < n_large and v < n_large:
+        elist.add((min(u, v), max(u, v), 1.0))
+graph_100.add_edges_from(sorted(elist))
 
-max_cut_paulis_100 = build_max_cut_paulis(graph_100)
-cost_hamiltonian_100 = SparsePauliOp.from_sparse_list(
-    max_cut_paulis_100, n_large
-)
+maxcut_100 = Maxcut(graph_100)
+maxcut_problem_100 = maxcut_100.to_optimization_problem()
+qubo_100 = OptimizationProblemToQubo().convert(maxcut_problem_100)
+cost_hamiltonian_100, offset_100 = to_ising(qubo_100)
 
 circuit_100 = QAOAAnsatz(cost_operator=cost_hamiltonian_100, reps=1)
 circuit_100.measure_all()
@@ -590,9 +604,9 @@ final_distribution_100_int = {
 message: Return from COBYLA because the trust region radius reaches its lower bound.
  success: True
   status: 0
-     fun: -17.172689238986344
-       x: [ 2.574e+00  4.166e+00]
-    nfev: 28
+     fun: -4.214640355142735
+       x: [ 2.586e+00  4.161e+00]
+    nfev: 26
    maxcv: 0.0
 ```
 
@@ -606,13 +620,15 @@ best_sol_bitstring_100.reverse()
 
 print("Result bitstring:", best_sol_bitstring_100)
 
-cut_value_100 = evaluate_sample(best_sol_bitstring_100, graph_100)
+cut_value_100 = maxcut_problem_100.objective.evaluate(
+    np.array(best_sol_bitstring_100)
+)
 print("The value of the cut is:", cut_value_100)
 ```
 
 ```text
-Result bitstring: [1, 1, 0, 1, 1, 0, 1, 1, 1, 0, 1, 0, 1, 1, 1, 0, 1, 1, 1, 1, 0, 0, 1, 0, 0, 1, 1, 0, 1, 0, 1, 0, 1, 1, 0, 1, 1, 0, 0, 0, 0, 0, 1, 1, 0, 1, 0, 0, 0, 1, 0, 0, 1, 0, 1, 0, 0, 1, 1, 1, 1, 1, 0, 1, 0, 1, 0, 0, 0, 1, 0, 1, 0, 1, 0, 0, 0, 0, 1, 0, 0, 1, 0, 1, 1, 1, 1, 0, 1, 0, 1, 0, 1, 1, 1, 0, 1, 1, 1, 0]
-The value of the cut is: 156
+Result bitstring: [1, 0, 0, 1, 1, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 1, 0, 0, 0, 1, 0, 1, 1, 0, 1, 0, 1, 1, 1, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 1, 0, 0, 0, 1, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 1, 1, 0, 1, 1, 0, 1, 0, 0, 0, 1, 1, 0, 1, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 1, 1, 0, 1]
+The value of the cut is: 78.0
 ```
 
 Check that the cost minimized in the optimization loop has converged, and visualize results.

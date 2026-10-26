@@ -1,7 +1,7 @@
 ---
 title: "Circuit cutting for periodic boundary conditions"
 sidebar_label: "Circuit cutting for periodic boundary conditions"
-description: "Use circuit cutting to deal with a utility-scale periodic chain problem where the first and last qubits are not neighbors."
+description: "Use gate cutting to implement periodic boundary conditions, then compare reconstructed observables with an uncut circuit."
 notebook_path: "tutorials/periodic-boundary-conditions-with-circuit-cutting.ipynb"
 ---
 
@@ -11,33 +11,43 @@ import TutorialFeedback from '@site/src/components/TutorialFeedback';
 
 
 
+*Usage estimate: 2 minutes on `ibm_boston` (NOTE: This is an estimate only. Your runtime may vary.)*
+## Learning outcomes
 
-{/* cspell:ignore fontsize edgecolor */}
+- Use a virtual connection to transpile a periodic chain without routing its boundary gates.
+- Replace those gates with circuit-cutting experiments and reconstruct expectation values from Sampler results.
+- Compare cut and uncut circuits, accounting for circuit depth and sampling cost.
 
-*Usage estimate: Two minutes on an Eagle processor (NOTE: This is an estimate only. Your runtime might vary.)*
+## Prerequisites
+
+You should be familiar with [Qiskit patterns](/guides/intro-to-patterns), [transpilation](/guides/transpile), and the [Sampler primitive](/guides/primitives).
+
 ## Background
 
-In this notebook, we consider the simulation of a periodic chain of qubits where there is two qubit operation between every two adjacent qubits, including the first and the last ones. Periodic chains are often found in physics and chemistry problems such as Ising models and molecular simulation.
+Periodic boundary conditions connect the last qubit in a chain to the first. If these qubits are far apart on a quantum processor, implementing their interaction requires routing, which can add two-qubit gates and increase circuit depth.
 
-Current IBM Quantum&reg; devices are planar. It is possible to embed some periodic chains on the topology directly where the first and last qubits are neighbors. However, for big enough problems, the first and last qubits can be far apart, thus requiring many SWAP gates for the 2-qubit operation between these two qubits. Such a periodic boundary problem has been studied in <a href="https://arxiv.org/abs/2402.17833">this paper</a>.
+Gate cutting replaces a two-qubit gate with a weighted combination of single-qubit operations and measurements. Executing these experiments and combining their results reconstructs expectation values for the original circuit. This can reduce routing overhead, at the cost of additional sampling. See the [circuit cutting explanation](https://qiskit.github.io/qiskit-addon-cutting/explanation/index.html) for the underlying quasiprobability decomposition.
 
-In this notebook we show the usage of circuit cutting to deal with such a utility scale periodic chain problem where the first and last qubits are not neighbors. Cutting this long range connectivity avoids the extra SWAP gates at the cost of executing multiple instances of the circuit, and some classical post-processing. In summary, cutting can be incorporated to logically calculate the long distance 2-qubit operations. In other words, this approach leads to an effective increase in the connectivity of the coupling map, thus leading to a fewer number of SWAP gates.
-
-Note that there are two types of cuts - cutting the wire of a circuit (called `wire cutting`), or replacing a 2-qubit gate with multiple single qubit operations (called `gate cutting`). In this notebook, we shall focus on gate cutting. For more details on gate cutting, refer to the <a href="https://qiskit.github.io/qiskit-addon-cutting/explanation/index.html">explanatory materials</a> in `qiskit-addon-cutting`, and the corresponding references. For more details on wire cutting, refer to the [Wire cutting for expectation values estimation](/tutorials/wire-cutting) tutorial, or the tutorials in <a href='https://qiskit.github.io/qiskit-addon-cutting/tutorials/index.html'>qiskit-addon-cutting</a>.
+You will first validate this workflow on a six-qubit noiseless simulator. Then you will apply it to a chain of at least 30 qubits on hardware and compare the cut and uncut results. The circuit uses parameters with analytically known expectation values, so the hardware comparison does not require a large statevector simulation.
 ## Requirements
 
-Before starting this tutorial, be sure you have the following installed:
+Before starting this tutorial, install:
 
-- Qiskit SDK v1.2 or later (`pip install qiskit`)
-- Qiskit Runtime v0.3 or later (`pip install qiskit-ibm-runtime`)
-- Circuit cutting Qiskit addon v.9.0 or later (`pip install qiskit-addon-cutting`)
+- Qiskit SDK v2.3 or later, with [visualization](https://docs.quantum.ibm.com/api/qiskit/visualization) support
+- Qiskit Runtime v0.46 or later (`pip install 'qiskit-ibm-runtime~=0.46.1'`)
+- Circuit cutting Qiskit addon v0.10.0 (`pip install 'qiskit-addon-cutting~=0.10.0'`)
+- Qiskit Aer v0.17.2 or later (`pip install 'qiskit-aer~=0.17.2'`)
+
+The hardware example also requires an [IBM Quantum&reg; Platform account](https://quantum.cloud.ibm.com/) with access to a QPU with at least 120 qubits and [saved credentials](/guides/save-credentials). The simulator example runs without an account.
 ## Setup
+
+Import the tools used in both examples. Aer supports the intermediate measurements introduced by gate cutting.
 
 ```python
 # Added by doQumentation — installs the packages this notebook needs if they are missing
 import importlib.util
 
-_needed = {"matplotlib": "matplotlib", "numpy": "numpy", "qiskit": "qiskit", "qiskit_addon_cutting": "qiskit-addon-cutting", "qiskit_ibm_runtime": "qiskit-ibm-runtime"}
+_needed = {"matplotlib": "matplotlib", "numpy": "numpy", "qiskit": "qiskit", "qiskit_addon_cutting": "qiskit-addon-cutting", "qiskit_aer": "qiskit-aer", "qiskit_ibm_runtime": "qiskit-ibm-runtime", "rustworkx": "rustworkx"}
 _missing = [pip for module, pip in _needed.items()
             if importlib.util.find_spec(module) is None]
 # One at a time, so a package that fails to install does not block the others
@@ -48,521 +58,377 @@ if not _missing:
 ```
 
 ```python
-import numpy as np
 import matplotlib.pyplot as plt
-import matplotlib as mpl
+import numpy as np
+import rustworkx as rx
 
-from qiskit.transpiler import PassManager
+from qiskit.circuit.equivalence_library import SessionEquivalenceLibrary
+from qiskit.circuit.library import n_local
+from qiskit.providers.fake_provider import GenericBackendV2
+from qiskit.quantum_info import SparsePauliOp, Statevector
+from qiskit.result import sampled_expectation_value
+from qiskit.transpiler import CouplingMap, PassManager
 from qiskit.transpiler.passes import (
     BasisTranslator,
+    GateDirection,
     Optimize1qGatesDecomposition,
 )
-from qiskit.circuit.equivalence_library import (
-    SessionEquivalenceLibrary as sel,
-)
-from qiskit.converters import circuit_to_dag, dag_to_circuit
-from qiskit.result import sampled_expectation_value
-from qiskit.quantum_info import SparsePauliOp
 from qiskit.transpiler.preset_passmanagers import generate_preset_pass_manager
-from qiskit.circuit.library import TwoLocal
-
+from qiskit_aer.primitives import SamplerV2 as AerSampler
 from qiskit_addon_cutting import (
     cut_gates,
     generate_cutting_experiments,
     reconstruct_expectation_values,
 )
-
-from qiskit_ibm_runtime import QiskitRuntimeService
-from qiskit_ibm_runtime import SamplerV2, SamplerOptions, Batch
+from qiskit_ibm_runtime import (
+    Batch,
+    QiskitRuntimeService,
+    SamplerOptions,
+    SamplerV2,
+)
 ```
 
-## Step 1: Map classical inputs to a quantum problem
+## Small-scale simulator example
 
-Here, we'll generate a TwoLocal circuit and define some observables.
+Use a six-qubit ring with two layers of entangling gates. The simulated device has linear connectivity, so the ring's closing edge requires routing unless it is cut.
 
-<ul>
-    <li>Input: Parameters to create a circuit</li>
-    <li>Output: Abstract circuit and observables</li>
-</ul>
-We consider a hardware-efficient `entangler map` for the TwoLocal circuit with periodic connectivity between the last and the first qubits of the `entangler map`. This long range interaction can lead to extra SWAP gates during transpilation, thus increasing the depth of the circuit.
-#### Select backend and initial layout
+### Step 1: Map classical inputs to a quantum problem
+
+The following function creates RX rotation layers interleaved with CX gates on alternating edges of the ring. Two repetitions give two boundary gates to cut. Set the first two rotation layers to zero and the final layer to $\pi$. The ideal output is then $|1\rangle^{\otimes n}$, up to a global phase.
+
+Measure the average single-qubit Z expectation and the average adjacent ZZ expectation, **including the periodic pair**:
+
+$$
+M_Z = \frac{1}{n}\sum_{i=0}^{n-1}\langle Z_i\rangle, \qquad
+C_{ZZ} = \frac{1}{n}\sum_{i=0}^{n-1}\langle Z_i Z_{(i+1)\bmod n}\rangle.
+$$
+
+Their ideal values are $-1$ and $+1$, respectively. These parameters provide a benchmark for the workflow; they do not demonstrate a classically difficult computation.
+
+```python
+def build_periodic_problem(num_qubits, num_reps=2):
+    """Build a periodic benchmark circuit and its Z and ZZ observables."""
+    edges = [(i, (i + 1) % num_qubits) for i in range(num_qubits)]
+    circuit = n_local(
+        num_qubits,
+        rotation_blocks="rx",
+        entanglement_blocks="cx",
+        entanglement=edges[::2] + edges[1::2],
+        reps=num_reps,
+    )
+    parameters = np.zeros(circuit.num_parameters)
+    parameters[-num_qubits:] = np.pi
+    circuit = circuit.assign_parameters(parameters)
+
+    terms = [("Z", [i], 1) for i in range(num_qubits)]
+    terms += [("ZZ", [i, (i + 1) % num_qubits], 1) for i in range(num_qubits)]
+    observables = SparsePauliOp.from_sparse_list(terms, num_qubits)
+    return circuit, observables
+
+num_qubits = 6
+circuit, observables = build_periodic_problem(num_qubits)
+ideal_expvals = np.array(
+    [
+        Statevector(circuit).expectation_value(p).real
+        for p in observables.paulis
+    ]
+)
+print("Ideal averages:", ideal_expvals.reshape(2, num_qubits).mean(axis=1))
+circuit.draw("mpl", style="iqp", fold=60)
+```
+
+```text
+Ideal averages: [-1.  1.]
+```
+
+![Six-qubit periodic circuit with two boundary CX gates](/docs/images/tutorials/periodic-boundary-conditions-with-circuit-cutting/extracted-outputs/periodic-06-1.avif)
+
+### Step 2: Optimize problem for quantum hardware execution
+
+Create a device model with a linear coupling map. It supplies the compilation target; the execution in Step 3 will be noiseless.
+
+```python
+simulation_backend = GenericBackendV2(
+    num_qubits=num_qubits,
+    basis_gates=["id", "rz", "sx", "x", "cx"],
+    coupling_map=CouplingMap.from_line(num_qubits),
+    seed=1234,
+)
+initial_layout = list(range(num_qubits))
+```
+
+Add a **virtual connection** between the physical qubits at the ends of the chain. Transpile once using this augmented coupling map and a CX basis. The virtual connection prevents the transpiler from routing the boundary gates, but the resulting circuit cannot run on the real device yet.
+
+Find and cut the two boundary CX gates, apply the virtual layout to the observables, and generate all decomposition terms with `num_samples=np.inf`. This makes the decomposition coefficients exact; the measurements still use a finite number of shots.
+
+Finally, translate the experiments into the device's native gates and correct their direction where needed. These passes preserve the physical qubit layout and avoid repeating layout selection and routing for every experiment. The helper returns the mapped observables needed for reconstruction.
+
+```python
+def prepare_cut_experiments(circuit, observables, backend, initial_layout):
+    """Compile with a virtual edge, cut it, and translate to native gates."""
+    boundary = {initial_layout[0], initial_layout[-1]}
+    virtual_map = CouplingMap(list(backend.coupling_map.get_edges()))
+    virtual_map.make_symmetric()
+    virtual_map.add_edge(initial_layout[-1], initial_layout[0])
+    virtual_map.add_edge(initial_layout[0], initial_layout[-1])
+
+    virtual_pm = generate_preset_pass_manager(
+        optimization_level=1,
+        coupling_map=virtual_map,
+        basis_gates=["rz", "sx", "x", "cx"],
+        initial_layout=initial_layout,
+        seed_transpiler=1234,
+    )
+    virtual_circuit = virtual_pm.run(circuit)
+    cut_indices = [
+        i
+        for i, instruction in enumerate(virtual_circuit.data)
+        if instruction.operation.name == "cx"
+        and {virtual_circuit.find_bit(q).index for q in instruction.qubits}
+        == boundary
+    ]
+    mapped_observables = observables.apply_layout(virtual_circuit.layout)
+    qpd_circuit, bases = cut_gates(virtual_circuit, cut_indices)
+    experiments, coefficients = generate_cutting_experiments(
+        circuits=qpd_circuit,
+        observables=mapped_observables.paulis,
+        num_samples=np.inf,
+    )
+    native_pm = PassManager(
+        [
+            BasisTranslator(
+                SessionEquivalenceLibrary,
+                target_basis=backend.operation_names,
+                target=backend.target,
+            ),
+            GateDirection(backend.coupling_map, target=backend.target),
+            BasisTranslator(
+                SessionEquivalenceLibrary,
+                target_basis=backend.operation_names,
+                target=backend.target,
+            ),
+            Optimize1qGatesDecomposition(target=backend.target),
+        ]
+    )
+    isa_experiments = native_pm.run(experiments)
+    print(f"Boundary gates cut: {len(cut_indices)}")
+    print(f"Number of experiments: {len(isa_experiments)}")
+    print(
+        f"Sampling overhead: {np.prod([basis.overhead for basis in bases])}"
+    )
+    return isa_experiments, coefficients, mapped_observables
+
+isa_experiments, coefficients, mapped_observables = prepare_cut_experiments(
+    circuit, observables, simulation_backend, initial_layout
+)
+```
+
+```text
+Boundary gates cut: 2
+Number of experiments: 36
+Sampling overhead: 81.0
+```
+
+Each CX decomposition has six terms. With two cuts and one shared Z measurement basis, this produces $6^2=36$ experiments. The sampling overhead is a different quantity: the squared sum of the absolute decomposition coefficients is $9^2=81$. It describes the sampling cost of maintaining precision under quasiprobability reconstruction. See the [sampling overhead explanation](https://qiskit.github.io/qiskit-addon-cutting/explanation/index.html).
+
+For comparison, transpile a measured copy of the uncut circuit using the actual coupling map. `measure_all()` records the original logical qubits in the `meas` register; transpilation preserves that classical-bit mapping, so its counts can be evaluated with the original observables.
+
+```python
+uncut_pm = generate_preset_pass_manager(
+    optimization_level=1,
+    backend=simulation_backend,
+    initial_layout=initial_layout,
+    seed_transpiler=1234,
+)
+isa_uncut = uncut_pm.run(circuit.measure_all(inplace=False))
+print("Uncut circuit depth:", isa_uncut.depth())
+print("Cut circuit depths:", sorted({qc.depth() for qc in isa_experiments}))
+```
+
+```text
+Uncut circuit depth: 15
+Cut circuit depths: [6, 7, 8, 9, 10, 11, 12, 15]
+```
+
+### Step 3: Execute using Qiskit primitives
+
+Run both versions with the Aer Sampler V2 primitive. Each cut experiment receives 10,000 shots, as does the single uncut circuit. The cut workflow therefore uses 36 times as many shots in this comparison. Matching shots per circuit does not match the total execution budget.
+
+```python
+shots = 10_000
+sampler = AerSampler(seed=1234)
+cut_result = sampler.run(isa_experiments, shots=shots).result()
+uncut_result = sampler.run([isa_uncut], shots=shots).result()
+```
+
+### Step 4: Post-process and return result in desired classical format
+
+Reconstruct each Pauli expectation value using the same mapped observables and experiment order used during generation. Then average the first $n$ values for $M_Z$ and the remaining $n$ values for $C_{ZZ}$. For the uncut circuit, calculate the expectation values directly from the measured counts.
+
+```python
+cut_expvals = reconstruct_expectation_values(
+    cut_result, coefficients, mapped_observables.paulis
+)
+uncut_counts = uncut_result[0].data.meas.get_counts()
+uncut_expvals = [
+    sampled_expectation_value(uncut_counts, p) for p in observables.paulis
+]
+
+def compare_results(cut_expvals, uncut_expvals, num_qubits):
+    """Display average Z and periodic ZZ values against the ideal values."""
+    cut_averages = np.asarray(cut_expvals).reshape(2, num_qubits).mean(axis=1)
+    uncut_averages = (
+        np.asarray(uncut_expvals).reshape(2, num_qubits).mean(axis=1)
+    )
+    print("Cut averages (Z, ZZ):", cut_averages)
+    print("Uncut averages (Z, ZZ):", uncut_averages)
+    print("Absolute cut errors:", np.abs(cut_averages - [-1, 1]))
+    print("Absolute uncut errors:", np.abs(uncut_averages - [-1, 1]))
+
+    fig, ax = plt.subplots(figsize=(7, 4))
+    positions = np.arange(2)
+    for offset, values, label, color in [
+        (-0.25, [-1, 1], "Ideal", "#4589ff"),
+        (0, cut_averages, "Cut", "#a56eff"),
+        (0.25, uncut_averages, "Uncut", "#009d9a"),
+    ]:
+        ax.bar(
+            positions + offset, values, width=0.25, label=label, color=color
+        )
+    ax.set_xticks(positions, ["Average Z", "Average periodic ZZ"])
+    ax.set_ylabel("Expectation value")
+    ax.axhline(0, color="black", linewidth=0.8)
+    ax.legend()
+    fig.tight_layout()
+    plt.show()
+
+compare_results(cut_expvals, uncut_expvals, num_qubits)
+```
+
+```text
+Cut averages (Z, ZZ): [-1.00100833  0.99778333]
+Uncut averages (Z, ZZ): [-1.  1.]
+Absolute cut errors: [0.00100833 0.00221667]
+Absolute uncut errors: [0. 0.]
+```
+
+![Ideal, cut, and uncut expectation values from noiseless simulation](/docs/images/tutorials/periodic-boundary-conditions-with-circuit-cutting/extracted-outputs/periodic-16-1.avif)
+
+The noiseless results should be close to the ideal values. Finite-shot reconstruction can fluctuate, and a reconstructed estimate can lie outside $[-1,1]$. Cutting does not improve an already noiseless result; this example verifies the decomposition, layout mapping, and reconstruction before execution on hardware.
+## Large-scale hardware example
+
+Reuse the workflow on the least-busy operational QPU with at least 120 qubits. Select a longest shortest path in its undirected coupling graph: each consecutive pair is connected, while the endpoints are far apart. This adapts the chain to the selected device instead of relying on a fixed Eagle layout. The code checks that the chain contains at least 30 qubits and that its endpoints are not neighbors.
+
+The following block combines the four steps. Gate twirling, measurement twirling, and dynamical decoupling are disabled for both versions. Both jobs run in the same batch and receive the tutorial tag `TUT_CCPBC`. The cut experiments still use more total shots, so compare both accuracy and QPU usage.
 
 ```python
 service = QiskitRuntimeService()
 backend = service.least_busy(
-    operational=True, simulator=False, min_num_qubits=127
+    operational=True, simulator=False, min_num_qubits=120
 )
-```
 
-For this notebook we shall consider a 109 qubit periodic 1D chain, which is the longest 1D chain in the topology of a 127-qubit IBM Quantum device. It is not possible to arrange a 109 qubit periodic chain on a 127 qubit device such that the first and last qubits are neighbors without incorporating extra SWAP gates.
+# ------------------------- Step 1 -------------------------
+graph = backend.coupling_map.graph.to_undirected(multigraph=False)
+paths = rx.all_pairs_dijkstra_shortest_paths(graph, lambda _: 1)
+initial_layout = list(
+    max(
+        (
+            path
+            for source_paths in paths.values()
+            for path in source_paths.values()
+        ),
+        key=len,
+    )
+)
+num_qubits = len(initial_layout)
+if num_qubits < 30:
+    raise ValueError(
+        "Select a backend with a shortest path of at least 30 qubits."
+    )
+if graph.has_edge(initial_layout[0], initial_layout[-1]):
+    raise ValueError("The chain endpoints must not be directly connected.")
+print(f"Backend: {backend.name}; chain length: {num_qubits}")
+print("Initial layout:", initial_layout)
+circuit, observables = build_periodic_problem(num_qubits)
 
-```python
-init_layout = [
-    13,
-    12,
-    11,
-    10,
-    9,
-    8,
-    7,
-    6,
-    5,
-    4,
-    3,
-    2,
-    1,
-    0,
-    14,
-    18,
-    19,
-    20,
-    21,
-    22,
-    23,
-    24,
-    25,
-    26,
-    27,
-    28,
-    29,
-    30,
-    31,
-    32,
-    36,
-    51,
-    50,
-    49,
-    48,
-    47,
-    46,
-    45,
-    44,
-    43,
-    42,
-    41,
-    40,
-    39,
-    38,
-    37,
-    52,
-    56,
-    57,
-    58,
-    59,
-    60,
-    61,
-    62,
-    63,
-    64,
-    65,
-    66,
-    67,
-    68,
-    69,
-    70,
-    74,
-    89,
-    88,
-    87,
-    86,
-    85,
-    84,
-    83,
-    82,
-    81,
-    80,
-    79,
-    78,
-    77,
-    76,
-    75,
-    90,
-    94,
-    95,
-    96,
-    97,
-    98,
-    99,
-    100,
-    101,
-    102,
-    103,
-    104,
-    105,
-    106,
-    107,
-    108,
-    112,
-    126,
-    125,
-    124,
-    123,
-    122,
-    121,
-    120,
-    119,
-    118,
-    117,
-    116,
-    115,
-    114,
-    113,
-]
-
-# the number of qubits in the circuit is governed by the length of the initial layout
-num_qubits = len(init_layout)
-num_qubits
-```
-
-```text
-109
-```
-
-#### Build the entangler map for the TwoLocal circuit
-
-```python
-coupling_map = [(i, i + 1) for i in range(0, len(init_layout) - 1)]
-coupling_map.append(
-    (len(init_layout) - 1, 0)
-)  # adding in the periodic connectivity
-```
-
-TwoLocal circuit allows the repetition of the `rotation_blocks` and the `entangler map` multiple times. For this case, the number of repetitions determine the number of periodic gates that need to be cut. Since the sampling overhead increases exponentially with the number of cuts (refer to the [Wire cutting for expectation values estimation](/tutorials/wire-cutting) tutorial for more details), we shall fix the number of repetitions to 2 in this notebook.
-
-```python
-num_reps = 2
-entangler_map = []
-
-for even_edge in coupling_map[0 : len(coupling_map) : 2]:
-    entangler_map.append(even_edge)
-
-for odd_edge in coupling_map[1 : len(coupling_map) : 2]:
-    entangler_map.append(odd_edge)
-```
-
-```python
-ansatz = TwoLocal(
-    num_qubits=num_qubits,
-    rotation_blocks="rx",
-    entanglement_blocks="cx",
-    entanglement=entangler_map,
-    reps=num_reps,
-).decompose()
-ansatz.draw("mpl", fold=-1)
-```
-
-![Output of the previous code cell](/docs/images/tutorials/periodic-boundary-conditions-with-circuit-cutting/extracted-outputs/79428537-66cf-40ce-87cf-0f75f591cb4b-0.avif)
-
-In order to verify the quality of the outcome using circuit cutting, we need to know the ideal outcome. The current circuit of choice is beyond brute force classical simulation. Therefore, we fix the parameters to the circuit carefully to make it clifford.
-
-We shall assign the parameter value $0$ for the first two layers of `Rx` gates, and the value $\pi$ for the last layer. This ensures that the ideal outcome of this circuit is $|1\rangle^{\otimes n}$, $n$ being the number of qubits. Therefore, the expectation values of $\langle Z_i \rangle$ and $\langle Z_i Z_{i+1} \rangle$, where $i$ is the index of the qubit, are $-1$ and $+1$ respectively.
-
-```python
-params_last_layer = [np.pi] * ansatz.num_qubits
-params = [0] * (ansatz.num_parameters - ansatz.num_qubits)
-params.extend(params_last_layer)
-
-ansatz.assign_parameters(params, inplace=True)
-```
-
-#### Select observables
-To quantify the benefits of gate cutting we measure the expectation values of the observables $\frac{1}{n}\sum_{i=1}^n \langle Z_i \rangle$ and $\frac{1}{n-1}\sum_{i=1}^{n-1} \langle Z_i Z_{i+1} \rangle$. As discussed before, the ideal expectation values are $-1$ and $+1$ respectively.
-
-```python
-observables = []
-
-for i in range(num_qubits):
-    obs = "I" * (i) + "Z" + "I" * (num_qubits - i - 1)
-    observables.append(obs)
-
-for i in range(num_qubits):
-    if i == num_qubits - 1:
-        obs = "Z" + "I" * (num_qubits - 2) + "Z"
-    else:
-        obs = "I" * i + "ZZ" + "I" * (num_qubits - i - 2)
-    observables.append(obs)
-
-observables = SparsePauliOp(observables)
-paulis = observables.paulis
-coeffs = observables.coeffs
-```
-
-## Step 2: Optimize problem for quantum hardware execution
-
-<ul>
-    <li>Input: Abstract circuit and observables</li>
-    <li>Output: Target circuit and observables produced by cutting long range gates</li>
-</ul>
-#### Transpile the circuit
-
-Note that the circuit can be transpiled at this stage, or after cutting. If we transpile after cutting, that will require us to transpile each of the subexperiments generated due to the sampling overhead. Therefore, it is more prudent to transpile at this stage to reduce the overhead of transpilation.
-
-However, if transpilation is done at this stage with native hardware connectivity, the transpiler will append multiple SWAP gates to place the periodic 2-qubit operation – obfuscating the benefits of circuit cutting. To avoid this problem we can leverage that we know the exact gates that needs to be cut. Specifically, we can create a virtual coupling map by adding virtual connections between far away qubits to accommodate these periodic 2-qubit gates. This will ensure that the circuit can be transpiled at this stage without incorporating the extra SWAP gates.
-
-```python
-coupling_map = backend.configuration().coupling_map
-
-# create a virtual coupling map with long range connectivity
-virtual_coupling_map = coupling_map.copy()
-virtual_coupling_map.append([init_layout[-1], init_layout[0]])
-virtual_coupling_map.append([init_layout[0], init_layout[-1]])
-```
-
-```python
-pm_virtual = generate_preset_pass_manager(
+# ------------------------- Step 2 -------------------------
+isa_experiments, coefficients, mapped_observables = prepare_cut_experiments(
+    circuit, observables, backend, initial_layout
+)
+uncut_pm = generate_preset_pass_manager(
     optimization_level=1,
-    coupling_map=virtual_coupling_map,
-    initial_layout=init_layout,
-    basis_gates=backend.configuration().basis_gates,
+    backend=backend,
+    initial_layout=initial_layout,
+    seed_transpiler=1234,
 )
+isa_uncut = uncut_pm.run(circuit.measure_all(inplace=False))
+print("Uncut circuit depth:", isa_uncut.depth())
+print("Cut circuit depths:", sorted({qc.depth() for qc in isa_experiments}))
 
-virtual_mapped_circuit = pm_virtual.run(ansatz)
-virtual_mapped_circuit.draw("mpl", fold=-1, idle_wires=False)
-```
-
-![Output of the previous code cell](/docs/images/tutorials/periodic-boundary-conditions-with-circuit-cutting/extracted-outputs/ad38aa32-4613-46c5-bf62-da332a1b9dfb-0.avif)
-
-#### Cut the long range periodic connectivities
-Now we cut the gates in the transpiled circuit. Note that the 2-qubit gates that need to be cut are the ones connecting the last and the first qubits of the layout.
-
-```python
-# Find the indices of the distant gates
-cut_indices = [
-    i
-    for i, instruction in enumerate(virtual_mapped_circuit.data)
-    if {virtual_mapped_circuit.find_bit(q)[0] for q in instruction.qubits}
-    == {init_layout[-1], init_layout[0]}
-]
-```
-
-We shall apply the layout of the transpiled circuit to the observable.
-
-```python
-trans_observables = observables.apply_layout(virtual_mapped_circuit.layout)
-```
-
-Finally the subexperiments are generated by sampling over different measurement and preparation bases.
-
-```python
-qpd_circuit, bases = cut_gates(virtual_mapped_circuit, cut_indices)
-subexperiments, coefficients = generate_cutting_experiments(
-    circuits=qpd_circuit,
-    observables=trans_observables.paulis,
-    num_samples=np.inf,
-)
-```
-
-Note that cutting the long range interactions leads to the execution of multiple samples of the circuit that differ in the measurement and preparation bases. More information about this can be found in <a href='https://arxiv.org/abs/1909.07534'>Constructing a virtual two-qubit gate by sampling single-qubit operations</a> and <a href='https://arxiv.org/abs/2312.11638'>Cutting circuits with multiple two-qubit unitaries</a>.
-
-The number of periodic gates to be cut is equal to the number of repetitions of the `TwoLocal` layer, defined as `num_reps` above. The sampling overhead of gate cutting is 6. Therefore, the total number of subexperiments will be $6^{num\_reps}$.
-
-```python
-print(f"Number of subexperiments is {len(subexperiments)} = 6**{num_reps}")
-```
-
-```text
-Number of subexperiments is 36 = 6**2
-```
-
-#### Transpile the subexperiments
-At this point, the subexperiments contains circuits with some 1-qubit gates that are not in the basis gate set. This is because the cut qubits are measured in different basis, and the rotation gates used for this does not necessarily belong to the basis gate set. For example, measurement in X basis implies applying a Hadamard gate before the usual measurement in Z basis. But Hadamard is not a part of the basis gate set.
-
-Instead of applying the entire transpilation process on each of the circuits in the subexperiments, we can use specific transpilation passes. Refer to <a href="https://docs.quantum.ibm.com/api/qiskit/transpiler_passes">this documentation</a> for a detailed description of all the available transpilation passes.
-
-We shall apply ```BasisTranslator``` and then ```Optimize1qGatesDecomposition``` passes to ensure that all the gates in these circuits belong to the basis gate set. Using these two passes is faster than the entire transpilation process, since other steps such as routing and initial layout selection are not performed again.
-
-```python
-pass_ = PassManager(
-    [Optimize1qGatesDecomposition(basis=backend.configuration().basis_gates)]
-)
-
-subexperiments = pass_.run(
-    [
-        dag_to_circuit(
-            BasisTranslator(sel, target_basis=backend.basis_gates).run(
-                circuit_to_dag(circ)
-            )
-        )
-        for circ in subexperiments
-    ]
-)
-```
-
-## Step 3: Execute using Qiskit primitives
-
-<ul>
-    <li>Input: Target circuits</li>
-    <li>Output: Quasi-probability distributions</li>
-</ul>
-We use a `SamplerV2` primitive for execution of the cut circuits. We disable `dynamical decoupling` and `twirling` so that any improvement we obtain in the result will solely be due to effective application of gate cutting for this type of circuit.
-
-```python
+# ------------------------- Step 3 -------------------------
 options = SamplerOptions()
-options.default_shots = 10000
 options.dynamical_decoupling.enable = False
 options.twirling.enable_gates = False
 options.twirling.enable_measure = False
-```
-
-Now we shall submit the jobs using batch mode.
-
-```python
+options.environment.job_tags = ["TUT_CCPBC"]
+shots = 10_000
 with Batch(backend=backend) as batch:
-    sampler = SamplerV2(options=options)
-    cut_job = sampler.run(subexperiments)
+    sampler = SamplerV2(mode=batch, options=options)
+    cut_job = sampler.run(isa_experiments, shots=shots)
+    uncut_job = sampler.run([isa_uncut], shots=shots)
+print("Cut job ID:", cut_job.job_id())
+print("Uncut job ID:", uncut_job.job_id())
+cut_result = cut_job.result()
+uncut_result = uncut_job.result()
 
-print(f"Job ID {cut_job.job_id()}")
-```
-
-```text
-Job ID cwxf7wq60bqg008pvt8g
-```
-
-```python
-result = cut_job.result()
-```
-
-## Step 4: Post-process and return result in desired classical format
-<ul>
-    <li>Input: Quasi-probability distributions</li>
-    <li>Output: Reconstructed expectation values</li>
-</ul>
-
-```python
-reconstructed_expvals = reconstruct_expectation_values(
-    result,
-    coefficients,
-    paulis,
+# ------------------------- Step 4 -------------------------
+cut_expvals = reconstruct_expectation_values(
+    cut_result, coefficients, mapped_observables.paulis
 )
-```
-
-We now calculate the average of weight-1 and weight-2 Z-type observables.
-
-```python
-cut_weight_1 = np.mean(reconstructed_expvals[:num_qubits])
-cut_weight_2 = np.mean(reconstructed_expvals[num_qubits:])
-
-print(f"Average of weight-1 expectation values is {cut_weight_1}")
-print(f"Average of weight-2 expectation values is {cut_weight_2}")
-```
-
-```text
-Average of weight-1 expectation values is -0.741733944954063
-Average of weight-2 expectation values is 0.6968862385320495
-```
-
-### Cross Verify: Obtain uncut expectation value
-It is useful to cross-verify the advantage of the circuit cutting technique against uncut. Here we shall compute the expectation values without cutting the circuit. Note that such an uncut circuit will suffer from a large number of SWAP gates required to implement the 2-qubit operation between the first and the last qubits. We shall use the `sampled_expectation_value` function to obtain the expectation values of the uncut circuit after obtaining the probability distribution via `SamplerV2`. This allows a homogenous usage of primitive over all the instances. However, note that we could have used `EstimatorV2` as well to directly compute the expectation values.
-
-```python
-if ansatz.num_clbits == 0:
-    ansatz.measure_all()
-
-pm_uncut = generate_preset_pass_manager(
-    optimization_level=1, backend=backend, initial_layout=init_layout
-)
-
-transpiled_circuit = pm_uncut.run(ansatz)
-```
-
-```python
-sampler = SamplerV2(mode=backend, options=options)
-uncut_job = sampler.run([transpiled_circuit])
-```
-
-```python
-uncut_job_id = uncut_job.job_id()
-print(f"The job id for the uncut clifford circuit is {uncut_job_id}")
-```
-
-```text
-The job id for the uncut clifford circuit is cwxfads2ac5g008jhe7g
-```
-
-```python
-uncut_result = uncut_job.result()[0]
-uncut_counts = uncut_result.data.meas.get_counts()
-```
-
-Now we shall calculate the average expectation values of all the weight-1 and weight-2 Z-type observables without cutting.
-
-```python
+uncut_counts = uncut_result[0].data.meas.get_counts()
 uncut_expvals = [
-    sampled_expectation_value(uncut_counts, obs) for obs in paulis
+    sampled_expectation_value(uncut_counts, p) for p in observables.paulis
 ]
-
-uncut_weight_1 = np.mean(uncut_expvals[:num_qubits])
-uncut_weight_2 = np.mean(uncut_expvals[num_qubits:])
-
-print(f"Average of weight-1 expectation values is {uncut_weight_1}")
-print(f"Average of weight-2 expectation values is {uncut_weight_2}")
+compare_results(cut_expvals, uncut_expvals, num_qubits)
+qpu_seconds = sum(
+    job.metrics()["usage"]["quantum_seconds"] for job in [cut_job, uncut_job]
+)
+print(
+    f"Total QPU usage: {qpu_seconds:.1f} seconds ({qpu_seconds / 60:.2f} minutes)"
+)
 ```
 
 ```text
-Average of weight-1 expectation values is -0.32494128440366965
-Average of weight-2 expectation values is 0.32340917431192656
+Backend: ibm_boston; chain length: 33
+Initial layout: [0, 1, 2, 3, 16, 23, 24, 25, 37, 45, 44, 43, 56, 63, 64, 65, 77, 85, 86, 87, 97, 107, 106, 105, 117, 125, 124, 123, 136, 143, 142, 141, 140]
+Boundary gates cut: 2
+Number of experiments: 36
+Sampling overhead: 81.0
+Uncut circuit depth: 375
+Cut circuit depths: [20]
+Cut job ID: dagp7fj9k43c73admp40
+Uncut job ID: dagp7fj9k43c73admp5g
+Cut averages (Z, ZZ): [-0.92305152  0.89586667]
+Uncut averages (Z, ZZ): [-0.61106061  0.51606061]
+Absolute cut errors: [0.07694848 0.10413333]
+Absolute uncut errors: [0.38893939 0.48393939]
+Total QPU usage: 102.0 seconds (1.70 minutes)
 ```
 
-### Visualize
-Let us now visualize the improvement obtained for weight-1 and weight-2 observables when using gate cutting for periodic chain circuit
+![Ideal, cut, and uncut expectation values measured on ibm_boston](/docs/images/tutorials/periodic-boundary-conditions-with-circuit-cutting/extracted-outputs/periodic-19-1.avif)
 
-```python
-mpl.rcParams.update(mpl.rcParamsDefault)
+In the recorded run on `ibm_boston`, the cut estimates were approximately $M_Z=-0.923$ and $C_{ZZ}=0.896$, compared with $-0.611$ and $0.516$ for the uncut circuit. Both cut estimates were closer to the ideal values of $-1$ and $+1$.
 
-fig = plt.subplots(figsize=(12, 8), dpi=200)
-width = 0.25
-labels = ["Weight-1", "Weight-2"]
-x = np.arange(len(labels))
+Compare each result with its ideal value and inspect the circuit depths and total QPU usage. Cutting removes the need to route the periodic gates, but introduces intermediate operations and additional statistical uncertainty. Hardware noise and calibration affect the comparison; an improvement is not guaranteed. Repeated runs are needed to assess whether an observed difference is statistically significant.
 
-ideal = [-1, 1]
-cut = [cut_weight_1, cut_weight_2]
-uncut = [uncut_weight_1, uncut_weight_2]
+## Next steps
 
-br1 = np.arange(len(ideal))
-br2 = [x + width for x in br1]
-br3 = [x + width for x in br2]
+<Admonition type="tip" title="Recommendations">
 
-plt.bar(
-    br1, ideal, width=width, edgecolor="k", label="Ideal", color="#4589ff"
-)
-plt.bar(br2, cut, width=width, edgecolor="k", label="Cut", color="#a56eff")
-plt.bar(
-    br3, uncut, width=width, edgecolor="k", label="Uncut", color="#009d9a"
-)
+- Explore [circuit cutting for depth reduction](/tutorials/depth-reduction-with-circuit-cutting) for other nonlocal interactions.
+- Try [wire cutting for expectation values estimation](/tutorials/wire-cutting) to partition a circuit into smaller subsystems.
+- Read the [circuit cutting explanatory material](https://qiskit.github.io/qiskit-addon-cutting/explanation/index.html) to understand the tradeoff between cutting and sampling overhead.
 
-plt.axhline(y=0, color="k", linestyle="-")
-
-plt.xticks([r + width for r in range(len(ideal))], labels, fontsize=14)
-plt.yticks(fontsize=14)
-
-plt.legend(fontsize=14)
-plt.show()
-```
-
-![Output of the previous code cell](/docs/images/tutorials/periodic-boundary-conditions-with-circuit-cutting/extracted-outputs/2ba8913f-ba35-409c-bc4c-5f28e3698f20-0.avif)
-
-### Summary
-
-In summary, we calculated the average expectation values of weight-1 and weight-2 Z-types observables for a periodic 1D chain of 109 qubits. In order to do so, we
-
-- created a virtual coupling map by adding a long range connectivity between the first and the last qubits of the 1D chain, and transpiled the circuit.
-    - transpilation at this stage allowed us to avoid the overhead of transpiling each subexperiment separately after cutting,
-    - using virtual coupling map allowed us to avoid extra SWAP gates for the 2-qubit operation between the first and the last qubits.
-- removed the long range connectivity from the transpiled circuit via gate cutting.
-- converted the cut circuits into basis gate set by applying appropriate transpilation passes.
-- executed the cut circuits on IBM Quantum device using a `SamplerV2` primitive.
-- obtained the expectation value by reconstructing the outcomes of the cut circuits.
-### Inference
-
-We notice from the results that the average of the weight-1 $\langle Z \rangle$ and weight-2 $\langle ZZ \rangle$ type observables are significantly improved by cutting the periodic gates. Note that this study does not include any error suppression or mitigation techniques. The improvement observed is solely due to the proper usage of gate cutting for this problem. The results could have been further improved by using the mitigation and suppression techniques.
-
-This study shows an example of effectively using gate cutting to improve the performance of computation.
-## Tutorial survey
-
-Please take this short survey to provide feedback on this tutorial. Your insights will help us improve our content offerings and user experience.
-
-> **Note:** This survey is by **IBM Quantum** and covers the **tutorial content** (written by IBM). doQumentation provides the website, translations, and code execution — for feedback on those, please [open a GitHub issue](https://github.com/JanLahmann/doQumentation/issues).
-
-[Link to survey](https://your.feedback.ibm.com/jfe/form/SV_3fQQYAIjTxvIChg)
+</Admonition>
 
 <TutorialFeedback />
