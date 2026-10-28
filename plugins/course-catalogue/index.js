@@ -1,5 +1,6 @@
 /**
- * Docusaurus plugin that builds the course catalogue page at /learning/courses.
+ * Docusaurus plugin that builds the course catalogue page at /learning/courses
+ * and the learning paths page at /learning-paths (src/data/learning-paths.json).
  *
  * Input:
  *   - src/data/courses.json: the hand-maintained part (group, order, hours,
@@ -60,12 +61,13 @@ function findCategory(items, indexId) {
 
 module.exports = function courseCataloguePlugin(context) {
   const dataPath = path.join(context.siteDir, "src", "data", "courses.json");
+  const pathsPath = path.join(context.siteDir, "src", "data", "learning-paths.json");
 
   return {
     name: PLUGIN_NAME,
 
     getPathsToWatch() {
-      return [dataPath];
+      return [dataPath, pathsPath];
     },
 
     async allContentLoaded({ allContent, actions }) {
@@ -116,6 +118,40 @@ module.exports = function courseCataloguePlugin(context) {
         component: "@site/src/components/CourseCatalogue",
         exact: true,
         modules: { catalogue: catalogueJson },
+      });
+
+      // /learning-paths: IBM's learning paths (src/data/learning-paths.json),
+      // each step resolved to its localized title, link and pages, the same
+      // way as a course card above.
+      const paths = JSON.parse(fs.readFileSync(pathsPath, "utf8"));
+      const step = (s) => {
+        const doc = docsById.get(s.id);
+        if (!doc) return null; // not synced in this build
+        const category = s.id.endsWith("/index") ? findCategory(sidebarItems, s.id) : null;
+        return {
+          id: s.id,
+          hours: s.hours,
+          kind: s.id.startsWith("learning/courses/") ? "course"
+            : s.id.startsWith("learning/modules/") ? "module"
+            : s.id.startsWith("tutorials/") ? "tutorial" : "guide",
+          title: (category && category.label) || doc.title,
+          href: doc.permalink,
+          pages: category ? collectHrefs(category.items, docsById) : [doc.permalink],
+        };
+      };
+      const learningPaths = {
+        source: paths.source,
+        paths: paths.paths.map((p) => ({
+          id: p.id,
+          levels: p.levels.map((l) => ({ ...l, steps: l.steps.map(step).filter(Boolean) })),
+        })),
+      };
+      const pathsJson = await actions.createData("learning-paths.json", JSON.stringify(learningPaths));
+      actions.addRoute({
+        path: `${baseUrl}learning-paths`,
+        component: "@site/src/components/LearningPaths",
+        exact: true,
+        modules: { data: pathsJson },
       });
     },
   };
