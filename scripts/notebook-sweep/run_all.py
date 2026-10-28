@@ -12,7 +12,12 @@ read-only, then calls:
 For each notebook: fresh kernel, sim_shim applied at kernel startup via a
 0th injected code cell, `!pip install` lines neutralised (DOQ_INSTALLS=1 in a
 fresh container per notebook: installs run, as on the site), per-cell timeout.
-Writes <report_dir>/report.json (machine) and report.md (human).
+Writes <report_dir>/report.json (machine) and report.md (human). Each record
+has `cell_times`: seconds per code cell that took at least CELL_TIME_MIN,
+keyed by the cell's index in the notebook, and `slowest_cell`: the cell the
+notebook stopped in (it raised, timed out or lost its kernel), else the one
+that took longest.
+diff_reports.py compares two reports by these.
 
 Capture-only: never edits notebooks, never fixes anything.
 """
@@ -32,6 +37,7 @@ from nbclient.exceptions import CellExecutionError
 
 CELL_TIMEOUT = int(__import__("os").environ.get("DOQ_CELL_TIMEOUT", "180"))
 SHIM_PATH = "/shim/sim_shim.py"
+CELL_TIME_MIN = 1.0  # seconds; quicker cells are left out of cell_times
 
 # Prepended as the kernel's first executed cell so the shim patches
 # qiskit_ibm_runtime before any notebook code imports from it.
@@ -130,6 +136,28 @@ def run_one(nb_path: Path) -> dict:
         "installs": INSTALLS,
     }
     t0 = time.time()
+    # Per-cell timing, by the cell's index in the notebook as stored (the
+    # injected shim cell is index 0 here, so subtract 1).
+    started: dict[int, float] = {}
+    cell_times: dict[str, float] = {}
+    failed: list[int] = []
+
+    def on_start(cell, cell_index, **_):
+        started[cell_index] = time.monotonic()
+
+    def on_done(cell, cell_index, **_):
+        took = time.monotonic() - started.pop(cell_index, time.monotonic())
+        if cell_index > 0 and took >= CELL_TIME_MIN:
+            cell_times[str(cell_index - 1)] = round(took, 1)
+
+    def on_error(cell, cell_index, **_):
+        failed.append(cell_index)
+
+    def first_line(nb, index: int) -> str:
+        src = "".join(nb.cells[index + 1].get("source", "")).strip()
+        return src.splitlines()[0][:100] if src else ""
+
+    nb = None
     try:
         nb = nbformat.read(nb_path, as_version=4)
 
@@ -155,6 +183,9 @@ def run_one(nb_path: Path) -> dict:
             kernel_name="python3",
             allow_errors=False,
             record_timing=False,
+            on_cell_execute=on_start,
+            on_cell_executed=on_done,
+            on_cell_error=on_error,
         )
         client.execute()
         rec["cells_executed"] = sum(
@@ -183,6 +214,22 @@ def run_one(nb_path: Path) -> dict:
             "traceback_tail": traceback.format_exc().splitlines()[-1][:300],
         }
     rec["duration_s"] = round(time.time() - t0, 1)
+    rec["cell_times"] = cell_times
+    # The cell the notebook stopped in: one still in `started` was running
+    # (timeout, dead kernel), one in `failed` raised.
+    running = [i for i in started if i > 0]
+    stopped = running or [i for i in failed if i > 0]
+    if running:
+        index, secs = running[0] - 1, round(time.monotonic() - started[running[0]], 1)
+    elif stopped:
+        index, secs = stopped[0] - 1, cell_times.get(str(stopped[0] - 1), 0.0)
+    elif cell_times:
+        index, secs = max(((int(k), v) for k, v in cell_times.items()), key=lambda kv: kv[1])
+    else:
+        index = None
+    if index is not None and nb is not None:
+        rec["slowest_cell"] = {"index": index, "seconds": secs,
+                               "stopped_here": bool(stopped), "first_line": first_line(nb, index)}
     return rec
 
 

@@ -90,6 +90,73 @@ Pass B (a graphviz + qiskit-ibm-transpiler patched image) was removed in
 #969's fix: graphviz ships in the QuBins image, and qiskit-ibm-transpiler
 0.18 cannot import on Qiskit 2.5.
 
+## Catching regressions before an image bump
+
+Before `DEFAULT_QISKIT_TAG` moves to a new QuBins tag (or to test a Qiskit
+release candidate image), sweep the candidate and compare it with a sweep of
+the current default:
+
+1. Run the **Notebook sweep** workflow with `image_tag` = the candidate and
+   `baseline_run` = the run ID of the last sweep of the current default (run it
+   first if there is none). The run summary then lists, per platform, the
+   pages whose label got worse, notebooks that still run but take at least
+   twice as long (and 30 s more), and cells that slowed down the same way.
+   The same tables are in `sweep/<arch>/diff.md` in the artifact.
+2. Locally, the same comparison for two downloaded artifacts:
+
+   ```bash
+   python3 scripts/notebook-sweep/diff_reports.py \
+       --base <baseline>/amd64/passS-aer/report.json \
+       --new <candidate>/amd64/passS-aer/report.json
+   ```
+
+Every record in `report.json` has `cell_times` (seconds per code cell of at
+least 1 s, by the cell's index in the notebook) and `slowest_cell` (the cell
+the notebook stopped in, else the slowest), so a regression already names its
+cell.
+
+## Triage: from a slower page to an upstream fix
+
+How the Qiskit 2.6 `decompose()` regression was found (qvc-qnn, Qiskit#16753);
+each step makes the case smaller.
+
+1. **Which cell.** `slowest_cell` / `cell_times` in both reports. To re-run
+   one notebook in either image with Binder's limits:
+
+   ```bash
+   podman run --rm --user root --cpus 1 --memory 2g \
+     -v "$PWD/notebooks:/repo:ro" -v "$PWD/scripts/notebook-sweep:/shim:ro" \
+     -v "$PWD/src:/src:ro" -v "$PWD/scripts:/scripts:ro" -v /tmp/nbout:/out \
+     -e DOQ_SHIM=site -e DOQ_SIM_MODE=aer --entrypoint python3 \
+     ghcr.io/qubins/images:<tag> /shim/run_all.py /out/r /repo/<path>.ipynb
+   ```
+
+2. **Which call.** Copy the notebook's cells up to the slow one into a script
+   and time the calls in that cell one by one, in both images. Then shrink
+   the input: one gate type, one qubit, fewer parameters, until the slowdown
+   needs only a few lines.
+3. **Which package.** Run the short script against each image tag, and
+   against single package versions (`pip install qiskit==X.Y.Z` in a
+   container of the older image). Note how the time grows with the input
+   size: doubling per step means an exponential path, not just a slow one.
+4. **Which commit.** For Qiskit, build it from source in a Rust container
+   (Qiskit's `rust-version` in `Cargo.toml`; fat LTO needs more than 8 GB of
+   podman memory with debug info) and bisect between the two releases:
+
+   ```bash
+   podman run -d --name qkb --cpus 4 -v qkbuild:/work docker.io/library/rust:<rust-version>-bookworm sleep infinity
+   # inside: clone Qiskit, python3 -m venv, pip install -e . once, then per commit:
+   git checkout <sha> && python setup.py build_rust --inplace --release && python repro.py
+   ```
+
+5. **Upstream.** Search the project's issues first (the same mechanism may
+   already be reported with a bigger reproducer). Jan files issues and PRs
+   himself. For Qiskit, read its generative-AI policy
+   (`docs/devguide/contributing.md`): the human submits and explains the
+   change, and AI-written text or code is disclosed in the PR form.
+6. **Here.** Until a fixed release is in the image, keep the default tag,
+   or label the page from the candidate's sweep.
+
 ## Files
 
 | File | Role |
@@ -98,6 +165,8 @@ Pass B (a graphviz + qiskit-ibm-transpiler patched image) was removed in
 | `run_all.py` | In-container executor (one batch). Injects the shim, skips every install line, nbclient-executes each notebook. |
 | `sim_shim.py` | Monkeypatches `qiskit_ibm_runtime` / `qiskit_ibm_catalog` so nothing touches hardware or cloud. Raises `CloudOnlyOffline` for genuinely cloud-only notebooks. |
 | `merge_reports.py` | Combines per-batch JSON into a pass-level report. |
+| `diff_reports.py` | Compares two pass reports of one platform: label regressions, slowdowns, slower cells. |
+| `make_page_status.py` | Turns a Pass S report into the page labels (`src/config/pageRunStatus.json`). |
 
 Each script has a module docstring with the details. The shim is
 capture-only — it never edits notebooks.
