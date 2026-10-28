@@ -3,7 +3,8 @@
  * plugins/course-catalogue (src/data/courses.json + the localized sidebar and
  * course overview pages), so course titles and descriptions are translated
  * on every locale build. Progress uses the same visited-pages store as the
- * sidebar's "6/18" counters (read-only).
+ * sidebar's "6/18" counters (read-only). src/components/LearningPaths reuses
+ * the level, hours and progress helpers exported here.
  */
 import React, {useEffect, useState} from 'react';
 import Layout from '@theme/Layout';
@@ -62,7 +63,7 @@ function groupText(id: string): {title: string; text: string} {
   }
 }
 
-function levelText(level: string): string {
+export function levelText(level: string): string {
   switch (level) {
     case 'beginner':
       return translate({id: 'catalogue.level.beginner', message: 'Beginner', description: 'Course level'});
@@ -75,19 +76,19 @@ function levelText(level: string): string {
   }
 }
 
-function hoursText(hours: number): string {
+export function hoursText(hours: number): string {
   return translate(
     {id: 'catalogue.hours', message: '≈{hours} h', description: 'Estimated course length in hours, e.g. "≈5 h"'},
     {hours: String(hours)},
   );
 }
 
-function stripSlash(p: string): string {
+export function stripSlash(p: string): string {
   return p.replace(/\/+$/, '') || '/';
 }
 
 /** Visited-page set, refreshed when the page tracker records a visit. */
-function useVisited(): Set<string> | null {
+export function useVisited(): Set<string> | null {
   const [visited, setVisited] = useState<Set<string> | null>(null);
   useEffect(() => {
     const refresh = () => setVisited(getVisitedPages());

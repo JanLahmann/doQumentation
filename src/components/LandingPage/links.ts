@@ -3,7 +3,7 @@
 import {translate} from '@docusaurus/Translate';
 import type {LandingLink} from './index';
 
-export type LandingKey = 'run' | 'simulator' | 'workshop' | 'offline' | 'colab' | 'progress';
+export type LandingKey = 'run' | 'simulator' | 'workshop' | 'offline' | 'colab' | 'progress' | 'paths';
 
 /** All landing pages but `except` (all of them when it is omitted). */
 export function landingLinks(except?: LandingKey): LandingLink[] {
@@ -20,6 +20,8 @@ export function landingLinks(except?: LandingKey): LandingLink[] {
       label: translate({id: 'landing.link.colab', message: 'Open the tutorials in Google Colab or JupyterLab'})},
     progress: {to: '/learning-progress',
       label: translate({id: 'landing.link.progress', message: 'Track your progress through the courses'})},
+    paths: {to: '/learning-paths',
+      label: translate({id: 'landing.link.paths', message: "Follow IBM Quantum's learning paths"})},
   };
   return (Object.keys(all) as LandingKey[]).filter((k) => k !== except).map((k) => all[k]);
 }

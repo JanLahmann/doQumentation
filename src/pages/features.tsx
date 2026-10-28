@@ -177,17 +177,24 @@ export default function Features(): React.JSX.Element {
             <div className="features-page__grid">
               <FeatureCard
                 title={translate({id: 'features.progress.tracking.title', message: 'Progress Tracking'})}
-                description={translate({id: 'features.progress.tracking.desc', message: 'Pages you visit get a checkmark (✓) in the sidebar. Notebooks you execute get a play indicator (▶). Track your journey through the content.'})}
+                description={translate({id: 'features.progress.tracking.desc', message: 'Pages you visit get a checkmark (✓) in the sidebar. Notebook pages show a </> mark that turns blue once you have read them and green once you have run their code.'})}
+                link="/learning-progress"
               />
               <FeatureCard
                 title={translate({id: 'features.progress.badges.title', message: 'Category Badges'})}
-                description={translate({id: 'features.progress.badges.desc', message: "Each sidebar category shows a badge like '3/10' so you can see progress at a glance. Click to clear per-section progress."})}
+                description={translate({id: 'features.progress.badges.desc', message: "Each sidebar category shows a badge like '3/10' so you can see progress at a glance. Clear a section's progress in Settings."})}
               />
               <FeatureCard
                 title={translate({id: 'features.progress.resume.title', message: 'Resume Reading'})}
                 description={translate({id: 'features.progress.resume.desc', message: "The homepage shows a 'Continue where you left off' card with your last visited page and when you were there."})}
                 link="/"
                 linkLabel={translate({id: 'features.progress.resume.link', message: 'Go to homepage'})}
+              />
+              <FeatureCard
+                title={translate({id: 'features.progress.paths.title', message: 'Learning Paths'})}
+                description={translate({id: 'features.progress.paths.desc', message: "IBM Quantum Learning's learning paths for optimization, data science, chemistry and more, with your progress on every step."})}
+                link="/learning-paths"
+                linkLabel={translate({id: 'features.progress.paths.link', message: 'See the learning paths'})}
               />
               <FeatureCard
                 title={translate({id: 'features.progress.bookmarks.title', message: 'Bookmarks'})}

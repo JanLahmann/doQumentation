@@ -43,8 +43,8 @@ interface LandingPageProps {
   imageAlt?: string;
   sections: LandingSection[];
   faq: LandingFaq[];
-  /** Tutorials or guides that show the feature. */
-  tryLinks: LandingLink[];
+  /** Tutorials or guides that show the feature (the section is left out when empty). */
+  tryLinks?: LandingLink[];
   /** Other landing pages. */
   related: LandingLink[];
 }
@@ -83,14 +83,16 @@ export default function LandingPage(props: LandingPageProps): React.JSX.Element 
               {s.body}
             </section>
           ))}
-          <section className="features-page__section">
-            <h2>{translate({id: 'landing.common.try', message: 'Try it on these pages'})}</h2>
-            <ul>
-              {props.tryLinks.map((l) => (
-                <li key={l.to}><Link to={l.to}>{l.label}</Link></li>
-              ))}
-            </ul>
-          </section>
+          {props.tryLinks && props.tryLinks.length > 0 && (
+            <section className="features-page__section">
+              <h2>{translate({id: 'landing.common.try', message: 'Try it on these pages'})}</h2>
+              <ul>
+                {props.tryLinks.map((l) => (
+                  <li key={l.to}><Link to={l.to}>{l.label}</Link></li>
+                ))}
+              </ul>
+            </section>
+          )}
           <section className="features-page__section landing-page__faq">
             <h2>{translate({id: 'landing.common.faq', message: 'Frequently asked questions'})}</h2>
             {props.faq.map((f) => (
