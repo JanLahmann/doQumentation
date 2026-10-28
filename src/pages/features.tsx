@@ -8,7 +8,9 @@
 import React from 'react';
 import Layout from '@theme/Layout';
 import Translate, {translate} from '@docusaurus/Translate';
+import Link from '@docusaurus/Link';
 import {UPSTREAM_COMMIT, UPSTREAM_COMMIT_DATE} from '@site/src/config/contentMeta';
+import {landingLinks} from '@site/src/components/LandingPage/links';
 
 interface FeatureCardProps {
   title: string;
@@ -48,6 +50,11 @@ export default function Features(): React.JSX.Element {
               multi-language support.
             </Translate>
           </p>
+          <ul className="landing-page__pills">
+            {landingLinks().map((l) => (
+              <li key={l.to}><Link to={l.to}>{l.label}</Link></li>
+            ))}
+          </ul>
 
           {/* ── Content Library ── */}
           <section className="features-page__section">

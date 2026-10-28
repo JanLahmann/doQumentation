@@ -299,10 +299,11 @@ const config: Config = {
           priority: null,
           // Keep noindex/utility pages out of the sitemap. The admin page is
           // password-gated and Disallow-ed in robots.txt; the search page,
-          // Docusaurus' tag pages, the Settings page and the workshop host
-          // pages add no search value.
+          // Docusaurus' tag pages and the Settings page add no search value.
+          // The workshop guides are landing pages (see
+          // src/components/LandingPage) and stay in.
           ignorePatterns: ['/admin', '/admin/**', '/search', '/tags/**', '/404*',
-            '/jupyter-settings', '/workshop-*'],
+            '/jupyter-settings'],
           filename: 'sitemap.xml',
           // A locale build serves EN content (noindex) for pages not yet
           // translated in that language; list only pages meant for indexing.
