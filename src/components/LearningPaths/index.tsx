@@ -159,7 +159,6 @@ export default function LearningPaths({data}: {data: Data}): React.JSX.Element {
               {"These learning paths are IBM's. IBM Quantum publishes them on {link}: each one an order in which to work through IBM's courses, tutorials and guides for one area, at one or more levels. The steps, their order and the time estimates below are IBM's; doQumentation only links each step to its page here."}
             </Translate>
           </p>
-          <p>{translate({id: 'paths.intro.independent', message: 'doQumentation is an independent, open-source mirror of IBM\'s open-source Qiskit content. It is not affiliated with or endorsed by IBM.'})}</p>
         </>
       }
       cta={{to: '/learning/courses', label: translate({id: 'paths.cta', message: 'Or browse all courses'})}}
