@@ -24,6 +24,16 @@ IBM's [Qiskit documentation](https://github.com/Qiskit/documentation) is open so
 
 **Content:** 42 Tutorials, 171 Guides, 154 Course pages, 14 Modules (~380 pages total).
 
+What it adds, one page each:
+
+- [Run Qiskit code in your browser](https://doqumentation.org/run-qiskit-in-browser): a Run button on every page, nothing to install
+- [Run the tutorials without an IBM Quantum account](https://doqumentation.org/simulator-mode): simulator mode, ideal or with real device noise
+- [IBM Quantum's learning paths](https://doqumentation.org/learning-paths), with your progress on every step
+- [Track your progress through the courses](https://doqumentation.org/learning-progress), with no account
+- [Open the tutorials in Google Colab or JupyterLab](https://doqumentation.org/open-in-colab)
+- [Host a Qiskit workshop](https://doqumentation.org/workshop-setup) for up to 50 participants, or [run an offline class from one Raspberry Pi](https://doqumentation.org/workshop-offline)
+- All of it in 18 languages
+
 ## Deployment Tiers
 
 | | [GitHub Pages](https://doqumentation.org) | [Docker / Podman](https://github.com/JanLahmann/doQumentation/pkgs/container/doqumentation) (`:jupyter`) | [RasQberry](https://rasqberry.org/) |
