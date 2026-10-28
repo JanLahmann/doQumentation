@@ -6,6 +6,9 @@
  * (every locale's i18n.localeConfigs url + x-default), so this plugin adds
  * none. It used to inject a second set, which left every page with two.
  *
+ * NOINDEXES every page outside INDEXED_ROUTES (the landing pages: what
+ *   doQumentation adds), and keeps the sitemap to those routes.
+ *
  * NOINDEXES untranslated-fallback pages.
  *   A non-EN locale build serves EN content (with a "not yet translated"
  *   banner) for any page not yet genuinely translated. Indexing that page would
@@ -35,6 +38,25 @@ const FALLBACK_MARKER = "{/* doqumentation-untranslated-fallback */}";
 // Pages that should not be crawled.
 // Mirrors robots.txt Disallow and Docusaurus' generated utility pages.
 const EXCLUDE_PATHS = new Set(["/admin", "/404", "/search"]);
+
+/**
+ * The only routes search engines should index (Jan, 2026-10-28): what
+ * doQumentation adds, not its copies of IBM's pages, which Google ranks
+ * below the originals anyway. Every other page gets `noindex, follow` and
+ * stays out of the sitemap; visitors and links are unaffected, and `follow`
+ * passes links on to these pages. The workshop guides are English-only
+ * pages, so they are indexed on the English site alone.
+ */
+const INDEXED_ROUTES = new Set([
+  "/", "/features", "/learning/courses", "/learning-paths",
+  "/run-qiskit-in-browser", "/simulator-mode", "/open-in-colab", "/learning-progress",
+]);
+const INDEXED_ROUTES_EN_ONLY = new Set(["/workshop-setup", "/workshop-offline"]);
+
+/** Whether `route` ("/features", no trailing slash) is indexed on `locale`'s site. */
+function isIndexedRoute(route, locale) {
+  return INDEXED_ROUTES.has(route) || (locale === "en" && INDEXED_ROUTES_EN_ONLY.has(route));
+}
 
 /** Recursively collect every .html file under dir. */
 function walkHtml(dir, acc) {
@@ -154,6 +176,7 @@ module.exports = function hreflangPlugin(context, _options) {
 
       const files = walkHtml(outDir, []);
       let noindexed = 0;
+      let mirrored = 0;
 
       for (const file of files) {
         const route = fileToRoute(file, outDir);
@@ -192,6 +215,19 @@ module.exports = function hreflangPlugin(context, _options) {
           continue;
         }
 
+        // Every page outside INDEXED_ROUTES: noindex, keep following links.
+        if (!isIndexedRoute(route, currentLocale)) {
+          if (!/<meta[^>]+name=["']robots["'][^>]+noindex/i.test(html)) {
+            const meta = '<meta data-dq-mirror-noindex name="robots" content="noindex, follow" />';
+            const updated = dropIndexRobots(html).replace(/<\/head>/i, `${meta}</head>`);
+            if (updated !== html) {
+              fs.writeFileSync(file, updated, "utf8");
+              mirrored++;
+            }
+          }
+          continue;
+        }
+
         // Pages the build marked noindex (e.g. password-gated admin): drop the
         // site-wide "index, follow" robots tag there so the page does not
         // carry two conflicting robots metas.
@@ -201,10 +237,12 @@ module.exports = function hreflangPlugin(context, _options) {
         }
       }
 
-      console.log(`[${PLUGIN_NAME}] ${currentLocale}: noindexed ${noindexed} fallback page(s)`);
+      console.log(`[${PLUGIN_NAME}] ${currentLocale}: noindexed ${noindexed} fallback page(s), ${mirrored} mirrored page(s)`);
     },
   };
 };
 
 // docusaurus.config.ts drops these routes from each locale's sitemap.xml.
 module.exports.collectFallbackRoutes = collectFallbackRoutes;
+// ... and keeps only the indexed routes in it.
+module.exports.isIndexedRoute = isIndexedRoute;

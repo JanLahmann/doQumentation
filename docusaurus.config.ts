@@ -5,7 +5,7 @@ import {familyFooterColumn} from './family-footer';
 import remarkMath from 'remark-math';
 import rehypeKatex from 'rehype-katex';
 import {remarkContentFixes, fixTablesPreprocessor} from './plugins/content-fixes';
-import {collectFallbackRoutes} from './plugins/hreflang';
+import {collectFallbackRoutes, isIndexedRoute} from './plugins/hreflang';
 import upstreamFileMeta from './src/config/upstreamFileMeta.json';
 
 /** Route → date its English source last changed ("guides/x.mdx" → "/guides/x"). */
@@ -321,7 +321,10 @@ const config: Config = {
             const fallbacks: Set<string> = collectFallbackRoutes(__dirname, locale);
             const dates = pageDates();
             return items
-              .filter((item) => !fallbacks.has(new URL(item.url).pathname.replace(/\/$/, '') || '/'))
+              .filter((item) => {
+                const route = new URL(item.url).pathname.replace(/\/$/, '') || '/';
+                return !fallbacks.has(route) && isIndexedRoute(route, locale);
+              })
               .map((item) => {
                 const date = dates.get(new URL(item.url).pathname.replace(/\/$/, '') || '/');
                 return date ? {...item, lastmod: date} : item;
