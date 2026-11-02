@@ -71,13 +71,16 @@ The LUCJ ansatz adapts to QPUs with restricted qubit connectivity. The spin orbi
 The self-consistent configuration recovery procedure is designed to extract as much signal as possible from noisy quantum samples. Because the molecular Hamiltonian conserves particle number and spin Z, it makes sense to choose a circuit ansatz that also conserves these symmetries. When applied to the Hartree-Fock state, the resulting state has a fixed particle number and spin Z in the noiseless setting. Therefore, the spin-$\alpha$ and spin-$\beta$ halves of any bitstring sampled from this state should have the same [Hamming weight](https://en.wikipedia.org/wiki/Hamming_weight) as in the Hartree-Fock state. Due to the presence of noise in current quantum processors, some measured bitstrings will violate this property. A simple form of postselection would discard these bitstrings, but this is wasteful because those bitstrings might still contain some signal. The self-consistent recovery procedure attempts to recover some of that signal in post-processing. The procedure is iterative and requires as input an estimate of the average occupancies of each orbital in the ground state, which is first computed from the raw samples. The procedure is run in a loop, and each iteration has the following steps:
 
 1.  For each bitstring that violates the specified symmetries, flip its bits with a probabilistic procedure designed to bring the bitstring closer to the current estimate of the average orbital occupancies, to obtain a new bitstring.
-2.  Collect all of the old and new bitstrings that satisfy the symmetries, and subsample subsets of a fixed size, chosen in advance.
-3.  For each subset of bitstrings, project the Hamiltonian into the subspace spanned by the corresponding basis vectors (see the [previous section](#quantum-chemistry) for a description of these basis vectors), and compute a ground state estimate of the projected Hamiltonian on a classical computer.
-4.  Update the estimate of the average orbital occupancies with the ground state estimate with the lowest energy.
+2.  Collect all of the old and new bitstrings that satisfy the symmetries, and divide a subsample of them into disjoint batches of a fixed size, chosen in advance.
+3.  For each batch of bitstrings, project the Hamiltonian into the subspace spanned by the corresponding basis vectors (see the [previous section](#quantum-chemistry) for a description of these basis vectors), and compute a ground state estimate of the projected Hamiltonian on a classical computer. Each bitstring consists of a spin-$\alpha$ half and a spin-$\beta$ half, each of which we call a *CI string*. The subspace for a batch is spanned by the basis vectors formed by pairing every spin-$\alpha$ CI string in the batch with every spin-$\beta$ CI string in the batch.
+4.  *Trim* each batch, keeping only the CI strings that carry the largest weight in its ground state estimate. Merge the CI strings that survive from all of the batches, and diagonalize the Hamiltonian once more in the merged subspace.
+5.  Update the estimate of the average orbital occupancies using the ground state estimate from the merged subspace. Its highest-weight CI strings are also carried over into the subspaces of the next iteration.
+
+Trimming and merging the batches in step 4 is the [trim SQD](https://arxiv.org/abs/2605.01138) variant of the algorithm. Because diagonalizing a batch to screen its CI strings is cheaper than diagonalizing a subspace large enough to hold every candidate CI string, trimming lets SQD select from a larger pool of sampled CI strings than it could diagonalize at once.
 
 ### SQD workflow diagram
 
-The SQD workflow is depicted in the following diagram:
+The SQD workflow is depicted in the following diagram (the trimming and merging of the batches described in step 4 is not shown):
 
 ![Workflow diagram of the SQD algorithm](/docs/images/tutorials/improving-energy-estimation-of-a-fermionic-hamiltonian-with-sqd/fd7e816f-4e2e-4dd7-a7da-f71afb9ca68d.avif)
 ## Requirements
@@ -86,7 +89,7 @@ Before starting this tutorial, ensure that you have the following installed:
 
 *   Qiskit SDK v1.0 or later, with [visualization](https://docs.quantum.ibm.com/api/qiskit/visualization) support
 *   Qiskit Runtime v0.22 or later (`pip install qiskit-ibm-runtime`)
-*   SQD Qiskit addon v0.12 or later (`pip install qiskit-addon-sqd`)
+*   SQD Qiskit addon v0.14 or later (`pip install qiskit-addon-sqd`)
 *   ffsim v0.0.75 or later (`pip install ffsim`)
 ## Setup
 
@@ -163,8 +166,14 @@ print(f"nelec = {nelec}")
 ```
 
 ```text
-converged SCF energy = -108.464957764796
+converged SCF energy = -108.464957764795
+```
+
+```text
 CASCI E = -108.595987350986  E(CI) = -32.4115475088426  S^2 = 0.0000000
+```
+
+```text
 norb = 8
 nelec = (5, 5)
 ```
@@ -181,7 +190,7 @@ t2 = ccsd.t2
 ```
 
 ```text
-E(CCSD) = -108.5933309085008  E_corr = -0.1283731437052352
+E(CCSD) = -108.5933309085007  E_corr = -0.1283731437052356
 ```
 
 Now, we use [ffsim](https://github.com/qiskit-community/ffsim) to create the ansatz circuit. Since our molecule has a closed-shell Hartree-Fock state, we use the spin-balanced variant of the UCJ ansatz, [UCJOpSpinBalanced](https://qiskit-community.github.io/ffsim/api/ffsim.html#ffsim.UCJOpSpinBalanced). We set `optimize=True` in the `from_t_amplitudes` method to enable the "compressed" double-factorization of the $t_2$ amplitudes (see [The local unitary cluster Jastrow (LUCJ) ansatz](https://qiskit-community.github.io/ffsim/explanations/lucj.html#Parameter-initialization-from-CCSD) at ffsim's documentation for details).
@@ -203,11 +212,13 @@ pairs_aa = [(p, p + 1) for p in range(norb - 1)]
 pairs_ab = None
 
 # Initialize backend
+rng = np.random.default_rng(12345)
 coupling_map = CouplingMap.from_grid(norb, 2)
 backend = GenericBackendV2(
     coupling_map.size(),
     coupling_map=coupling_map,
     basis_gates=["cp", "xx_plus_yy", "p", "x", "swap"],
+    seed=rng,
 )
 
 # Create pass manager
@@ -217,6 +228,7 @@ pass_manager, pairs_ab = ffsim.qiskit.generate_lucj_pass_manager(
     connectivity="square",
     interaction_pairs=(pairs_aa, pairs_ab),
     optimization_level=3,
+    seed_transpiler=int(rng.integers(2**31)),
 )
 
 # Create the LUCJ ansatz operator
@@ -260,7 +272,6 @@ Gate counts: OrderedDict({'xx_plus_yy': 254, 'cp': 88, 'p': 64, 'measure': 16, '
 After optimizing the circuit for hardware execution, we are ready to run it on the target hardware and collect samples for ground state energy estimation. As we only have one circuit, we will use IBM Quantum Compute Service [Job execution mode](/guides/execution-modes) and execute our circuit.
 
 ```python
-rng = np.random.default_rng(12345)
 sampler = StatevectorSampler(seed=rng)
 job = sampler.run([isa_circuit], shots=100_000)
 ```
@@ -290,11 +301,13 @@ num_valid = sum(
     is_valid_bitstring(b, norb, nelec) for b in bit_array.get_bitstrings()
 )
 valid_fraction = num_valid / bit_array.num_shots
-print(f"Fraction of sampled configurations that are valid: {valid_fraction}")
+print(
+    f"Fraction of sampled configurations that are valid (simulation): {valid_fraction}"
+)
 ```
 
 ```text
-Fraction of sampled configurations that are valid: 1.0
+Fraction of sampled configurations that are valid (simulation): 1.0
 ```
 
 All of the bitstrings are valid because we are sampling the circuit on a noiseless simulator. When running on a noisy QPU, the fraction will be less than one, but hopefully it will be larger than the fraction you would expect if the bitstrings were sampled uniformly at random, which is computed in the following cell.
@@ -317,6 +330,12 @@ Now, we estimate the ground state energy of the Hamiltonian using the `diagonali
 
 Here, we use the `initial_occupancies` argument to `diagonalize_fermionic_hamiltonian` to specify the Hartree-Fock configuration as the initial guess for the orbital occupancies in the ground state. This approach is sensible for systems where the ground state has significant support on the Hartree-Fock configuration, but it might not be appropriate in other situations, though more advanced computational methods might yield better initial guesses in those cases. Specifying `initial_occupancies` also allows configuration recovery to run even if no valid configurations were sampled, as may be the case when sampling a large circuit on a noisy QPU. Without this argument, the configuration recovery would fail and raise an error if no valid configurations were provided.
 
+We enable trim SQD by passing a `TrimPolicy` as the `policy` argument. Each iteration then performs `num_batches + 1` diagonalizations: one for each batch, and one for the merged subspace. We use two batches, so each iteration costs three diagonalizations. The callback receives only the merged result, so each iteration prints a single energy. The `TrimPolicy` options are:
+- `trim_ratio`: the fraction of each batch's CI strings, per spin sector, that survive trimming and enter the merged subspace. The merged subspace holds up to about `num_batches * trim_ratio` times as many CI strings as a single batch, minus those that the batches have in common. The `max_dim` argument bounds every subspace, including the merged one.
+- `carryover_threshold` and `carryover_ratio`: which CI strings of the merged subspace are carried over into the next iteration. Strings must appear in a configuration whose amplitude exceeds `carryover_threshold`, and of those, the fraction `carryover_ratio` with the largest weight is kept.
+
+This system is small enough that a single batch contains most of the possible CI strings, so the batches overlap heavily. We therefore use a high `trim_ratio` to keep the merged subspace from becoming much smaller than the batches. See the [trim SQD guide](https://qiskit.github.io/qiskit-addon-sqd/guides/trim_sqd.html) for more details on choosing these options.
+
 ```python
 from functools import partial
 
@@ -325,19 +344,21 @@ from qiskit_addon_sqd.fermion import (
     diagonalize_fermionic_hamiltonian,
     solve_sci_batch,
 )
+from qiskit_addon_sqd.trim import TrimPolicy
 
 # SQD options
 energy_tol = 1e-3
 occupancies_tol = 1e-3
 max_iterations = 5
-
-# Eigenstate solver options
-num_batches = 3
 samples_per_batch = 1000
+num_batches = 2
 max_dim = 50
+policy = TrimPolicy(
+    trim_ratio=0.8,
+    carryover_threshold=1e-4,
+    carryover_ratio=0.5,
+)
 symmetrize_spin = True
-carryover_threshold = 1e-4
-max_cycle = 200
 
 # Use the Hartree-Fock configuration as an initial guess for the orbital occupancies
 initial_occupancies = (
@@ -348,7 +369,7 @@ initial_occupancies = (
 # Pass options to the built-in eigensolver. If you just want to use the defaults,
 # you can omit this step, in which case you would not specify the sci_solver argument
 # in the call to diagonalize_fermionic_hamiltonian below.
-sci_solver = partial(solve_sci_batch, spin_sq=0.0, max_cycle=max_cycle)
+sci_solver = partial(solve_sci_batch, spin_sq=0.0, max_cycle=200)
 
 # List to capture intermediate results
 result_history = []
@@ -358,10 +379,9 @@ def callback(results: list[SCIResult]):
     iteration = len(result_history)
     print(f"Iteration {iteration}")
     for i, result in enumerate(results):
-        print(f"\tSubsample {i}")
-        print(f"\t\tEnergy: {result.energy + nuclear_repulsion_energy}")
+        print(f"\tEnergy: {result.energy + nuclear_repulsion_energy}")
         print(
-            f"\t\tSubspace dimension: {np.prod(result.sci_state.amplitudes.shape)}"
+            f"\tSubspace dimension: {np.prod(result.sci_state.amplitudes.shape)}"
         )
 
 result = diagonalize_fermionic_hamiltonian(
@@ -372,6 +392,7 @@ result = diagonalize_fermionic_hamiltonian(
     norb=norb,
     nelec=nelec,
     num_batches=num_batches,
+    policy=policy,
     energy_tol=energy_tol,
     occupancies_tol=occupancies_tol,
     max_iterations=max_iterations,
@@ -379,45 +400,33 @@ result = diagonalize_fermionic_hamiltonian(
     symmetrize_spin=symmetrize_spin,
     max_dim=max_dim,
     initial_occupancies=initial_occupancies,
-    carryover_threshold=carryover_threshold,
     callback=callback,
     seed=rng,
 )
 
 final_energy = result.energy + nuclear_repulsion_energy
 energy_error = final_energy - reference_energy
-print(f"Final energy: {final_energy}")
-print(f"Final energy error: {energy_error}")
+print(f"Final energy (simulation): {final_energy}")
+print(f"Final energy error (simulation): {energy_error}")
 ```
 
 ```text
 Iteration 1
-	Subsample 0
-		Energy: -108.59589540253083
-		Subspace dimension: 2500
-	Subsample 1
-		Energy: -108.59589540253083
-		Subspace dimension: 2500
-	Subsample 2
-		Energy: -108.59589540253083
-		Subspace dimension: 2500
+	Energy: -108.59585971421083
+	Subspace dimension: 1681
+```
+
+```text
 Iteration 2
-	Subsample 0
-		Energy: -108.59589540253083
-		Subspace dimension: 2500
-	Subsample 1
-		Energy: -108.59589540253083
-		Subspace dimension: 2500
-	Subsample 2
-		Energy: -108.59589540253083
-		Subspace dimension: 2500
-Final energy: -108.59589540253083
-Final energy error: 9.19484552071026e-05
+	Energy: -108.59585971421083
+	Subspace dimension: 1681
+Final energy (simulation): -108.59585971421083
+Final energy error (simulation): 0.00012763677520410965
 ```
 
 #### Visualize the results
 
-The first plot shows that in this simulation we are already within `1 mH` of the exact answer after the first iteration (chemical accuracy is typically accepted to be `1 kcal/mol` $\approx$ `1.6 mH`). This is a small system, though, and because the samples are noiseless, configuration recovery is not needed. On a larger system run on a noisy QPU, multiple configuration recovery iterations might be needed, and the final accuracy might be worse. Generally, the energy can be improved by allowing more configuration recovery iterations or by increasing the number of samples per batch.
+The first plot shows the energy error of the merged subspace in each iteration. In this simulation, we are already within `1 mH` of the exact answer after the first iteration (chemical accuracy is typically accepted to be `1 kcal/mol` $\approx$ `1.6 mH`). This is a small system, though, and because the samples are noiseless, configuration recovery is not needed. On a larger system run on a noisy QPU, multiple configuration recovery iterations might be needed, and the final accuracy might be worse. Generally, the energy can be improved by allowing more configuration recovery iterations or by increasing the number of samples per batch.
 
 The second plot shows the average occupancy of each spatial orbital after the final iteration. We can see that both the spin-up and spin-down electrons occupy the first five orbitals with high probability in our solutions.
 
@@ -476,6 +485,7 @@ Now, we run a larger example on real quantum hardware. Here, we'll derive an act
 - Lower `n_reps` to `1` to reduce noise from gate errors
 - Set the ansatz connectivity based on the backend processor family (heavy-hex for Heron, square for Nighthawk)
 - Increase `max_dim` to `1000` to allow larger subspace dimensions.
+- Lower `trim_ratio` to `0.5`. This system has far more possible CI strings than fit in a subspace, so with two batches, a ratio of `0.5` keeps the merged subspace no larger than a single batch.
 ### Steps 1-4
 
 Here we put all the steps together into a single workflow at a larger scale, which is then run on real quantum hardware.
@@ -584,7 +594,9 @@ num_valid = sum(
     is_valid_bitstring(b, norb, nelec) for b in bit_array.get_bitstrings()
 )
 valid_fraction = num_valid / bit_array.num_shots
-print(f"Fraction of sampled configurations that are valid: {valid_fraction}")
+print(
+    f"Fraction of sampled configurations that are valid (hardware): {valid_fraction}"
+)
 expected_fraction_random = (
     math.comb(norb, n_alpha) * math.comb(norb, n_beta) / 2 ** (2 * norb)
 )
@@ -596,14 +608,15 @@ print(
 energy_tol = 1e-3
 occupancies_tol = 1e-3
 max_iterations = 5
-
-# Eigenstate solver options
-num_batches = 3
 samples_per_batch = 1000
+num_batches = 2
 max_dim = 1000
+policy = TrimPolicy(
+    trim_ratio=0.5,
+    carryover_threshold=1e-4,
+    carryover_ratio=0.5,
+)
 symmetrize_spin = True
-carryover_threshold = 1e-4
-max_cycle = 200
 
 # Use the Hartree-Fock configuration as an initial guess for the
 # orbital occupancies
@@ -615,7 +628,7 @@ initial_occupancies = (
 # Pass options to the built-in eigensolver. If you just want to use the defaults,
 # you can omit this step, in which case you would not specify the
 # sci_solver argument in the call to diagonalize_fermionic_hamiltonian below.
-sci_solver = partial(solve_sci_batch, spin_sq=0.0, max_cycle=max_cycle)
+sci_solver = partial(solve_sci_batch, spin_sq=0.0, max_cycle=200)
 
 # List to capture intermediate results
 result_history = []
@@ -628,6 +641,7 @@ result = diagonalize_fermionic_hamiltonian(
     norb=norb,
     nelec=nelec,
     num_batches=num_batches,
+    policy=policy,
     energy_tol=energy_tol,
     occupancies_tol=occupancies_tol,
     max_iterations=max_iterations,
@@ -635,15 +649,14 @@ result = diagonalize_fermionic_hamiltonian(
     symmetrize_spin=symmetrize_spin,
     max_dim=max_dim,
     initial_occupancies=initial_occupancies,
-    carryover_threshold=carryover_threshold,
     callback=callback,
     seed=rng,
 )
 
 final_energy = result.energy + nuclear_repulsion_energy
 energy_error = final_energy - reference_energy
-print(f"Final energy: {final_energy}")
-print(f"Final energy error: {energy_error}")
+print(f"Final energy (hardware): {final_energy}")
+print(f"Final energy error (hardware): {energy_error}")
 
 # Data for energies plot
 x1 = range(len(result_history))
@@ -695,8 +708,8 @@ plt.show()
 converged SCF energy = -108.929838385609
 norb = 26
 nelec = (5, 5)
-E(CCSD) = -109.2177884185544  E_corr = -0.2879500329450041
-Using backend ibm_boston
+E(CCSD) = -109.2177884185544  E_corr = -0.2879500329450045
+Using backend ibm_kingston
 ```
 
 ```text
@@ -707,61 +720,26 @@ Removing interaction (20, 20) from the end.
 ```
 
 ```text
-Gate counts: OrderedDict({'sx': 7036, 'rz': 6965, 'cz': 1858, 'measure': 52, 'x': 50, 'barrier': 1})
-Fraction of sampled configurations that are valid: 0.01677
+Gate counts: OrderedDict({'sx': 7039, 'rz': 6977, 'cz': 1858, 'measure': 52, 'x': 45, 'barrier': 1})
+Fraction of sampled configurations that are valid (hardware): 0.00248
 Expected fraction of valid configurations from uniformly random bitstrings: 9.607888706852918e-07
 Iteration 1
-	Subsample 0
-		Energy: -109.17922180754668
-		Subspace dimension: 1000000
-	Subsample 1
-		Energy: -109.17713541195594
-		Subspace dimension: 962361
-	Subsample 2
-		Energy: -109.17407767345108
-		Subspace dimension: 968256
+	Energy: -109.19178247530117
+	Subspace dimension: 644809
 Iteration 2
-	Subsample 0
-		Energy: -109.1873108379026
-		Subspace dimension: 1000000
-	Subsample 1
-		Energy: -109.1876970140745
-		Subspace dimension: 1000000
-	Subsample 2
-		Energy: -109.18255107152576
-		Subspace dimension: 1000000
+	Energy: -109.20055015645298
+	Subspace dimension: 339889
 Iteration 3
-	Subsample 0
-		Energy: -109.19052148187927
-		Subspace dimension: 1000000
-	Subsample 1
-		Energy: -109.19316375313544
-		Subspace dimension: 1000000
-	Subsample 2
-		Energy: -109.19087348337145
-		Subspace dimension: 1000000
+	Energy: -109.20621939005301
+	Subspace dimension: 446224
 Iteration 4
-	Subsample 0
-		Energy: -109.19374847699348
-		Subspace dimension: 1000000
-	Subsample 1
-		Energy: -109.19517039328333
-		Subspace dimension: 1000000
-	Subsample 2
-		Energy: -109.19422416032815
-		Subspace dimension: 1000000
+	Energy: -109.21228961696536
+	Subspace dimension: 393129
 Iteration 5
-	Subsample 0
-		Energy: -109.19580768221108
-		Subspace dimension: 1000000
-	Subsample 1
-		Energy: -109.19608553581007
-		Subspace dimension: 1000000
-	Subsample 2
-		Energy: -109.19548131833729
-		Subspace dimension: 1000000
-Final energy: -109.19608553581007
-Final energy error: 0.03194368084709254
+	Energy: -109.21328434918014
+	Subspace dimension: 403225
+Final energy (hardware): -109.21328434918014
+Final energy error (hardware): 0.014744867477020307
 ```
 
 ![Output of the previous code cell](/docs/images/tutorials/sample-based-quantum-diagonalization/extracted-outputs/3858949c-a55d-4ff8-a0fc-54fb53e131b5-3.avif)
