@@ -99,7 +99,7 @@ Before starting this tutorial, ensure that you have the following installed:
 
 - Qiskit SDK v1.0 or later, with [visualization](https://docs.quantum.ibm.com/api/qiskit/visualization) support
 - Qiskit Runtime v0.22 or later (`pip install qiskit-ibm-runtime`)
-- SQD Qiskit addon v0.11 or later (`pip install qiskit-addon-sqd`)
+- SQD Qiskit addon v0.14 or later (`pip install qiskit-addon-sqd`)
 - ffsim v0.0.72 or later (`pip install ffsim`)
 ## Small-scale simulator example
 ### Step 1: Map problem to a quantum circuit
@@ -234,7 +234,7 @@ The time-evolved states are produced by successive applications of a second-orde
 For a more detailed description of this model and how the circuits are designed, refer to ["Quantum-Centric Algorithm for Sample-Based Krylov Diagonalization"](https://arxiv.org/abs/2501.09702).
 
 ```python
-from typing import Sequence
+from collections.abc import Sequence
 
 import ffsim
 import scipy
@@ -345,8 +345,9 @@ Next, we optimize the circuit for a target hardware. For now, we'll create a gen
 ```python
 from qiskit.providers.fake_provider import GenericBackendV2
 
+rng = np.random.default_rng(12345)
 backend = GenericBackendV2(
-    2 * norb, basis_gates=["cp", "xx_plus_yy", "p", "x"]
+    2 * norb, basis_gates=["cp", "xx_plus_yy", "p", "x"], seed=rng
 )
 ```
 
@@ -356,7 +357,9 @@ Now, we use Qiskit to transpile the circuits to the target backend.
 from qiskit.transpiler import generate_preset_pass_manager
 
 pass_manager = generate_preset_pass_manager(
-    optimization_level=3, backend=backend
+    optimization_level=3,
+    backend=backend,
+    seed_transpiler=int(rng.integers(2**31)),
 )
 isa_circuits = pass_manager.run(circuits)
 ```
@@ -365,11 +368,11 @@ isa_circuits = pass_manager.run(circuits)
 After optimizing the circuits for hardware execution, we are ready to run them on the target hardware and collect samples for ground state energy estimation. After using the Sampler primitive to sample bitstrings from each circuit, we combine all of the results into a single counts dictionary and plot the top 20 most commonly sampled bitstrings.
 
 ```python
-from qiskit.visualization import plot_histogram
 from qiskit.primitives import StatevectorSampler
+from qiskit.visualization import plot_histogram
 
 # Sample from the circuits
-sampler = StatevectorSampler()
+sampler = StatevectorSampler(seed=rng)
 job = sampler.run(isa_circuits, shots=500)
 ```
 
@@ -389,11 +392,14 @@ plot_histogram(bit_array.get_counts(), number_to_keep=20)
 ### Step 4: Post-process and return result to desired classical format
 Now, we run the SQD algorithm using the `diagonalize_fermionic_hamiltonian` function. See the [API documentation](https://qiskit.github.io/qiskit-addon-sqd/apidocs/qiskit_addon_sqd.fermion.html#qiskit_addon_sqd.fermion.diagonalize_fermionic_hamiltonian) for explanations of the arguments to this function.
 
+We use [trim SQD](https://arxiv.org/abs/2605.01138), which is enabled by passing a `TrimPolicy` as the `policy` argument. In each configuration recovery iteration, trim SQD diagonalizes each batch of bitstrings, trims each batch down to the CI strings (the spin-$\alpha$ and spin-$\beta$ halves of the bitstrings) that carry the largest weight in its ground state estimate, and diagonalizes the merged survivors once more. With two batches, each iteration costs three diagonalizations. The callback receives only the merged result, so each iteration prints a single energy. The `trim_ratio` option sets the fraction of each batch's CI strings that survive trimming, and `max_dim` bounds the number of CI strings per spin sector in every subspace, including the merged one. See the [trim SQD guide](https://qiskit.github.io/qiskit-addon-sqd/guides/trim_sqd.html) for more details.
+
 ```python
 from qiskit_addon_sqd.fermion import (
     SCIResult,
     diagonalize_fermionic_hamiltonian,
 )
+from qiskit_addon_sqd.trim import TrimPolicy
 
 # List to capture intermediate results
 result_history = []
@@ -403,21 +409,25 @@ def callback(results: list[SCIResult]):
     iteration = len(result_history)
     print(f"Iteration {iteration}")
     for i, result in enumerate(results):
-        print(f"\tSubsample {i}")
-        print(f"\t\tEnergy: {result.energy}")
+        print(f"\tEnergy: {result.energy}")
         print(
-            f"\t\tSubspace dimension: {np.prod(result.sci_state.amplitudes.shape)}"
+            f"\tSubspace dimension: {np.prod(result.sci_state.amplitudes.shape)}"
         )
 
-rng = np.random.default_rng(24)
 result = diagonalize_fermionic_hamiltonian(
     h1e_momentum,
     h2e_momentum,
     bit_array,
-    samples_per_batch=100,
+    samples_per_batch=1000,
     norb=norb,
     nelec=nelec,
-    num_batches=3,
+    num_batches=2,
+    policy=TrimPolicy(
+        trim_ratio=0.8,
+        carryover_threshold=1e-4,
+        carryover_ratio=0.5,
+    ),
+    max_dim=100,
     max_iterations=5,
     symmetrize_spin=True,
     callback=callback,
@@ -427,48 +437,17 @@ result = diagonalize_fermionic_hamiltonian(
 
 ```text
 Iteration 1
-	Subsample 0
-		Energy: -13.4222953188441
-		Subspace dimension: 529
-	Subsample 1
-		Energy: -13.42237556285828
-		Subspace dimension: 784
-	Subsample 2
-		Energy: -13.422045397387413
-		Subspace dimension: 529
-Iteration 2
-	Subsample 0
-		Energy: -13.422379583305478
-		Subspace dimension: 900
-	Subsample 1
-		Energy: -13.422376197704326
-		Subspace dimension: 841
-	Subsample 2
-		Energy: -13.422421162849295
-		Subspace dimension: 1089
-Iteration 3
-	Subsample 0
-		Energy: -13.422421164670345
-		Subspace dimension: 1156
-	Subsample 1
-		Energy: -13.422421492737689
-		Subspace dimension: 1156
-	Subsample 2
-		Energy: -13.422421205869572
-		Subspace dimension: 1156
-Iteration 4
-	Subsample 0
-		Energy: -13.422421494558726
-		Subspace dimension: 1225
-	Subsample 1
-		Energy: -13.422421492737689
-		Subspace dimension: 1156
-	Subsample 2
-		Energy: -13.422421492737689
-		Subspace dimension: 1156
+	Energy: -13.422366648114345
+	Subspace dimension: 729
 ```
 
-The following code cell plots the results. The first plot shows the computed energy as a function of the number of configuration recovery iterations, and the second plot shows the average occupancy of each spatial orbital after the final iteration. Since this is such a small problem, the first iteration already brings us very close to the exact energy (note the scale of the y axis).
+```text
+Iteration 2
+	Energy: -13.422366646833664
+	Subspace dimension: 729
+```
+
+The following code cell plots the results. The first plot shows the error of the computed energy as a function of the number of configuration recovery iterations, and the second plot shows the average occupancy of each spatial orbital after the final iteration. Since this is such a small problem, the first iteration already brings us very close to the exact energy.
 
 ```python
 import matplotlib.pyplot as plt
@@ -481,6 +460,7 @@ min_id, min_e = min(enumerate(min_es), key=lambda x: x[1])
 
 # Data for energies plot
 x1 = range(len(result_history))
+e_diff = [abs(e - reference_energy) for e in min_es]
 
 # Data for avg spatial orbital occupancy
 y2 = np.sum(result.orbital_occupancies, axis=0)
@@ -489,18 +469,14 @@ x2 = range(len(y2))
 fig, axs = plt.subplots(1, 2, figsize=(12, 6))
 
 # Plot energies
-axs[0].plot(x1, min_es, label="energy", marker="o")
+axs[0].plot(x1, e_diff, label="energy error", marker="o")
 axs[0].set_xticks(x1)
 axs[0].set_xticklabels(x1)
-axs[0].axhline(
-    y=reference_energy,
-    color="#BF5700",
-    linestyle="--",
-    label="reference energy",
-)
-axs[0].set_title("Approximated Ground State Energy vs SQD Iterations")
+axs[0].set_yscale("log")
+axs[0].set_ylim(1e-5, 1e-2)
+axs[0].set_title("Approximated Ground State Energy Error vs SQD Iterations")
 axs[0].set_xlabel("Iteration Index", fontdict={"fontsize": 12})
-axs[0].set_ylabel("Energy", fontdict={"fontsize": 12})
+axs[0].set_ylabel("Energy Error", fontdict={"fontsize": 12})
 axs[0].legend()
 
 # Plot orbital occupancy
@@ -520,8 +496,8 @@ plt.show()
 
 ```text
 Reference energy: -13.42249
-SQD energy: -13.42242
-Absolute error: 0.00007
+SQD energy: -13.42237
+Absolute error: 0.00012
 ```
 
 ![Output of the previous code cell](/docs/images/tutorials/sample-based-krylov-quantum-diagonalization/extracted-outputs/b6879566-8bf5-4c28-bfb6-b2686692e3d3-1.avif)
@@ -540,17 +516,18 @@ print(f"Recomputed energy: {energy:.5f}")
 ```
 
 ```text
-Recomputed energy: -13.42242
+Recomputed energy: -13.42237
 ```
 
 ## Large-scale hardware example
 
 Now, we run a larger example on a real QPU.
 For the reference energy, we use the results of a [DMRG](https://en.wikipedia.org/wiki/Density_matrix_renormalization_group) calculation that was performed separately.
+Because this system has many more possible CI strings, we lower `trim_ratio` to `0.5` and increase `max_dim` to `200`.
 
 ```python
-from qiskit_ibm_runtime import SamplerV2 as Sampler
 from qiskit_ibm_runtime import QiskitRuntimeService
+from qiskit_ibm_runtime import SamplerV2 as Sampler
 
 # Model parameters
 norb = 20
@@ -633,21 +610,25 @@ def callback(results: list[SCIResult]):
     iteration = len(result_history)
     print(f"Iteration {iteration}")
     for i, result in enumerate(results):
-        print(f"\tSubsample {i}")
-        print(f"\t\tEnergy: {result.energy}")
+        print(f"\tEnergy: {result.energy}")
         print(
-            f"\t\tSubspace dimension: {np.prod(result.sci_state.amplitudes.shape)}"
+            f"\tSubspace dimension: {np.prod(result.sci_state.amplitudes.shape)}"
         )
 
-rng = np.random.default_rng(24)
 result = diagonalize_fermionic_hamiltonian(
     h1e_momentum,
     h2e_momentum,
     bit_array,
-    samples_per_batch=100,
+    samples_per_batch=1000,
     norb=norb,
     nelec=nelec,
-    num_batches=3,
+    num_batches=2,
+    policy=TrimPolicy(
+        trim_ratio=0.5,
+        carryover_threshold=1e-4,
+        carryover_ratio=0.5,
+    ),
+    max_dim=200,
     max_iterations=5,
     symmetrize_spin=True,
     callback=callback,
@@ -661,21 +642,18 @@ min_es = [
 ]
 min_id, min_e = min(enumerate(min_es), key=lambda x: x[1])
 x1 = range(len(result_history))
+e_diff = [abs(e - reference_energy) for e in min_es]
 y2 = np.sum(result.orbital_occupancies, axis=0)
 x2 = range(len(y2))
 fig, axs = plt.subplots(1, 2, figsize=(12, 6))
-axs[0].plot(x1, min_es, label="energy", marker="o")
+axs[0].plot(x1, e_diff, label="energy error", marker="o")
 axs[0].set_xticks(x1)
 axs[0].set_xticklabels(x1)
-axs[0].axhline(
-    y=reference_energy,
-    color="#BF5700",
-    linestyle="--",
-    label="reference energy",
-)
-axs[0].set_title("Approximated Ground State Energy vs SQD Iterations")
+axs[0].set_yscale("log")
+axs[0].set_ylim(1e-3, 1e-1)
+axs[0].set_title("Approximated Ground State Energy Error vs SQD Iterations")
 axs[0].set_xlabel("Iteration Index", fontdict={"fontsize": 12})
-axs[0].set_ylabel("Energy", fontdict={"fontsize": 12})
+axs[0].set_ylabel("Energy Error", fontdict={"fontsize": 12})
 axs[0].legend()
 axs[1].bar(x2, y2, width=0.8)
 axs[1].set_xticks(x2)
@@ -691,60 +669,25 @@ plt.show()
 ```
 
 ```text
-Using backend ibm_boston
+Using backend ibm_fez
 Iteration 1
-	Subsample 0
-		Energy: -28.63965951544449
-		Subspace dimension: 9801
-	Subsample 1
-		Energy: -28.625588929202006
-		Subspace dimension: 9409
-	Subsample 2
-		Energy: -28.647371834135498
-		Subspace dimension: 8281
+	Energy: -28.632642067246973
+	Subspace dimension: 13689
 Iteration 2
-	Subsample 0
-		Energy: -28.67213260849567
-		Subspace dimension: 29584
-	Subsample 1
-		Energy: -28.670340686158816
-		Subspace dimension: 27225
-	Subsample 2
-		Energy: -28.669976379525988
-		Subspace dimension: 31329
+	Energy: -28.7030144883651
+	Subspace dimension: 18769
 Iteration 3
-	Subsample 0
-		Energy: -28.68622875601382
-		Subspace dimension: 36100
-	Subsample 1
-		Energy: -28.698569623143126
-		Subspace dimension: 34225
-	Subsample 2
-		Energy: -28.694848533971882
-		Subspace dimension: 33856
+	Energy: -28.70519592695907
+	Subspace dimension: 13456
 Iteration 4
-	Subsample 0
-		Energy: -28.69883392844593
-		Subspace dimension: 42025
-	Subsample 1
-		Energy: -28.701289495200996
-		Subspace dimension: 38025
-	Subsample 2
-		Energy: -28.699319594978245
-		Subspace dimension: 45369
+	Energy: -28.705288597420616
+	Subspace dimension: 15129
 Iteration 5
-	Subsample 0
-		Energy: -28.701936886834154
-		Subspace dimension: 51076
-	Subsample 1
-		Energy: -28.702468711812013
-		Subspace dimension: 53824
-	Subsample 2
-		Energy: -28.702298147575938
-		Subspace dimension: 52900
+	Energy: -28.70502224787334
+	Subspace dimension: 15129
 Reference energy: -28.70660
-SQD energy: -28.70247
-Absolute error: 0.00413
+SQD energy: -28.70529
+Absolute error: 0.00131
 ```
 
 ![Output of the previous code cell](/docs/images/tutorials/sample-based-krylov-quantum-diagonalization/extracted-outputs/933037d8-847e-4986-80da-5ac8d677b2ff-1.avif)
