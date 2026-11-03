@@ -1,6 +1,6 @@
 # Translation Status
 
-*Auto-generated on 2026-11-02 by `translation-status.py --write-status`.*
+*Auto-generated on 2026-11-03 by `translation-status.py --write-status`.*
 *Do not edit manually — regenerate with:*
 
 ```bash
@@ -17,23 +17,23 @@ deep-review verdict in their PO header (`CONTRIBUTING-REVIEWS.md`).
 
 | Locale | Code | Pages | Entries | Fuzzy | Untranslated | Pages mid-update | Reviewed pages |
 |--------|------|------:|--------:|------:|-------------:|-----------------:|---------------:|
-| German | `de` | 457/457 | 28837 | 0 | 0 | 0 | 431 |
-| Spanish | `es` | 457/457 | 28837 | 0 | 0 | 0 | 431 |
-| Ukrainian | `uk` | 457/457 | 28837 | 0 | 0 | 0 | 431 |
-| Japanese | `ja` | 457/457 | 28837 | 0 | 0 | 0 | 431 |
-| French | `fr` | 457/457 | 28837 | 0 | 0 | 0 | 431 |
-| Italian | `it` | 457/457 | 28837 | 0 | 0 | 0 | 431 |
-| Portuguese | `pt` | 457/457 | 28837 | 0 | 0 | 0 | 431 |
-| Tagalog | `tl` | 457/457 | 28837 | 0 | 0 | 0 | 431 |
-| Arabic | `ar` | 457/457 | 28837 | 0 | 0 | 0 | 431 |
-| Hebrew | `he` | 457/457 | 28837 | 0 | 0 | 0 | 431 |
-| Malay | `ms` | 457/457 | 28837 | 0 | 0 | 0 | 431 |
-| Indonesian | `id` | 457/457 | 28837 | 0 | 0 | 0 | 431 |
-| Thai | `th` | 457/457 | 28837 | 0 | 0 | 0 | 431 |
-| Korean | `ko` | 457/457 | 28837 | 0 | 0 | 0 | 431 |
-| Polish | `pl` | 457/457 | 28837 | 0 | 0 | 0 | 431 |
-| Romanian | `ro` | 457/457 | 28837 | 0 | 0 | 0 | 431 |
-| Czech | `cs` | 457/457 | 28837 | 0 | 0 | 0 | 431 |
+| German | `de` | 457/457 | 28926 | 0 | 0 | 0 | 406 |
+| Spanish | `es` | 457/457 | 28926 | 0 | 0 | 0 | 406 |
+| Ukrainian | `uk` | 457/457 | 28926 | 0 | 0 | 0 | 406 |
+| Japanese | `ja` | 457/457 | 28926 | 0 | 0 | 0 | 406 |
+| French | `fr` | 457/457 | 28926 | 0 | 0 | 0 | 406 |
+| Italian | `it` | 457/457 | 28926 | 0 | 0 | 0 | 406 |
+| Portuguese | `pt` | 457/457 | 28926 | 0 | 0 | 0 | 406 |
+| Tagalog | `tl` | 457/457 | 28926 | 0 | 0 | 0 | 406 |
+| Arabic | `ar` | 457/457 | 28926 | 0 | 0 | 0 | 406 |
+| Hebrew | `he` | 457/457 | 28926 | 0 | 0 | 0 | 406 |
+| Malay | `ms` | 457/457 | 28926 | 0 | 0 | 0 | 406 |
+| Indonesian | `id` | 457/457 | 28926 | 0 | 0 | 0 | 406 |
+| Thai | `th` | 457/457 | 28926 | 0 | 0 | 0 | 406 |
+| Korean | `ko` | 457/457 | 28926 | 0 | 0 | 0 | 406 |
+| Polish | `pl` | 457/457 | 28926 | 0 | 0 | 0 | 406 |
+| Romanian | `ro` | 457/457 | 28926 | 0 | 0 | 0 | 406 |
+| Czech | `cs` | 457/457 | 28926 | 0 | 0 | 0 | 406 |
 
 ## Per-Locale Detail
 
@@ -41,9 +41,9 @@ deep-review verdict in their PO header (`CONTRIBUTING-REVIEWS.md`).
 
 | Section | Pages | Entries | Fuzzy | Untranslated | Reviewed pages |
 |---------|------:|--------:|------:|-------------:|---------------:|
-| Tutorials | 65/65 | 5389 | 0 | 0 | 60 |
-| Guides | 191/191 | 7915 | 0 | 0 | 172 |
-| Courses | 165/165 | 11944 | 0 | 0 | 163 |
+| Tutorials | 64/64 | 5362 | 0 | 0 | 53 |
+| Guides | 192/192 | 8031 | 0 | 0 | 156 |
+| Courses | 165/165 | 11944 | 0 | 0 | 161 |
 | Modules | 15/15 | 2300 | 0 | 0 | 15 |
 | Other | 21/21 | 1289 | 0 | 0 | 21 |
 
@@ -51,9 +51,9 @@ deep-review verdict in their PO header (`CONTRIBUTING-REVIEWS.md`).
 
 | Section | Pages | Entries | Fuzzy | Untranslated | Reviewed pages |
 |---------|------:|--------:|------:|-------------:|---------------:|
-| Tutorials | 65/65 | 5389 | 0 | 0 | 60 |
-| Guides | 191/191 | 7915 | 0 | 0 | 172 |
-| Courses | 165/165 | 11944 | 0 | 0 | 163 |
+| Tutorials | 64/64 | 5362 | 0 | 0 | 53 |
+| Guides | 192/192 | 8031 | 0 | 0 | 156 |
+| Courses | 165/165 | 11944 | 0 | 0 | 161 |
 | Modules | 15/15 | 2300 | 0 | 0 | 15 |
 | Other | 21/21 | 1289 | 0 | 0 | 21 |
 
@@ -61,9 +61,9 @@ deep-review verdict in their PO header (`CONTRIBUTING-REVIEWS.md`).
 
 | Section | Pages | Entries | Fuzzy | Untranslated | Reviewed pages |
 |---------|------:|--------:|------:|-------------:|---------------:|
-| Tutorials | 65/65 | 5389 | 0 | 0 | 60 |
-| Guides | 191/191 | 7915 | 0 | 0 | 172 |
-| Courses | 165/165 | 11944 | 0 | 0 | 163 |
+| Tutorials | 64/64 | 5362 | 0 | 0 | 53 |
+| Guides | 192/192 | 8031 | 0 | 0 | 156 |
+| Courses | 165/165 | 11944 | 0 | 0 | 161 |
 | Modules | 15/15 | 2300 | 0 | 0 | 15 |
 | Other | 21/21 | 1289 | 0 | 0 | 21 |
 
@@ -71,9 +71,9 @@ deep-review verdict in their PO header (`CONTRIBUTING-REVIEWS.md`).
 
 | Section | Pages | Entries | Fuzzy | Untranslated | Reviewed pages |
 |---------|------:|--------:|------:|-------------:|---------------:|
-| Tutorials | 65/65 | 5389 | 0 | 0 | 60 |
-| Guides | 191/191 | 7915 | 0 | 0 | 172 |
-| Courses | 165/165 | 11944 | 0 | 0 | 163 |
+| Tutorials | 64/64 | 5362 | 0 | 0 | 53 |
+| Guides | 192/192 | 8031 | 0 | 0 | 156 |
+| Courses | 165/165 | 11944 | 0 | 0 | 161 |
 | Modules | 15/15 | 2300 | 0 | 0 | 15 |
 | Other | 21/21 | 1289 | 0 | 0 | 21 |
 
@@ -81,9 +81,9 @@ deep-review verdict in their PO header (`CONTRIBUTING-REVIEWS.md`).
 
 | Section | Pages | Entries | Fuzzy | Untranslated | Reviewed pages |
 |---------|------:|--------:|------:|-------------:|---------------:|
-| Tutorials | 65/65 | 5389 | 0 | 0 | 60 |
-| Guides | 191/191 | 7915 | 0 | 0 | 172 |
-| Courses | 165/165 | 11944 | 0 | 0 | 163 |
+| Tutorials | 64/64 | 5362 | 0 | 0 | 53 |
+| Guides | 192/192 | 8031 | 0 | 0 | 156 |
+| Courses | 165/165 | 11944 | 0 | 0 | 161 |
 | Modules | 15/15 | 2300 | 0 | 0 | 15 |
 | Other | 21/21 | 1289 | 0 | 0 | 21 |
 
@@ -91,9 +91,9 @@ deep-review verdict in their PO header (`CONTRIBUTING-REVIEWS.md`).
 
 | Section | Pages | Entries | Fuzzy | Untranslated | Reviewed pages |
 |---------|------:|--------:|------:|-------------:|---------------:|
-| Tutorials | 65/65 | 5389 | 0 | 0 | 60 |
-| Guides | 191/191 | 7915 | 0 | 0 | 172 |
-| Courses | 165/165 | 11944 | 0 | 0 | 163 |
+| Tutorials | 64/64 | 5362 | 0 | 0 | 53 |
+| Guides | 192/192 | 8031 | 0 | 0 | 156 |
+| Courses | 165/165 | 11944 | 0 | 0 | 161 |
 | Modules | 15/15 | 2300 | 0 | 0 | 15 |
 | Other | 21/21 | 1289 | 0 | 0 | 21 |
 
@@ -101,9 +101,9 @@ deep-review verdict in their PO header (`CONTRIBUTING-REVIEWS.md`).
 
 | Section | Pages | Entries | Fuzzy | Untranslated | Reviewed pages |
 |---------|------:|--------:|------:|-------------:|---------------:|
-| Tutorials | 65/65 | 5389 | 0 | 0 | 60 |
-| Guides | 191/191 | 7915 | 0 | 0 | 172 |
-| Courses | 165/165 | 11944 | 0 | 0 | 163 |
+| Tutorials | 64/64 | 5362 | 0 | 0 | 53 |
+| Guides | 192/192 | 8031 | 0 | 0 | 156 |
+| Courses | 165/165 | 11944 | 0 | 0 | 161 |
 | Modules | 15/15 | 2300 | 0 | 0 | 15 |
 | Other | 21/21 | 1289 | 0 | 0 | 21 |
 
@@ -111,9 +111,9 @@ deep-review verdict in their PO header (`CONTRIBUTING-REVIEWS.md`).
 
 | Section | Pages | Entries | Fuzzy | Untranslated | Reviewed pages |
 |---------|------:|--------:|------:|-------------:|---------------:|
-| Tutorials | 65/65 | 5389 | 0 | 0 | 60 |
-| Guides | 191/191 | 7915 | 0 | 0 | 172 |
-| Courses | 165/165 | 11944 | 0 | 0 | 163 |
+| Tutorials | 64/64 | 5362 | 0 | 0 | 53 |
+| Guides | 192/192 | 8031 | 0 | 0 | 156 |
+| Courses | 165/165 | 11944 | 0 | 0 | 161 |
 | Modules | 15/15 | 2300 | 0 | 0 | 15 |
 | Other | 21/21 | 1289 | 0 | 0 | 21 |
 
@@ -121,9 +121,9 @@ deep-review verdict in their PO header (`CONTRIBUTING-REVIEWS.md`).
 
 | Section | Pages | Entries | Fuzzy | Untranslated | Reviewed pages |
 |---------|------:|--------:|------:|-------------:|---------------:|
-| Tutorials | 65/65 | 5389 | 0 | 0 | 60 |
-| Guides | 191/191 | 7915 | 0 | 0 | 172 |
-| Courses | 165/165 | 11944 | 0 | 0 | 163 |
+| Tutorials | 64/64 | 5362 | 0 | 0 | 53 |
+| Guides | 192/192 | 8031 | 0 | 0 | 156 |
+| Courses | 165/165 | 11944 | 0 | 0 | 161 |
 | Modules | 15/15 | 2300 | 0 | 0 | 15 |
 | Other | 21/21 | 1289 | 0 | 0 | 21 |
 
@@ -131,9 +131,9 @@ deep-review verdict in their PO header (`CONTRIBUTING-REVIEWS.md`).
 
 | Section | Pages | Entries | Fuzzy | Untranslated | Reviewed pages |
 |---------|------:|--------:|------:|-------------:|---------------:|
-| Tutorials | 65/65 | 5389 | 0 | 0 | 60 |
-| Guides | 191/191 | 7915 | 0 | 0 | 172 |
-| Courses | 165/165 | 11944 | 0 | 0 | 163 |
+| Tutorials | 64/64 | 5362 | 0 | 0 | 53 |
+| Guides | 192/192 | 8031 | 0 | 0 | 156 |
+| Courses | 165/165 | 11944 | 0 | 0 | 161 |
 | Modules | 15/15 | 2300 | 0 | 0 | 15 |
 | Other | 21/21 | 1289 | 0 | 0 | 21 |
 
@@ -141,9 +141,9 @@ deep-review verdict in their PO header (`CONTRIBUTING-REVIEWS.md`).
 
 | Section | Pages | Entries | Fuzzy | Untranslated | Reviewed pages |
 |---------|------:|--------:|------:|-------------:|---------------:|
-| Tutorials | 65/65 | 5389 | 0 | 0 | 60 |
-| Guides | 191/191 | 7915 | 0 | 0 | 172 |
-| Courses | 165/165 | 11944 | 0 | 0 | 163 |
+| Tutorials | 64/64 | 5362 | 0 | 0 | 53 |
+| Guides | 192/192 | 8031 | 0 | 0 | 156 |
+| Courses | 165/165 | 11944 | 0 | 0 | 161 |
 | Modules | 15/15 | 2300 | 0 | 0 | 15 |
 | Other | 21/21 | 1289 | 0 | 0 | 21 |
 
@@ -151,9 +151,9 @@ deep-review verdict in their PO header (`CONTRIBUTING-REVIEWS.md`).
 
 | Section | Pages | Entries | Fuzzy | Untranslated | Reviewed pages |
 |---------|------:|--------:|------:|-------------:|---------------:|
-| Tutorials | 65/65 | 5389 | 0 | 0 | 60 |
-| Guides | 191/191 | 7915 | 0 | 0 | 172 |
-| Courses | 165/165 | 11944 | 0 | 0 | 163 |
+| Tutorials | 64/64 | 5362 | 0 | 0 | 53 |
+| Guides | 192/192 | 8031 | 0 | 0 | 156 |
+| Courses | 165/165 | 11944 | 0 | 0 | 161 |
 | Modules | 15/15 | 2300 | 0 | 0 | 15 |
 | Other | 21/21 | 1289 | 0 | 0 | 21 |
 
@@ -161,9 +161,9 @@ deep-review verdict in their PO header (`CONTRIBUTING-REVIEWS.md`).
 
 | Section | Pages | Entries | Fuzzy | Untranslated | Reviewed pages |
 |---------|------:|--------:|------:|-------------:|---------------:|
-| Tutorials | 65/65 | 5389 | 0 | 0 | 60 |
-| Guides | 191/191 | 7915 | 0 | 0 | 172 |
-| Courses | 165/165 | 11944 | 0 | 0 | 163 |
+| Tutorials | 64/64 | 5362 | 0 | 0 | 53 |
+| Guides | 192/192 | 8031 | 0 | 0 | 156 |
+| Courses | 165/165 | 11944 | 0 | 0 | 161 |
 | Modules | 15/15 | 2300 | 0 | 0 | 15 |
 | Other | 21/21 | 1289 | 0 | 0 | 21 |
 
@@ -171,9 +171,9 @@ deep-review verdict in their PO header (`CONTRIBUTING-REVIEWS.md`).
 
 | Section | Pages | Entries | Fuzzy | Untranslated | Reviewed pages |
 |---------|------:|--------:|------:|-------------:|---------------:|
-| Tutorials | 65/65 | 5389 | 0 | 0 | 60 |
-| Guides | 191/191 | 7915 | 0 | 0 | 172 |
-| Courses | 165/165 | 11944 | 0 | 0 | 163 |
+| Tutorials | 64/64 | 5362 | 0 | 0 | 53 |
+| Guides | 192/192 | 8031 | 0 | 0 | 156 |
+| Courses | 165/165 | 11944 | 0 | 0 | 161 |
 | Modules | 15/15 | 2300 | 0 | 0 | 15 |
 | Other | 21/21 | 1289 | 0 | 0 | 21 |
 
@@ -181,9 +181,9 @@ deep-review verdict in their PO header (`CONTRIBUTING-REVIEWS.md`).
 
 | Section | Pages | Entries | Fuzzy | Untranslated | Reviewed pages |
 |---------|------:|--------:|------:|-------------:|---------------:|
-| Tutorials | 65/65 | 5389 | 0 | 0 | 60 |
-| Guides | 191/191 | 7915 | 0 | 0 | 172 |
-| Courses | 165/165 | 11944 | 0 | 0 | 163 |
+| Tutorials | 64/64 | 5362 | 0 | 0 | 53 |
+| Guides | 192/192 | 8031 | 0 | 0 | 156 |
+| Courses | 165/165 | 11944 | 0 | 0 | 161 |
 | Modules | 15/15 | 2300 | 0 | 0 | 15 |
 | Other | 21/21 | 1289 | 0 | 0 | 21 |
 
@@ -191,9 +191,9 @@ deep-review verdict in their PO header (`CONTRIBUTING-REVIEWS.md`).
 
 | Section | Pages | Entries | Fuzzy | Untranslated | Reviewed pages |
 |---------|------:|--------:|------:|-------------:|---------------:|
-| Tutorials | 65/65 | 5389 | 0 | 0 | 60 |
-| Guides | 191/191 | 7915 | 0 | 0 | 172 |
-| Courses | 165/165 | 11944 | 0 | 0 | 163 |
+| Tutorials | 64/64 | 5362 | 0 | 0 | 53 |
+| Guides | 192/192 | 8031 | 0 | 0 | 156 |
+| Courses | 165/165 | 11944 | 0 | 0 | 161 |
 | Modules | 15/15 | 2300 | 0 | 0 | 15 |
 | Other | 21/21 | 1289 | 0 | 0 | 21 |
 
@@ -201,8 +201,8 @@ deep-review verdict in their PO header (`CONTRIBUTING-REVIEWS.md`).
 
 | Section | Pages | Entries | Fuzzy | Untranslated | Reviewed pages |
 |---------|------:|--------:|------:|-------------:|---------------:|
-| Tutorials | 65/65 | 5389 | 0 | 0 | 60 |
-| Guides | 191/191 | 7915 | 0 | 0 | 172 |
-| Courses | 165/165 | 11944 | 0 | 0 | 163 |
+| Tutorials | 64/64 | 5362 | 0 | 0 | 53 |
+| Guides | 192/192 | 8031 | 0 | 0 | 156 |
+| Courses | 165/165 | 11944 | 0 | 0 | 161 |
 | Modules | 15/15 | 2300 | 0 | 0 | 15 |
 | Other | 21/21 | 1289 | 0 | 0 | 21 |
