@@ -1,0 +1,404 @@
+---
+title: "Dynamics Simulator - a Qiskit Function by Q-CTRL Fire Opal"
+sidebar_label: "Dynamics Simulator - a Qiskit Function by Q-CTRL Fire Opal"
+description: "Simulate many-body quantum dynamics on IBM Quantum hardware and estimate observable time traces with automated error suppression."
+notebook_path: "guides/q-ctrl-dynamics-simulator.ipynb"
+---
+
+
+<OpenInLabBanner notebookPath="guides/q-ctrl-dynamics-simulator.ipynb" />
+
+
+{/* cspell:ignore eeeu, RMSE */}
+
+*See the [API reference](https://docs.quantum.ibm.com/api/functions/q-ctrl-dynamics-simulator).*
+
+<Admonition type="note">
+  Qiskit Functions are an experimental feature available only to IBM Quantum&reg; Premium Plan, Flex Plan, and On-Prem (through IBM Quantum Platform API) Plan users. They are in preview release status and subject to change.
+</Admonition>
+
+## Overview
+
+The Q-CTRL **Dynamics Simulator** is an application Qiskit Function for simulating the time evolution of supported quantum many-body models on IBM Quantum hardware. Instead of constructing quantum circuits yourself, you specify the physical model, the initial state, the time-evolution parameters, and the observables to measure.
+
+The function constructs and executes the required dynamic circuits and applies Fire Opal's hardware-aware optimization and error suppression workflow. The result is a time trace of expectation values for the observables you requested. Because the function applies error suppression automatically, you can run circuits at record depths and still see meaningful signals. The Dynamics Simulator delivers solution accuracy that matches the existing state-of-the-art classical tools and gives a demonstrable advantage in speed.
+
+Real-world testing achieved agreement within 1% root mean square error (RMSE) when compared against the highest-resolution classical tensor-network simulations. [Independent tests](https://arxiv.org/abs/2606.04771) from the research community have validated that the quantum computer remains accurate even beyond Q-CTRL's initial demonstrations.
+
+![Two plots of classical tensor-network simulations at bond dimensions χ from 64 to 4096. The left plot shows the RMSE against time t, which stays near 0.01 until it rises sharply, later for larger bond dimensions. The right plot shows the simulation time in minutes against time t on a logarithmic scale, which increases with bond dimension.](/docs/images/guides/q-ctrl-dynamics-simulator/tensor-network-comparison.svg "Agreement between quantum and classical simulations as the “resolution” of the classical simulation increases. As the resolution increases, both the agreement with the quantum computer and the classical-simulation runtime increase. Quantum computer runtimes are faster by up to 3000 times.")
+
+## Benchmarks
+
+The number of sites determines how many qubits are needed, while the number of Trotter steps controls the depth of the time-evolution circuits. Each lattice site uses two qubits to represent the spin-up and spin-down occupations.
+
+This workflow has been demonstrated for chains of 60 sites (120 qubits) with 30 Trotter steps, and for chains of 31 sites (62 qubits) with 90 Trotter steps. The table below shows the circuit resources and QPU execution times from the [reported experiments](https://arxiv.org/abs/2605.04025), performed on IBM&reg; Heron r3 (`ibm_boston`) device with 20,000 shots per circuit.
+
+| System size | Trotter steps | Two-qubit depth | Two-qubit gate count | QPU time | QPU time with REM + DR |
+| :--- | ---: | ---: | ---: | ---: | ---: |
+| 10 sites (20 qubits) | 30 | 152 | 1,457 | 2m 46s | 4m 25s |
+| 10 sites (20 qubits) | 60 | 302 | 2,897 | 5m 36s | 8m 42s |
+| 10 sites (20 qubits) | 90 | 452 | 4,337 | 8m 46s | 13m 26s |
+| 31 sites (62 qubits) | 30 | 152 | 4,649 | 2m 46s | 4m 25s |
+| 31 sites (62 qubits) | 60 | 302 | 9,239 | 5m 36s | 8m 42s |
+| 31 sites (62 qubits) | 90 | 452 | 13,829 | 8m 46s | 13m 26s |
+| 60 sites (120 qubits) | 30 | 152 | 9,057 | 2m 46s | 4m 25s |
+
+For a fixed number of Trotter steps, the reported circuit depth and QPU time remain the same across the tested system sizes, while the two-qubit gate count increases. Increasing the number of steps produces deeper circuits and requires more QPU time.
+
+Here, QPU time is the cumulative hardware execution time for the main simulation circuits. The last column also includes the QPU time for noise characterization used in readout error mitigation (REM) and decay recovery (DR).
+This guide uses a small one-dimensional Fermi-Hubbard example to show the complete workflow from defining the model to plotting the measured dynamics.
+## Function description
+
+Quantum dynamics describes how a quantum system changes over time. Studying this evolution helps you understand how particles move, how correlations develop, and how a system responds to a change in its state or Hamiltonian.
+
+The Fermi-Hubbard model describes fermions moving between lattice sites and interacting when they occupy the same site. The competition between hopping and interactions makes it a useful model for studying strongly correlated electrons. Its time evolution can reveal how spin and charge propagate, and how an initially ordered system relaxes.
+
+### Model
+
+The Dynamics Simulator supports a one-dimensional Fermi-Hubbard chain with open boundaries. For a chain of $L$ sites, the Hamiltonian is defined as follows:
+
+$$
+H =
+-\sum_{i=0}^{L-2}\sum_{\sigma\in\{\uparrow,\downarrow\}}
+t_{h,i}
+\left(
+c^\dagger_{i\sigma}c_{i+1,\sigma}
++
+c^\dagger_{i+1,\sigma}c_{i\sigma}
+\right)
++\sum_{i=0}^{L-1}U_i n_{i\uparrow}n_{i\downarrow}
+-\sum_{i=0}^{L-1}\sum_{\sigma\in\{\uparrow,\downarrow\}}
+\mu_i n_{i\sigma}.
+$$
+
+Here, $c^\dagger_{i\sigma}$ and $c_{i\sigma}$ create and annihilate a fermion with spin $\sigma$ at site $i$. The number operator $n_{i\sigma}=c^\dagger_{i\sigma}c_{i\sigma}$ measures the occupation of that spin orbital.
+
+The model inputs specify the following coefficients:
+
+* `hopping_amplitude`: $t_{h,i}$, which controls hopping between neighboring sites $i$ and $i+1$.
+* `on_site_interaction`: $U_i$, the interaction between spin-up and spin-down fermions occupying the same site.
+* `chemical_potential`: $\mu_i$, the local chemical potential, which enters the Hamiltonian with a minus sign.
+
+Supply a scalar to use the same coefficient throughout the chain, or a list to specify coefficients for individual bonds or sites.
+
+In units where $\hbar=1$, the initial state evolves as follows:
+
+$$
+|\psi(t)\rangle=e^{-iHt}|\psi(0)\rangle.
+$$
+
+The function estimates the expectation values of the observables you specify at successive simulation times.
+
+### Workflow
+
+The function's workflow consists of the following steps:
+
+1. **Algorithmic synthesis:** The function uses the Hamiltonian and simulation time settings to construct an optimized Trotter-Suzuki sequence, which reduces circuit depth while accounting for simulation accuracy.
+2. **Hardware-aware mapping:** The function maps and routes the circuits by using the qubit connectivity and error characteristics of the selected IBM Quantum backend.
+3. **Physical-layer error suppression:** Fire Opal incorporates dynamical decoupling and pulse-level corrections to suppress noise from the environment and crosstalk during hardware execution.
+
+The function manages these stages automatically and returns the expectation values of the requested observables over time.
+
+You define the physical problem and simulation settings through the function inputs. The current interface supports Trotter time evolution, where `time_step` sets the duration of each step and `step_count` sets the number of steps.
+
+For additional details, see the [Fire Opal dynamics simulator overview](https://docs.q-ctrl.com/fire-opal/execute/run-algorithms/fire-opal-dynamics-simulator) and the [`simulate_dynamics` API reference](https://docs.q-ctrl.com/references/fire-opal/fireopal/fireopal.simulate_dynamics).
+## Get started
+
+Find access information for this Qiskit Function in the [Qiskit Functions Catalog](https://quantum.cloud.ibm.com/functions).
+
+This guide shows how to load the Dynamics Simulator and simulate a four-site Fermi-Hubbard chain. The following code assumes that you already saved your IBM Quantum Platform API key and instance CRN to your local environment.
+
+For account setup and client installation instructions, see [Get started with Qiskit Functions](/guides/functions-get-started).
+
+```python
+# Added by doQumentation — installs the packages this notebook needs if they are missing
+import importlib.util
+
+_needed = {"matplotlib": "matplotlib", "numpy": "numpy", "qctrlvisualizer": "qctrlvisualizer", "qiskit_ibm_catalog": "qiskit-ibm-catalog"}
+_missing = [pip for module, pip in _needed.items()
+            if importlib.util.find_spec(module) is None]
+# One at a time, so a package that fails to install does not block the others
+for _pip in _missing:
+    %pip install -q {_pip}
+if not _missing:
+    print("\u2713 All required packages are installed")
+```
+
+```python
+from qiskit_ibm_catalog import QiskitFunctionsCatalog
+
+catalog = QiskitFunctionsCatalog(channel="ibm_quantum_platform")
+```
+
+```python
+# Access the Q-CTRL Dynamics Simulator Qiskit Function.
+sim_qf = catalog.load("q-ctrl/dynamics-simulator")
+```
+
+```python
+# Check the list of backends you have access to
+catalog.backends()
+```
+
+```text
+[<IBMBackend('ibm_boston')>,
+ <IBMBackend('ibm_fez')>,
+ <IBMBackend('ibm_kingston')>,
+ <IBMBackend('ibm_marrakesh')>,
+ <IBMBackend('ibm_miami')>,
+ <IBMBackend('ibm_phoenix')>,
+ <IBMBackend('ibm_pittsburgh')>]
+```
+
+```python
+# Select the backend you want to use
+backend = catalog.backend("ibm_phoenix")
+```
+
+## Example: Simulate a four-site Fermi-Hubbard chain
+
+Consider a four-site one-dimensional Fermi-Hubbard chain with hopping amplitude $t_h=1$, no on-site interaction, and zero chemical potential. A single spin-up fermion begins at site 0 and evolves across the chain.
+
+This small problem keeps the focus on the Dynamics Simulator workflow:
+
+1. Define the model and simulation.
+2. Define the initial state and observables.
+3. Submit the Qiskit Function job.
+4. Retrieve the expectation values.
+5. Plot the dynamics.
+### 1. Define the problem
+
+```python
+site_count = 4
+
+model = {
+    "hopping_amplitude": 1.0,
+    "on_site_interaction": 0.0,
+    "chemical_potential": 0.0,
+}
+
+simulation = {
+    "time_step": 0.2,
+    "step_count": 8,
+}
+
+initial_state = "eeeu"
+
+observables = [
+    {
+        "operators": [[["Nup", site]]],
+        "coefficients": [1.0],
+    }
+    for site in range(site_count)
+]
+
+shot_count = 2048
+```
+
+The observable list measures the spin-up occupation
+
+$$
+\langle n_{i\uparrow} \rangle
+$$
+
+at each site. The observables are returned in the same order in which they are supplied.
+### 2. Run the dynamics simulation
+Submit the problem through the Qiskit Function. The Qiskit Functions Catalog handles IBM Quantum authentication, so you don't pass separate Fire Opal or hardware-provider credentials to `sim_qf.run()`.
+
+```python
+job = sim_qf.run(
+    model=model,
+    simulation=simulation,
+    observables=observables,
+    initial_state=initial_state,
+    shots=shot_count,
+    backend_name=backend.name,
+)
+```
+
+```python
+print(job.job_id, job.status())
+```
+
+```text
+68202fad-6919-425d-8fd2-c1c649cd15b1 DONE
+```
+
+The returned object is a Qiskit Function job. You can keep the job ID to retrieve or inspect the workload later.
+### 3. Retrieve the result
+
+```python
+result = job.result()
+
+print("Result keys:", sorted(result.keys()))
+print("Warnings:", result.get("warnings", []))
+```
+
+```text
+Result keys: ['metadata', 'observable_expectation_values', 'observables', 'warnings']
+Warnings: []
+```
+
+Convert the observable expectation values to a NumPy array. Each row corresponds to one observable, and each column corresponds to a recorded simulation time, beginning at $t=0$. For this example, the four rows contain the spin-up occupations of sites 0 through 3.
+
+```python
+import numpy as np
+
+expectation_values = np.asarray(
+    result["observable_expectation_values"],
+    dtype=float,
+)
+
+print("Expectation-value array shape:", expectation_values.shape)
+```
+
+```text
+Expectation-value array shape: (4, 9)
+```
+
+### 4. Visualize the dynamics
+The initial state contains one spin-up fermion and no spin-down fermions. Its evolution therefore remains in the single-particle subspace, whose four basis states correspond to the fermion occupying sites 0, 1, 2, and 3.
+
+In this subspace, the Hamiltonian connects neighboring sites with hopping amplitude $-t_h$. For the parameters used here,
+
+$$
+H_{\mathrm{1p}}
+=
+-t_h
+\begin{pmatrix}
+0 & 1 & 0 & 0 \\
+1 & 0 & 1 & 0 \\
+0 & 1 & 0 & 1 \\
+0 & 0 & 1 & 0
+\end{pmatrix}.
+$$
+
+Diagonalize this matrix with NumPy and evolve the initial state at the same times that were returned by the Dynamics Simulator. The squared magnitude of each state amplitude gives the spin-up occupation of the corresponding site.
+
+This calculation gives exact Hamiltonian evolution. Differences between the hardware estimates and this reference can include the finite Trotter step, measurement statistics, and residual hardware errors.
+
+```python
+times = np.arange(expectation_values.shape[1]) * simulation["time_step"]
+
+# This reference is specific to a single spin-up fermion.
+if (
+    len(initial_state) != site_count
+    or initial_state.count("u") != 1
+    or initial_state.count("e") != site_count - 1
+):
+    raise ValueError(
+        "This reference requires one spin-up fermion and otherwise empty sites."
+    )
+
+# Build the Hamiltonian in the single-particle subspace.
+hamiltonian = -model["hopping_amplitude"] * (
+    np.eye(site_count, k=1) + np.eye(site_count, k=-1)
+)
+hamiltonian -= model["chemical_potential"] * np.eye(site_count)
+
+# The rightmost character of initial_state corresponds to site 0.
+initial_amplitudes = np.zeros(site_count, dtype=complex)
+initial_site = initial_state[::-1].index("u")
+initial_amplitudes[initial_site] = 1.0
+
+# Evolve the initial state in the Hamiltonian eigenbasis.
+energies, eigenvectors = np.linalg.eigh(hamiltonian)
+initial_coefficients = eigenvectors.conj().T @ initial_amplitudes
+
+phases = np.exp(-1j * np.outer(energies, times))
+states = eigenvectors @ (initial_coefficients[:, None] * phases)
+
+ideal_expectation_values = np.abs(states) ** 2
+```
+
+Plot one panel for each site. The solid curves show the exact reference at the recorded times, and the markers show the hardware estimates returned by the Dynamics Simulator.
+
+```python
+import matplotlib.pyplot as plt
+import qctrlvisualizer as qv
+from qctrlvisualizer import QCTRL_STYLE_COLORS as colors
+
+plt.style.use(qv.get_qctrl_style())
+
+fig, ax = plt.subplots(figsize=(10, 6))
+
+for site in range(len(expectation_values)):
+    site_color = colors[site % len(colors)]
+
+    ax.plot(
+        times,
+        ideal_expectation_values[site],
+        color=site_color,
+        linewidth=2,
+        label=f"Site {site}: exact reference",
+    )
+
+    ax.plot(
+        times,
+        expectation_values[site],
+        color=site_color,
+        linestyle="--",
+        linewidth=1.5,
+        marker="o",
+        markersize=5,
+        label=f"Site {site}: hardware estimate",
+    )
+
+ax.set_xlim(times[0], times[-1])
+ax.set_ylim(-0.05, 1.05)
+
+ax.set_xlabel(r"Time (units of $\hbar/t_h$)")
+ax.set_ylabel(r"$\langle n_{i\uparrow} \rangle$")
+ax.set_title("Spin-up occupation dynamics")
+
+ax.legend(
+    ncol=2,
+    fontsize=10,
+    loc="best",
+)
+
+fig.tight_layout()
+plt.show()
+```
+
+![Output of the previous code cell](/docs/images/guides/q-ctrl-dynamics-simulator/extracted-outputs/61a7ad6e-0.avif)
+
+At $t=0$, the exact spin-up occupation is 1 at site 0 and 0 at the other sites. As the system evolves, hopping spreads the particle's probability across the chain. The occupation of site 1 increases first, followed by increasing occupation at sites 2 and 3. For the parameters in this example, the final recorded time is $t=1.6$. The exact occupations of sites 0 through 3 are approximately 0.026, 0.370, 0.392, and 0.211, respectively.
+
+The exact occupations satisfy the following equation at every time, reflecting conservation of particle number:
+
+$$
+\sum_{i=0}^{3}\langle n_{i\uparrow}(t)\rangle=1
+$$
+
+Individual site occupations can rise and fall as the particle evolves through the finite chain.
+## Fetch error messages
+
+If the workload enters the `ERROR` state, call `job.result()` to retrieve the error message. You can also inspect the function logs, if they are available.
+
+```python
+print(job.status())
+
+if job.status() == "ERROR":
+    print(job.result())
+    print(job.logs())
+```
+
+```text
+DONE
+```
+
+Common input-validation issues include an unsupported model or simulation method, an initial-state string that is too long, mismatched observable terms and coefficients, or an observable that references a site outside the initial-state string.
+## Get support
+
+For questions about the Dynamics Simulator or Fire Opal behavior, see the [Q-CTRL documentation](https://docs.q-ctrl.com/) or [contact Q-CTRL](https://form.typeform.com/to/iuujEAEI).
+
+For Qiskit Functions authentication, job management, or IBM Quantum Platform access, see the [Qiskit Functions documentation](/guides/functions).
+## Next steps
+
+<Admonition type="tip" title="Recommendations">
+- Review the [`simulate_dynamics` API reference](https://docs.q-ctrl.com/references/fire-opal/fireopal/fireopal.simulate_dynamics) for the underlying model, simulation, observable, output, and validation definitions.
+- Try the [Spin and charge dynamics in the Fermi-Hubbard model](/tutorials/fermi-hubbard-spin-charge-dynamics) tutorial.
+- Read the [Fire Opal dynamics simulator overview](https://docs.q-ctrl.com/fire-opal/execute/run-algorithms/fire-opal-dynamics-simulator) for more detail about Trotterization, hardware-aware mapping, and Fire Opal error suppression.
+- Modify the model parameters, initial state, time step, step count, and observables to study a different one-dimensional Fermi-Hubbard dynamics problem.
+</Admonition>
