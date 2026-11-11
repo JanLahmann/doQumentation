@@ -54,10 +54,34 @@ ADDON_SOURCES = {
     "SLC":                {"repo": "qiskit-addon-slc",        "path": "docs/tutorials", "pip": "qiskit-addon-slc"},
 }
 
+# Upstream split docs/guides into subsites in Nov 2026 (Qiskit/documentation
+# #5899 "Create subsite for Qiskit SDK", #5925 "managed workflows subsite"):
+# docs/qiskit, docs/ibm-quantum-compute and docs/managed-workflows, each with
+# its own _toc.json whose `parentUrl` is /docs/guides. IBM's site shows each
+# subsite with its own sidebar, entered from the Documentation sidebar and
+# left through a back link. We keep every page at /guides/<name> (so URLs, PO
+# files and translations stay where they were) and build one sidebar per
+# subsite. A subsite is found by its _toc.json, so a new one is picked up
+# without a code change; its overview page (upstream's index.mdx) needs a
+# name in /guides/, taken from here or else the folder name.
+GUIDE_SUBSITE_OVERVIEWS = {
+    "qiskit": "qiskit-sdk",
+    "ibm-quantum-compute": "run-on-quantum-hardware",
+}
+KNOWN_GUIDE_SUBSITES = ["qiskit", "ibm-quantum-compute", "managed-workflows"]
+# Each Qiskit Function's page moved at the same time to
+# docs/functions/<name>/index.ipynb, with an api-reference page beside it
+# (its own small subsite on IBM's site). The page stays /guides/<name> in the
+# main guides sidebar; the API reference links to IBM.
+FUNCTIONS_DIR = "docs/functions"
+
 # What to sync from upstream (content + images)
 CONTENT_PATHS = [
     "docs/tutorials",
     "docs/guides",
+    *(f"docs/{s}" for s in KNOWN_GUIDE_SUBSITES),
+    FUNCTIONS_DIR,
+    *(f"public/docs/images/{s}" for s in KNOWN_GUIDE_SUBSITES),
     "learning/courses",
     "learning/modules",
     "public/docs/images/tutorials",
@@ -266,8 +290,68 @@ def rewrite_addon_relative_refs(content: str, output_path: Path) -> str:
     return content
 
 
+_GUIDE_SUBSITES_CACHE: Optional[list] = None
+
+
+def guide_subsites() -> list[dict]:
+    """The guide subsites in upstream, the main guides folder first.
+
+    Each entry: folder (under upstream docs/), overview (the doc name of its
+    index page in docs/guides/), sidebar (the Docusaurus sidebar id) and toc
+    (the parsed _toc.json). A folder is a guide subsite when its _toc.json
+    names /docs/guides as its parent.
+    """
+    global _GUIDE_SUBSITES_CACHE
+    if _GUIDE_SUBSITES_CACHE is not None:
+        return _GUIDE_SUBSITES_CACHE
+    docs_dir = UPSTREAM_DIR / "docs"
+    found = []
+    guides_toc = docs_dir / "guides" / "_toc.json"
+    if guides_toc.exists():
+        found.append({"folder": "guides", "overview": "index",
+                      "sidebar": "guidesSidebar",
+                      "toc": json.loads(guides_toc.read_text())})
+    if docs_dir.exists():
+        for toc_path in sorted(docs_dir.glob("*/_toc.json")):
+            folder = toc_path.parent.name
+            if folder == "guides":
+                continue
+            toc = json.loads(toc_path.read_text())
+            if toc.get("parentUrl", "").rstrip("/") != "/docs/guides":
+                continue
+            camel = re.sub(r"-(\w)", lambda m: m.group(1).upper(), folder)
+            found.append({"folder": folder,
+                          "overview": GUIDE_SUBSITE_OVERVIEWS.get(folder, folder),
+                          "sidebar": f"{camel}Sidebar",
+                          "toc": toc})
+    missing = [s for s in KNOWN_GUIDE_SUBSITES
+               if s not in {f["folder"] for f in found}]
+    if missing and (docs_dir / "guides").exists():
+        print(f"  ⚠ Guide subsite(s) not found in upstream: {', '.join(missing)}")
+    _GUIDE_SUBSITES_CACHE = found
+    return found
+
+
+def rewrite_subsite_links(content: str) -> str:
+    """/docs/<subsite>/x → /guides/x, and /docs/<subsite> → its overview page;
+    /docs/functions/<name> → /guides/<name> (see FUNCTIONS_DIR).
+
+    Runs before MDX_TRANSFORMS, whose catch-all would otherwise send these
+    links to IBM's site.
+    """
+    content = re.sub(r'(\(|href=")/docs/functions/([\w-]+)(?=[)"#?])', r'\1/guides/\2', content)
+    for s in guide_subsites():
+        folder = re.escape(s["folder"])
+        root = "/guides" if s["overview"] == "index" else f"/guides/{s['overview']}"
+        if s["folder"] != "guides":
+            content = re.sub(rf'(\(|href=")/docs/{folder}/', r'\1/guides/', content)
+        content = re.sub(rf'(\(|href=")/docs/{folder}(?=[)"#?])', rf'\g<1>{root}', content)
+    return content
+
+
 def transform_mdx(content: str, source_path: Path) -> str:
     """Transform upstream MDX to Docusaurus-compatible format."""
+    content = rewrite_subsite_links(content)
     for pattern, replacement in MDX_TRANSFORMS:
         if callable(replacement):
             content = re.sub(pattern, replacement, content)
@@ -1115,11 +1199,36 @@ def process_guides():
     # Track statistics
     stats = {"mdx": 0, "ipynb": 0, "images": 0, "skipped": 0}
 
-    for src_path in guides_src.rglob('*'):
+    # Every subsite's pages go flat into docs/guides/ (see GUIDE_SUBSITE_OVERVIEWS).
+    # A name used by two subsites would overwrite a page: fail loudly instead.
+    sources = [(src_path, src_path.relative_to(guides_src))
+               for src_path in guides_src.rglob('*')]
+    for sub in guide_subsites():
+        if sub["folder"] == "guides":
+            continue
+        sub_src = UPSTREAM_DIR / "docs" / sub["folder"]
+        for src_path in sub_src.rglob('*'):
+            rel = src_path.relative_to(sub_src)
+            if rel.name == 'index.mdx':
+                rel = rel.with_name(f"{sub['overview']}.mdx")
+            sources.append((src_path, rel))
+    for index in sorted((UPSTREAM_DIR / FUNCTIONS_DIR).glob('*/index.*')):
+        if index.suffix in ('.ipynb', '.mdx'):
+            sources.append((index, Path(index.parent.name + index.suffix)))
+    seen: Dict[str, Path] = {}
+    for src_path, rel_path in sources:
+        if src_path.is_dir() or rel_path.name in ('index.mdx', '_toc.json'):
+            continue
+        key = str(rel_path.with_suffix(''))
+        if key in seen:
+            sys.exit(f"  ✗ Guide name collision: {seen[key]} and {src_path} "
+                     f"both become docs/guides/{key}.mdx — add an entry to "
+                     f"GUIDE_SUBSITE_OVERVIEWS or rename in process_guides().")
+        seen[key] = src_path
+
+    for src_path, rel_path in sources:
         if src_path.is_dir():
             continue
-
-        rel_path = src_path.relative_to(guides_src)
 
         # Skip files handled separately
         if rel_path.name in ('index.mdx', '_toc.json'):
@@ -1167,19 +1276,56 @@ def generate_guides_sidebar():
     """Parse guides _toc.json and generate structured sidebar configuration."""
     print("\n📋 Generating guides sidebar from _toc.json...")
 
-    toc_path = UPSTREAM_DIR / "docs" / "guides" / "_toc.json"
-    if not toc_path.exists():
+    subsites = guide_subsites()
+    if not subsites:
         print("  Warning: guides _toc.json not found")
         return
 
-    toc = json.loads(toc_path.read_text())
-    children = toc.get('children', [])
+    # Which subsite each page belongs to: an entry for a page of another
+    # subsite becomes a `ref` (a link that keeps the page in its own sidebar),
+    # and an entry for another subsite's overview gets the drill-in arrow.
+    home: Dict[str, str] = {}
+    overviews: Dict[str, str] = {}
+    for sub in subsites:
+        overview_id = f"guides/{sub['overview']}"
+        overviews[overview_id] = sub["sidebar"]
+        home[overview_id] = sub["sidebar"]
+        src = UPSTREAM_DIR / "docs" / sub["folder"]
+        for p in src.glob('*'):
+            if p.suffix in ('.mdx', '.ipynb') and p.stem != 'index':
+                home[f"guides/{p.stem}"] = sub["sidebar"]
 
-    sidebar_items = toc_children_to_sidebar(children)
+    sidebars: Dict[str, list] = {}
+    for sub in subsites:
+        toc = sub["toc"]
+        ctx = {"sidebar": sub["sidebar"], "home": home, "overviews": overviews}
+        items = []
+        # Both are links, not refs: a ref's label gives way to the page's
+        # sidebar_label (guides/index has "Overview").
+        if sub["folder"] != "guides":
+            # "← Guides": IBM's back link to the parent sidebar (IBM calls it
+            # "Documentation"; our navbar calls it "Guides").
+            items.append({
+                'type': 'link', 'href': '/guides',
+                'label': 'Guides',
+                'key': 'back',
+                'className': 'dq-subsite-back',
+            })
+        # The sidebar's title, as on IBM's site; links to the overview page.
+        items.append({
+            'type': 'link',
+            'href': '/guides' if sub['overview'] == 'index' else f"/guides/{sub['overview']}",
+            'label': 'Guides' if sub['folder'] == 'guides' else toc.get('title', sub['folder']),
+            'key': 'title',
+            'className': 'dq-subsite-title',
+        })
+        items.extend(toc_children_to_sidebar(toc.get('children', []), guides=ctx))
+        sidebars[sub["sidebar"]] = items
 
     GENERATED_DIR.mkdir(parents=True, exist_ok=True)
     sidebar_json = GENERATED_DIR / "sidebar-guides.json"
-    sidebar_json.write_text(json.dumps(sidebar_items, indent=2))
+    sidebar_json.write_text(json.dumps(sidebars, indent=2))
+    sidebar_items = [i for items in sidebars.values() for i in items]
 
     # Count guides
     def count_docs(items):
@@ -1232,25 +1378,79 @@ def sidebar_doc_item(doc_id: str) -> object:
     return doc_id
 
 
-def toc_children_to_sidebar(children: list, parent_key: str = "") -> list:
+def _guide_entry(doc_id: str, child: dict, guides: dict) -> object:
+    """A guides-sidebar entry for one page (see generate_guides_sidebar).
+
+    A page of this sidebar is a normal doc item. A page of another subsite is
+    a `ref`, so it keeps its own sidebar; another subsite's overview page also
+    gets the drill-in arrow (className dq-subsite-enter), as on IBM's site.
+    Upstream's `isNew` flag becomes the "New" badge (customProps.isNew).
+    """
+    # No label: Docusaurus then shows the page's own (translated) title, as the
+    # guides sidebar always did; a label would need a sidebar translation per
+    # page in every locale.
+    extra: dict = {}
+    classes = []
+    if child.get('isNew'):
+        extra['customProps'] = {'isNew': True}
+        classes.append('dq-sidebar-new')
+    if guides['home'].get(doc_id, guides['sidebar']) != guides['sidebar']:
+        item = {'type': 'ref', 'id': doc_id, **extra}
+        if doc_id in guides['overviews']:
+            classes.append('dq-subsite-enter')
+            # The entry into a subsite keeps IBM's short label ("Qiskit SDK",
+            # not the overview page's title "Introduction to Qiskit").
+            if child.get('title'):
+                item['label'] = child['title']
+    else:
+        item = sidebar_doc_item(doc_id)
+        if isinstance(item, str):
+            item = {'type': 'doc', 'id': doc_id}
+        if extra:
+            item['customProps'] = {**item.get('customProps', {}), **extra['customProps']}
+    if classes:
+        item['className'] = ' '.join(classes)
+    return item
+
+
+def _guide_doc_id(url: str, guides: dict) -> str:
+    """/docs/qiskit/foo → guides/foo; /docs/qiskit → guides/qiskit-sdk."""
+    doc_id = url_to_doc_id(url.split('#')[0])
+    head, _, rest = doc_id.partition('/')
+    if head == 'functions' and rest and '/' not in rest:
+        return f"guides/{rest}"
+    for sub in guide_subsites():
+        if head == sub['folder']:
+            return f"guides/{rest}" if rest else f"guides/{sub['overview']}"
+    return doc_id
+
+
+def toc_children_to_sidebar(children: list, parent_key: str = "",
+                            guides: Optional[dict] = None) -> list:
     """Recursively convert _toc.json children to Docusaurus sidebar items.
 
     `parent_key` accumulates the breadcrumb path through nested categories so
     duplicate category labels (e.g. "Install" appearing under both "Qiskit"
     and "IBM Quantum Compute" in upstream's guides _toc.json) get distinct
     Docusaurus translation keys.
+
+    `guides` (set only for the guide subsites, see generate_guides_sidebar)
+    turns on IBM's sidebar layout: `collapsible: false` categories become
+    section headings, every page keeps its upstream title as its label, links
+    into other subsites become refs, and /docs/addons and /docs/api pages,
+    which we do not mirror, link to IBM's site.
     """
     items = []
     for child in children:
         if 'children' in child and child['children']:
             # "Lessons"/"Modules" are wrappers in upstream _toc.json — unwrap children directly
             if child.get('title') in ('Lessons', 'Modules'):
-                items.extend(toc_children_to_sidebar(child['children'], parent_key))
+                items.extend(toc_children_to_sidebar(child['children'], parent_key, guides))
                 continue
             # Category with sub-items
             label = child['title']
             cat_key = f"{parent_key}/{label}" if parent_key else label
-            sub_items = toc_children_to_sidebar(child['children'], cat_key)
+            sub_items = toc_children_to_sidebar(child['children'], cat_key, guides)
             if sub_items:
                 cat = {
                     'type': 'category',
@@ -1261,7 +1461,15 @@ def toc_children_to_sidebar(children: list, parent_key: str = "") -> list:
                 }
                 # If this category also has a URL, make it a link
                 if 'url' in child:
-                    cat['link'] = {'type': 'doc', 'id': url_to_doc_id(child['url'])}
+                    cat['link'] = {'type': 'doc', 'id': (_guide_doc_id(child['url'], guides)
+                                                         if guides else url_to_doc_id(child['url']))}
+                if guides and child.get('collapsible') is False:
+                    # A section heading with a divider (IBM's layout).
+                    cat['collapsible'] = False
+                    cat['collapsed'] = False
+                    cat['className'] = 'dq-sidebar-section'
+                elif guides:
+                    cat['className'] = 'dq-guides-category'
                 items.append(cat)
         elif 'url' in child:
             url = child['url']
@@ -1272,6 +1480,18 @@ def toc_children_to_sidebar(children: list, parent_key: str = "") -> list:
                     'label': child.get('title', url),
                     'href': url,
                 })
+                continue
+            if guides:
+                doc_id = _guide_doc_id(url, guides)
+                external = ('addons/', 'api/', 'functions/')
+                if doc_id.startswith(external) or not (DOCS_OUTPUT / f"{doc_id}.mdx").exists():
+                    if doc_id.startswith(external):
+                        items.append({'type': 'link', 'label': child.get('title', doc_id),
+                                      'href': f"https://quantum.cloud.ibm.com/docs/{doc_id}"})
+                    else:
+                        print(f"  ⚠ Skipping sidebar entry for missing doc: {doc_id}")
+                    continue
+                items.append(_guide_entry(doc_id, child, guides))
                 continue
             doc_id = url_to_doc_id(url)
             # Skip non-doc resources (PDFs, etc.) — but not version numbers like qiskit-2.0
@@ -1816,6 +2036,9 @@ def sync_upstream_images():
     image_mappings = [
         ("public/docs/images/tutorials", "docs/images/tutorials"),
         ("public/docs/images/guides", "docs/images/guides"),
+        # Guide subsites with images of their own (only some have them).
+        *((f"public/docs/images/{s}", f"docs/images/{s}") for s in KNOWN_GUIDE_SUBSITES
+          if (UPSTREAM_DIR / "public/docs/images" / s).exists()),
         ("public/docs/open-source", "docs/open-source"),
         ("public/learning/images", "learning/images"),
     ]
@@ -2681,6 +2904,7 @@ def scan_notebook_deps():
     notebook_dirs = [
         ("tutorials", UPSTREAM_DIR / "docs" / "tutorials"),
         ("guides", UPSTREAM_DIR / "docs" / "guides"),
+        *(("guides", UPSTREAM_DIR / "docs" / s) for s in KNOWN_GUIDE_SUBSITES),
         ("courses", UPSTREAM_DIR / "learning" / "courses"),
         ("modules", UPSTREAM_DIR / "learning" / "modules"),
     ]
@@ -3110,6 +3334,23 @@ export const UPSTREAM_COMMIT_DATE = {upstream_date!r};
 
 # Local-docs subtree → upstream subtree. Anything under docs/ not listed here
 # (about, qiskit-addons, workshop, index.mdx) has no upstream counterpart.
+def _guide_subsite_source(local_file: Path) -> Optional[str]:
+    """The upstream path of a docs/guides page that came from a subsite."""
+    for ext in (".ipynb", ".mdx"):
+        fn = Path(FUNCTIONS_DIR) / local_file.stem / f"index{ext}"
+        if (UPSTREAM_DIR / fn).exists():
+            return fn.as_posix()
+    for sub in guide_subsites():
+        if sub["folder"] == "guides":
+            continue
+        src = Path("docs") / sub["folder"]
+        name = "index" if local_file.stem == sub["overview"] else local_file.stem
+        for ext in (".mdx", ".ipynb"):
+            if (UPSTREAM_DIR / src / f"{name}{ext}").exists():
+                return (src / f"{name}{ext}").as_posix()
+    return None
+
+
 PAGE_DATE_PATH_MAP = {
     "guides": "docs/guides",
     "tutorials": "docs/tutorials",
@@ -3274,8 +3515,11 @@ def write_page_dates_manifest():
                 # under a different name) — try the .ipynb sibling as the
                 # upstream truth for date purposes.
                 ipynb_candidate = upstream_abs.with_suffix(".ipynb")
+                moved = _guide_subsite_source(local_file) if local_sub == "guides" else None
                 if ipynb_candidate.exists():
                     upstream_rel = ipynb_candidate.relative_to(UPSTREAM_DIR).as_posix()
+                elif moved:
+                    upstream_rel = moved
                 else:
                     continue
 

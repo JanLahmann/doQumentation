@@ -54,6 +54,8 @@ export default function DocSidebarItemLink({
   const isLinkActive = isActiveSidebarItem(item, activePath);
   const isInternalLink = isInternalUrl(href);
   const isNotebook = !!(item.customProps as {notebook?: unknown} | undefined)?.notebook;
+  // Upstream's `isNew` flag in a guides _toc.json (see sync-content.py).
+  const isNew = !!(item.customProps as {isNew?: unknown} | undefined)?.isNew;
 
   const refresh = useCallback(() => {
     if (href) {
@@ -156,6 +158,11 @@ export default function DocSidebarItemLink({
         })}
         {...props}>
         <LinkLabel label={label} />
+        {isNew && (
+          <span className="dq-sidebar-badge-new">
+            {translate({id: 'sidebar.badge.new', message: 'New'})}
+          </span>
+        )}
         {!isInternalLink && <IconExternalLink />}
       </Link>
       {indicator}
