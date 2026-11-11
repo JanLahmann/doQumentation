@@ -1,0 +1,172 @@
+---
+title: "Run a parameter sweep"
+sidebar_label: "Run a parameter sweep"
+description: "Run a managed workflow one time for each set of inputs, collect the results, and stay under the active job limit."
+notebook_path: "guides/run-parameter-sweep.ipynb"
+---
+
+
+<OpenInLabBanner notebookPath="guides/run-parameter-sweep.ipynb" />
+
+
+{/*
+  DO NOT EDIT THIS CELL!!!
+  This cell's content is generated automatically by a script. Anything you add
+  here will be removed next time the notebook is run. To add new content, create
+  a new cell before or after this one.
+*/}
+
+<Accordion>
+<AccordionItem title="Package versions">
+
+The code on this page was developed using the following requirements.
+We recommend using these versions or newer.
+
+```
+qiskit-serverless~=0.38.0
+```
+</AccordionItem>
+</Accordion>
+A parameter sweep works like a Slurm job array. Call `run()` one time for each set of inputs, and the jobs run at the same time, each on its own node. Use the same pattern for any batch of independent inputs, such as one job for each molecule or each backend. Jobs cannot send data to each other, so split the work into independent inputs.
+
+The examples on this page use the workflow from [Run a managed workflow](/guides/run-managed-workflow), which reads one angle, `theta`:
+
+```python
+# Added by doQumentation — installs the packages this notebook needs if they are missing
+import importlib.util
+
+_needed = {"qiskit_ibm_catalog": "qiskit-ibm-catalog", "qiskit_serverless": "qiskit-serverless"}
+_missing = [pip for module, pip in _needed.items()
+            if importlib.util.find_spec(module) is None]
+# One at a time, so a package that fails to install does not block the others
+for _pip in _missing:
+    %pip install -q {_pip}
+if not _missing:
+    print("\u2713 All required packages are installed")
+```
+
+```python
+# This cell is hidden from users. It creates the working directory.
+from pathlib import Path
+
+Path("./source_files").mkdir(exist_ok=True)
+```
+
+```python
+%%writefile ./source_files/my_workflow.py
+import math
+
+from qiskit_serverless import get_arguments, save_result
+
+arguments = get_arguments()
+theta = arguments["theta"]
+if not 0 <= theta <= math.pi:
+    raise ValueError(f"theta must be between 0 and pi, got {theta}")
+
+print(f"Computing the expectation value for theta={theta}", flush=True)
+save_result({"theta": theta, "expectation_value": math.cos(theta)})
+```
+
+```text
+Writing ./source_files/my_workflow.py
+```
+
+```python
+# This cell is hidden from users. It uploads the workflow under a title that
+# other test notebooks do not use, and makes load("my-workflow") return it.
+import logging
+
+from qiskit_ibm_catalog import ManagedWorkflow, ManagedWorkflowClient
+
+logging.getLogger("qiskit_ibm_runtime").setLevel(logging.ERROR)
+
+_test_title = "docs-run-parameter-sweep"
+ManagedWorkflowClient().upload(
+    ManagedWorkflow(
+        title=_test_title,
+        entrypoint="my_workflow.py",
+        working_dir="./source_files/",
+    )
+)
+_load = ManagedWorkflowClient.load
+ManagedWorkflowClient.load = lambda self, title, *a, **k: _load(
+    self, _test_title if title == "my-workflow" else title, *a, **k
+)
+```
+
+## Start the jobs
+
+Get the workflow by its title, and call `run()` one time for each input. Save the job IDs to a file:
+**`run_workflow_remotely.ipynb`**
+
+```python
+import json
+
+from qiskit_ibm_catalog import ManagedWorkflowClient
+
+client = ManagedWorkflowClient()
+my_workflow = client.load("my-workflow")
+
+thetas = [0.1, 0.2, 0.3]
+
+job_ids = {
+    f"theta-{theta}": my_workflow.run(theta=theta).job_id for theta in thetas
+}
+
+with open("job_ids.json", "w") as f:
+    json.dump(job_ids, f)
+```
+
+- **Check every input first.** If the workflow has an [argument schema](/guides/managed-workflow-inputs-and-outputs#best-practice-validate-arguments-with-a-schema), call `validate_arguments()` on each input before the loop.
+- **Save the job IDs to a file.** You can then collect the results from a new session.
+- **Give each run's files a unique name.** All runs share the workflow's file storage. See [Best practice: give each run's files a unique name](/guides/manage-files-across-managed-workflows#best-practice-give-each-runs-files-a-unique-name).
+- **Stay under the [active job limit](#active-job-limit).** A managed workflow does not queue jobs over the limit, so when you reach it, start more jobs only after earlier jobs end.
+## Collect the results
+
+Get each job by its ID, and catch failed jobs so that one failure does not stop the loop:
+**`run_workflow_remotely.ipynb`**
+
+```python
+from qiskit_serverless.exception import QiskitServerlessException
+
+with open("job_ids.json") as f:
+    job_ids = json.load(f)
+
+results, errors = {}, {}
+for run_name, sweep_job_id in job_ids.items():
+    try:
+        results[run_name] = client.job(sweep_job_id).result()
+    except QiskitServerlessException as error:
+        errors[run_name] = str(error)
+
+print(f"{len(results)} jobs finished, {len(errors)} failed")
+```
+
+```text
+3 jobs finished, 0 failed
+```
+
+```python
+# This cell is hidden from users. It checks the sweep results.
+assert len(results) == 3 and not errors, (results, errors)
+assert all(results[f"theta-{t}"]["theta"] == t for t in thetas)
+```
+
+To rerun the inputs that failed, call `run()` again with the same arguments.
+
+## Active job limit
+
+You can have up to 50 jobs that are queued, initializing, running, or canceling at the same time. This limit counts all of your jobs, including jobs of other workflows. If you exceed this limit, `run()` raises a `QiskitServerlessException` and does not create or queue the job:
+
+```text
+| Message: Http bad request.
+| Code: 429
+| Details: Active job limit reached. The maximum allowed is 50.
+```
+
+## Next steps
+
+<Admonition type="tip" title="Recommendations">
+- [Manage files across runs](/guides/manage-files-across-managed-workflows) to share input files between runs and give each run's files a unique name.
+- [Choose a compute profile](/guides/managed-workflow-compute-profiles) to run each job of the sweep on a size that matches its input.
+</Admonition>

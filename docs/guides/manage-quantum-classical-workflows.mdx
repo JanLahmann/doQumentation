@@ -1,0 +1,247 @@
+---
+title: "Run quantum jobs from a workflow"
+sidebar_label: "Run quantum jobs from a workflow"
+description: "Run QPU jobs from a managed workflow, report its stages, find the QPU jobs that it ran, and cancel them."
+notebook_path: "guides/manage-quantum-classical-workflows.ipynb"
+---
+
+
+<OpenInLabBanner notebookPath="guides/manage-quantum-classical-workflows.ipynb" />
+
+
+{/*
+  DO NOT EDIT THIS CELL!!!
+  This cell's content is generated automatically by a script. Anything you add
+  here will be removed next time the notebook is run. To add new content, create
+  a new cell before or after this one.
+*/}
+
+<Accordion>
+<AccordionItem title="Package versions">
+
+The code on this page was developed using the following requirements.
+We recommend using these versions or newer.
+
+```
+qiskit[all]~=2.6.1
+qiskit-ibm-runtime~=0.51.0
+qiskit-serverless~=0.38.0
+```
+</AccordionItem>
+</Accordion>
+A quantum-classical workflow runs as one managed workflow job. Its classical stages run on your compute profile, and the primitive jobs that it sends to an IBM Quantum&reg; QPU run on your instance and count against your usage. From that one job, you can report each stage, find the QPU jobs, and cancel them. To start a job and check its status and logs, see [Run a managed workflow](/guides/run-managed-workflow).
+
+Before you begin, [deploy your first managed workflow](/guides/deploy-first-managed-workflow).
+## Create the Runtime service
+
+Create the Runtime service in your workflow code with `get_runtime_service()`, and use it in the same way that you use `QiskitRuntimeService` locally. The following workflow runs a Bell circuit with the Sampler primitive, reports each stage with `update_status()`, and returns the counts:
+
+```python
+# Added by doQumentation — installs the packages this notebook needs if they are missing
+import importlib.util
+
+_needed = {"qiskit": "qiskit", "qiskit_ibm_catalog": "qiskit-ibm-catalog", "qiskit_ibm_runtime": "qiskit-ibm-runtime", "qiskit_serverless": "qiskit-serverless"}
+_missing = [pip for module, pip in _needed.items()
+            if importlib.util.find_spec(module) is None]
+# One at a time, so a package that fails to install does not block the others
+for _pip in _missing:
+    %pip install -q {_pip}
+if not _missing:
+    print("\u2713 All required packages are installed")
+```
+
+```python
+# This cell is hidden from users. It creates the working directory.
+from pathlib import Path
+
+Path("./source_files").mkdir(exist_ok=True)
+```
+
+```python
+%%writefile ./source_files/my_workflow.py
+from qiskit import QuantumCircuit
+from qiskit.transpiler import generate_preset_pass_manager
+from qiskit_ibm_runtime.executor_sampler import Sampler
+from qiskit_serverless import (
+    Job,
+    get_arguments,
+    get_runtime_service,
+    save_result,
+    update_status,
+)
+
+arguments = get_arguments()
+
+service = get_runtime_service()
+backend = service.backend(arguments["backend_name"])
+
+circuit = QuantumCircuit(2)
+circuit.h(0)
+circuit.cx(0, 1)
+circuit.measure_all()
+
+update_status(Job.OPTIMIZING_HARDWARE)
+pass_manager = generate_preset_pass_manager(optimization_level=1, backend=backend)
+isa_circuit = pass_manager.run(circuit)
+
+update_status(Job.WAITING_QPU)
+sampler = Sampler(mode=backend)
+primitive_job = sampler.run([isa_circuit])
+counts = primitive_job.result()[0].data.meas.get_counts()
+
+update_status(Job.POST_PROCESSING)
+save_result({"backend": backend.name, "counts": counts})
+```
+
+```text
+Overwriting ./source_files/my_workflow.py
+```
+
+`get_runtime_service()` returns a `QiskitRuntimeService` that is set up for your managed workflow job, and it provides the following:
+
+- **Credentials.** The Runtime service uses the API key, instance, and channel that you used to call `run()`, so the workflow code needs no credentials.
+- **Tracking.** A workflow records every primitive job that runs through this Runtime service under the managed workflow job, including Sampler, Estimator, and Executor jobs, and jobs in a session or batch. You can list them with `job.runtime_jobs()`.
+- **Cancellation.** When you call `job.cancel()`, the managed workflow also cancels the workflow's sessions, batches, and primitive jobs that are still running.
+
+A managed workflow does not track or cancel the jobs of a service that you create with `QiskitRuntimeService()`, although the jobs still run. If the workflow must use another service, cancel its jobs in a [`SIGTERM` handler](/guides/managed-workflow-logs-and-errors#clean-up-when-a-job-is-canceled).
+## Run primitives in a session or batch
+
+A managed workflow also tracks primitive jobs that run in a session or batch. Create the session or batch from a backend that the Runtime service returned, and create the primitives inside the `with` block. `Session` works in the same way:
+
+**`source_files/my_workflow.py`**
+```python noexec
+from qiskit_ibm_runtime import Batch
+
+with Batch(backend=backend) as batch:
+    sampler = Sampler(mode=batch)
+    primitive_jobs = [sampler.run([isa_circuit]) for _ in range(2)]
+    results = [primitive_job.result() for primitive_job in primitive_jobs]
+```
+## Report progress with update_status()
+
+The workflow in [Create the Runtime service](#create-the-runtime-service) calls `update_status()` at the start of each stage, so that the job status shows where the workflow is, such as `RUNNING: WAITING_FOR_QPU`. Pass one of the following `Job` constants:
+
+| Call in the workflow | Job status |
+| - | - |
+| `update_status(Job.MAPPING)` | `RUNNING: MAPPING` |
+| `update_status(Job.OPTIMIZING_HARDWARE)` | `RUNNING: OPTIMIZING_FOR_HARDWARE` |
+| `update_status(Job.WAITING_QPU)` | `RUNNING: WAITING_FOR_QPU` |
+| `update_status(Job.EXECUTING_QPU)` | `RUNNING: EXECUTING_QPU` |
+| `update_status(Job.POST_PROCESSING)` | `RUNNING: POST_PROCESSING` |
+
+`update_status()` returns `True` if the workflow changed the status. It returns `False` and writes a warning to the logs if the value is not one of these constants, if the job is no longer active, or if the code runs outside a job. It does not raise an error, so a typo does not stop the workflow.
+
+For progress within a stage, such as the iterations of an optimizer, [write log lines](/guides/managed-workflow-logs-and-errors#best-practice-decide-what-to-log).
+
+{/* REVIEW: each update_status() call writes a SUB_STATUS_CHANGE event, and the 24-hour timeout is measured from the job's latest event (update_fleets_jobs_statuses.py _timed_out). send_error() events count too. This looks like a bug; do not document it until the intended behavior is confirmed. */}
+## Find the QPU jobs of a run
+
+In your local notebook, choose a QPU that your instance can access. `client.backends()` lists them, and `client.least_busy()` returns the one with the fewest pending jobs:
+
+```python
+from qiskit_ibm_catalog import ManagedWorkflowClient
+
+client = ManagedWorkflowClient()
+print([backend.name for backend in client.backends(simulator=False)])
+
+backend_name = client.least_busy(operational=True, simulator=False).name
+```
+
+```text
+['ibm_boston', 'ibm_fez', 'ibm_kingston', 'ibm_marrakesh', 'ibm_phoenix', 'ibm_pittsburgh']
+```
+
+Upload the workflow, and pass the name of the backend when you run it:
+
+```python
+from qiskit_ibm_catalog import ManagedWorkflow
+
+my_workflow = client.upload(
+    ManagedWorkflow(
+        title="my-workflow",
+        entrypoint="my_workflow.py",
+        working_dir="./source_files/",
+    )
+)
+
+job = my_workflow.run(backend_name=backend_name)
+```
+
+```python
+# This cell is hidden from users. It waits for the job to finish.
+assert job.wait_for_final_state() == "DONE", job.logs()
+```
+
+After the job ends, get the IDs of the workflow's QPU jobs from the managed workflow job:
+
+```python
+runtime_job_ids = job.runtime_jobs()
+runtime_job_ids
+```
+
+```text
+['dbl6lst8ft8s738secf0']
+```
+
+```python
+# This cell is hidden from users. It checks the tracked job.
+assert len(runtime_job_ids) == 1, runtime_job_ids
+```
+
+Each ID is a regular primitive job ID. To read a job's status and results, see [Retrieve job results at a later time](/guides/monitor-job#retrieve-job-results-at-a-later-time).
+If the workflow ran primitives in a session or batch, list the session and batch IDs with `runtime_sessions()`, and pass one to `runtime_jobs()` to get only the jobs in it:
+
+**`run_workflow_remotely.ipynb`**
+```python noexec
+for session_id in job.runtime_sessions():
+    print(session_id, job.runtime_jobs(session_id))
+```
+
+```text
+dc101077-d085-40fb-8fbe-78852e355994 ['dbjqp48nceqs73aki1k0', 'dbjqp4l6p51s73clb91g']
+```
+
+The `job` object exists only in the notebook that started the run. In a new notebook, get the job again with `client.job("<your-job-id>")`, then call `runtime_jobs()` on it. See [Find a job from a new session](/guides/run-managed-workflow#find-a-job-from-a-new-session).
+
+For the QPU usage and run times of each QPU job, see [View job metrics](/guides/monitor-job#view-job-metrics). For the usage of your whole instance in the current period, call `client.usage()`. To see how long each stage of the managed workflow job took, see [Check how long each stage took](/guides/run-managed-workflow#check-how-long-each-stage-took).
+## Cancel linked QPU jobs
+
+When you cancel a managed workflow job with `job.cancel()`, the workflow also tries to cancel the QPU work that the workflow started:
+
+- **Sessions and batches.** The workflow cancels each of the workflow's sessions and batches, which also cancels their queued jobs.
+- **Other primitive jobs.** The workflow cancels each of the workflow's other primitive jobs that are still queued or running.
+
+`job.cancel()` returns a message for each QPU job and session, so you can check what was canceled:
+
+**`run_workflow_remotely.ipynb`**
+```python noexec
+print(job.cancel())
+```
+
+For a workflow that ran in a batch, the message looks like the following:
+
+```text
+Job is stopping. Canceled runtime session: eb8874c9-a15e-45f8-9a90-a9fb35267f9d and associated runtime jobs.
+```
+
+If the client cannot create a `QiskitRuntimeService` from your local credentials, it cancels only the managed workflow job. Cancel the QPU jobs yourself with their IDs from `job.runtime_jobs()`.
+
+When a workflow stops a job itself, for example because it reached the 24-hour limit, it does not cancel its QPU jobs. Cancel them with their IDs from `job.runtime_jobs()`.
+
+{/* REVIEW: the scheduler's timeout and blocked-account stops (update_fleets_jobs_statuses.py stop_job_if_timeout, FleetsJobCanceller) cancel only the fleet. Only the user stop endpoint (StopJobUseCase) cancels runtime jobs. Confirm whether this is intended before publishing. */}
+## Troubleshoot QPU jobs in a workflow
+
+| Problem | Cause |
+| - | - |
+| `get_runtime_service()` raises `KeyError: 'QISKIT_IBM_CHANNEL'`. | The code runs in your local notebook, not in a managed workflow job. Use `QiskitRuntimeService()` locally. |
+| `update_status()` returns `False`, and the logs show `'sub_status' not provided or is not valid`. | The value is not one of the `Job` constants, or the job is no longer active. |
+| `job.runtime_jobs()` returns `[]`. | The workflow created its service with `QiskitRuntimeService()`, or it has not run a primitive yet. |
+| A session's jobs are not tracked. | The session was created from a backend of a different service. Get the backend from `get_runtime_service()`. |
+| The workflow logs show `Could not associate runtime job with serverless job`. | The workflow could not record a primitive job. The primitive job still runs, but it is not tracked. |
+| `job.cancel()` shows `No QiskitRuntimeService can be associated to the given token and instance.` | The client could not create a `QiskitRuntimeService` from your local credentials, so it canceled only the managed workflow job. |
+| `client.job()` fails with `Job [...] not found`. | The job ID is wrong, or the job belongs to another user. |
+## Next steps
+
+<Admonition type="tip" title="Recommendations">
+- [Run a managed workflow](/guides/run-managed-workflow) to check the status, result, and logs of a job, and find the cause of an error.
+</Admonition>

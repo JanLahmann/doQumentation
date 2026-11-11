@@ -360,7 +360,7 @@ The bytes of the merged results:
 
 In addition to the execution results, both the `PrimitiveResult` and `SamplerPubResult` objects contain a metadata attribute about the job that was submitted. The metadata containing information for all submitted PUBs (such as the various [runtime options](https://docs.quantum.ibm.com/api/qiskit-ibm-runtime/options) available) can be found in the `PrimitiveResult.metatada`, while the metadata specific to each PUB is found in `SamplerPubResult.metadata`.
 
-The Sampler result metadata also includes execution timing information called the [_execution span_](#execution-spans).
+The client-side Sampler submits its workload as an [Executor](/guides/executor-input-output) job. The metadata of the underlying Executor result, which includes execution timing information called [_execution spans_](#execution-spans), is available under the `"executor"` key of `PrimitiveResult.metadata`.
 
 <Admonition type="note">
 In the metadata field, primitive implementations can return any information about execution that is relevant to them, and there are no key-value pairs that are guaranteed by the base primitive. Thus, the returned metadata might be different in different primitive implementations.
@@ -389,18 +389,16 @@ The metadata of the PubResult result is:
 <span id="execution-spans"></span>
 ### View execution spans
 
-The results of [`Sampler`](https://docs.quantum.ibm.com/api/qiskit-ibm-runtime/executor-sampler-sampler) jobs executed in IBM Quantum Compute Service contain execution timing information in their metadata.
-This timing information can be used to place upper and lower timestamp bounds on when particular shots were executed on the QPU.
-Shots are grouped into [`ExecutionSpan`](https://docs.quantum.ibm.com/api/qiskit-ibm-runtime/execution-span-execution-span) objects, each of which indicates a start time, a stop time, and a specification of which shots were collected in the span.
+The client-side Sampler uses Executor to run jobs, which executes its work on the QPU in _chunks_. The timing of each chunk is in `result.metadata["executor"].chunk_timing`, a list of [`ChunkSpan`](https://docs.quantum.ibm.com/api/qiskit-ibm-runtime/results-chunk-span) objects. Each `ChunkSpan` has `start` and `stop` timestamps and a list of `parts`, where each part gives an item index (`idx_item`) and the number of configurations from that item (`size`) that ran in the chunk.
 
-An execution span specifies which data was executed during its window by providing an [`ExecutionSpan.mask`](https://docs.quantum.ibm.com/api/qiskit-ibm-runtime/execution-span-execution-span#mask) method. This method, given any [Primitive Unified Block (PUB)](/guides/primitive-input-output#pubs) index, returns a boolean mask that is `True` for all shots executed during its window. PUBs are indexed by the order in which they were given to the Sampler run call. If, for example, a PUB has shape `(2, 3)` and was run with four shots, then the mask's shape is `(2, 3, 4)`. See the [execution_span](https://docs.quantum.ibm.com/api/qiskit-ibm-runtime/execution-span) API page for full details.
+Sampler creates one Executor program item per PUB, so `idx_item` is the index of the PUB, in the order the PUBs were given to `run()`. If twirling is enabled, each randomization of each parameter value set counts as a separate configuration.
 
-To view execution span information, review the metadata of the result returned by `Sampler`, which comes in the form of an `ExecutionSpans` object. This object is a list-like container containing instances of subclasses of `ExecutionSpan`, such as `SliceSpan`.
+To visualize the timings, pass the list to [`draw_chunk_timings`](https://docs.quantum.ibm.com/api/qiskit-ibm-runtime/visualization-draw-chunk-timings), as shown in the following example.
 
-Example:
+To learn what the chunk timestamps mean, how to read the plot, and why gaps can appear between chunks, see [View execution spans](/guides/executor-input-output#execution-spans) in the Executor inputs and outputs guide.
 
 ```python
-# Define two circuits, each with one parameter with two parameters.
+# Define a circuit with one parameter.
 circuit = QuantumCircuit(2)
 circuit.h(0)
 circuit.cx(0, 1)
@@ -412,80 +410,78 @@ circuit.measure_all()
 pm = generate_preset_pass_manager(optimization_level=1, backend=backend)
 transpiled_circuit = pm.run(circuit)
 
-params = np.random.uniform(size=(2, 3)).T
+# Define two PUBs, each with a different set of parameter values
+sampler_pubs = [
+    (transpiled_circuit, np.random.uniform(size=(10, 1))),
+    (transpiled_circuit, np.random.uniform(size=(20, 1))),
+]
 
-sampler_pub = (transpiled_circuit, params)
-
-# Instantiate the new Estimator object, then run the transpiled circuit
-# using the set of parameters and observables.
-
-job = sampler.run([sampler_pub], shots=4)
-
+job = sampler.run(sampler_pubs, shots=1024)
 result = job.result()
-spans = job.result().metadata["execution"]["execution_spans"]
-print(spans)
-```
-
-```text
-ExecutionSpans([DoubleSliceSpan(<start='2026-09-01 08:11:01', stop='2026-09-01 08:11:02', size=24>)])
 ```
 
 ```python
-from qiskit.primitives import BitArray
+from qiskit_ibm_runtime.visualization import draw_chunk_timings
 
-# Get the mask of the 1st PUB for the 0th span.
-mask = spans[0].mask(0)
+# Note the "executor" key: the timing comes from the underlying Executor job
+chunk_timing = result.metadata["executor"].chunk_timing
 
-# Decide whether the 0th shot of parameter set (1, 2) occurred in this span.
-in_this_span = mask[2, 1, 0]
+for idx, span in enumerate(chunk_timing):
+    duration = (span.stop - span.start).total_seconds()
+    print(f"Chunk {idx}: {span.start} to {span.stop} ({duration:.3f} s)")
+    for part in span.parts:
+        print(f"  PUB {part.idx_item}: {part.size} configurations")
 
-# Create a new bit array containing only the PUB-1 data collected during this span.
-bits = result[0].data.meas
-filtered_data = BitArray(bits.array[mask], bits.num_bits)
-```
+fig = draw_chunk_timings(chunk_timing, names="Sampler job")
 
-Execution spans can be filtered to include information pertaining to specific PUBs, selected by their indices:
+# Uncomment the following line to display the figure
+# fig.show(renderer="notebook")
 
-```python
-# take the subset of spans that reference data in PUBs 0 or 2
-spans.filter_by_pub([0, 2])
-```
-
-```text
-ExecutionSpans([DoubleSliceSpan(<start='2026-09-01 08:11:01', stop='2026-09-01 08:11:02', size=24>)])
-```
-
-View global information about the collection of execution spans:
-
-```python
-print("Number of execution spans:", len(spans))
-print("  Start of the first span:", spans.start)
-print("     End of the last span:", spans.stop)
-print("       Total duration (s):", spans.duration)
+# Save to a file
+# fig.write_html("chunk_timings.html")
 ```
 
 ```text
-Number of execution spans: 1
-  Start of the first span: 2026-09-01 08:11:01.798871
-     End of the last span: 2026-09-01 08:11:02.894134
-       Total duration (s): 1.095263
+Chunk 0: 2026-11-06 01:36:36.203348+00:00 to 2026-11-06 01:36:45.420844+00:00 (9.217 s)
+  PUB 0: 10 configurations
+  PUB 1: 20 configurations
 ```
 
-Extract and inspect a particular span:
+<span id="legacy-execution-spans"></span>
+### Execution spans in the legacy Sampler
 
-```python
-spans.sort()
-print(" Start of first span:", spans[0].start)
-print("   End of first span:", spans[0].stop)
-print("#shots in first span:", spans[0].size)
-```
+As of `qiskit-ibm-runtime` v0.50.0, the legacy server-side Sampler is deprecated. The client-side Sampler does not return `ExecutionSpans` objects; use the [chunk timing](#execution-spans) described previously instead. See [Migrate to client-side primitives](/guides/migrate-to-client-side-primitives) for instructions to migrate.
 
-```text
-Start of first span: 2026-09-01 08:11:01.798871
-   End of first span: 2026-09-01 08:11:02.894134
-#shots in first span: 24
-```
+    <Accordion>
+    <AccordionItem title="**Click to learn more.**">
+    The results of jobs from the legacy server-side [`Sampler`](https://docs.quantum.ibm.com/api/qiskit-ibm-runtime/sampler-v2) contain execution timing information in `result.metadata["execution"]["execution_spans"]`, in the form of an [`ExecutionSpans`](https://docs.quantum.ibm.com/api/qiskit-ibm-runtime/execution-span-execution-spans) object. This object is a list-like container of [`ExecutionSpan`](https://docs.quantum.ibm.com/api/qiskit-ibm-runtime/execution-span-execution-span) objects, each of which indicates a start time, a stop time, and a specification of which shots were collected in the span.
 
- <Admonition type="note">
-It is possible for time windows specified by distinct execution spans to overlap. This is not because a QPU was performing multiple executions at once, but is instead an artifact of certain classical processing that might happen concurrently with quantum execution. The guarantee being made is that the referenced data definitely occurred in the reported execution span, but not necessarily that the limits of the time window are as tight as possible.
-</Admonition>
+    An execution span specifies which data was executed during its window by providing an [`ExecutionSpan.mask`](https://docs.quantum.ibm.com/api/qiskit-ibm-runtime/execution-span-execution-span#mask) method. This method, given any PUB index, returns a boolean mask that is `True` for all shots executed during its window. If, for example, a PUB has shape `(2, 3)` and was run with four shots, then the mask's shape is `(2, 3, 4)`. See the [execution_span](https://docs.quantum.ibm.com/api/qiskit-ibm-runtime/execution-span) API page for full details.
+
+    ```python noexec
+    from qiskit.primitives import BitArray
+
+    spans = result.metadata["execution"]["execution_spans"]
+
+    # Get the mask of the 1st PUB for the 0th span.
+    mask = spans[0].mask(0)
+
+    # Create a new bit array containing only the PUB-0 data collected during this span.
+    bits = result[0].data.meas
+    filtered_data = BitArray(bits.array[mask], bits.num_bits)
+
+    # Take the subset of spans that reference data in PUBs 0 or 2
+    spans.filter_by_pub([0, 2])
+
+    # View global information about the collection of execution spans
+    print("Number of execution spans:", len(spans))
+    print("  Start of the first span:", spans.start)
+    print("     End of the last span:", spans.stop)
+    print("       Total duration (s):", spans.duration)
+    ```
+
+    To visualize legacy execution spans, use the [`draw_execution_spans`](https://docs.quantum.ibm.com/api/qiskit-ibm-runtime/visualization-draw-execution-spans) function.
+
+    It is possible for time windows specified by distinct execution spans to overlap. This is not because a QPU was performing multiple executions simultaneously, but is instead an artifact of certain classical processing that might happen concurrently with quantum execution. The guarantee is that the referenced data definitely occurred in the reported execution span, but not necessarily that the limits of the time window are as tight as possible.
+  </AccordionItem>
+</Accordion>

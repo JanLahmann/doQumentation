@@ -1,0 +1,232 @@
+---
+title: "Deploy your first managed workflow"
+sidebar_label: "Deploy your first managed workflow"
+description: "Write, upload, and run your first managed workflow, then get its results."
+notebook_path: "guides/deploy-first-managed-workflow.ipynb"
+---
+
+
+<OpenInLabBanner notebookPath="guides/deploy-first-managed-workflow.ipynb" />
+
+
+{/* cspell:ignore writefile */}
+
+{/*
+  DO NOT EDIT THIS CELL!!!
+  This cell's content is generated automatically by a script. Anything you add
+  here will be removed next time the notebook is run. To add new content, create
+  a new cell before or after this one.
+*/}
+
+<Accordion>
+<AccordionItem title="Package versions">
+
+The code on this page was developed using the following requirements.
+We recommend using these versions or newer.
+
+```
+qiskit[all]~=2.6.1
+qiskit-serverless~=0.38.0
+```
+</AccordionItem>
+</Accordion>
+Use this page to upload a workflow, run it, and get its result. The example workflow optimizes and simulates a Qiskit circuit. It simulates the circuit on classical hardware, so it does not use QPU time.
+
+Before you begin, [install the client package and authenticate](/guides/install-managed-workflows).
+
+<Admonition type="note" title="Use AI skills (optional)">
+To deploy your own code with help from an AI assistant, use the AI skills in the [Qiskit Function templates repository](https://github.com/qiskit-community/qiskit-function-templates).
+</Admonition>
+
+```python
+# Added by doQumentation — installs the packages this notebook needs if they are missing
+import importlib.util
+
+_needed = {"qiskit": "qiskit", "qiskit_ibm_catalog": "qiskit-ibm-catalog", "qiskit_serverless": "qiskit-serverless"}
+_missing = [pip for module, pip in _needed.items()
+            if importlib.util.find_spec(module) is None]
+# One at a time, so a package that fails to install does not block the others
+for _pip in _missing:
+    %pip install -q {_pip}
+if not _missing:
+    print("\u2713 All required packages are installed")
+```
+
+## Write a workflow
+
+### Create the folder structure
+
+A managed workflow is a folder of Python files with one entrypoint file. A managed workflow uploads everything in the folder, up to 50 MB, and runs the entrypoint as a script. Because a workflow uploads the whole folder, keep your local files, such as `deploy.ipynb`, outside the folder. Create the following layout:
+
+```text
+hello_world_project/
+├── deploy.ipynb         # Your local notebook: upload and run the workflow
+└── source_files/         # The working directory that you upload
+    └── hello_world.py   # The entrypoint
+```
+
+### Write the hello world entrypoint
+
+The entrypoint reads a circuit, optimizes and simulates it, and saves the counts and two-qubit depth. Save the following code as `source_files/hello_world.py`:
+
+<Admonition type="note">
+If you read this page as a notebook, the code cell for `hello_world.py` starts with the `%%writefile` [magic command](https://ipython.readthedocs.io/en/stable/interactive/magics.html#cellmagic-writefile). When you run this cell, it saves the code to the file instead of running the code.
+</Admonition>
+
+```python
+# This cell is hidden from users. It creates the working directory.
+from pathlib import Path
+
+Path("./source_files").mkdir(exist_ok=True)
+```
+
+```python
+%%writefile ./source_files/hello_world.py
+from qiskit.primitives import StatevectorSampler
+from qiskit.transpiler import generate_preset_pass_manager
+from qiskit_serverless import Job, get_arguments, save_result, update_status
+
+# Read the arguments that you pass to run()
+arguments = get_arguments()
+circuit = arguments["circuit"]
+shots = arguments.get("shots", 1024)
+
+# Optimize the circuit. Printed text goes to the job's logs.
+update_status(Job.OPTIMIZING_HARDWARE)
+pass_manager = generate_preset_pass_manager(
+    optimization_level=1, basis_gates=["cz", "rz", "sx", "x"]
+)
+isa_circuit = pass_manager.run(circuit)
+two_qubit_depth = isa_circuit.depth(lambda instruction: instruction.operation.num_qubits == 2)
+print(f"Two-qubit depth after optimization: {two_qubit_depth}", flush=True)
+
+# Simulate the circuit and return the counts
+sampler = StatevectorSampler(seed=1234)
+pub_result = sampler.run([isa_circuit], shots=shots).result()[0]
+save_result({"counts": pub_result.data.meas.get_counts(), "two_qubit_depth": two_qubit_depth})
+```
+
+```text
+Writing ./source_files/hello_world.py
+```
+
+The entrypoint uses three functions from `qiskit_serverless`:
+
+- `get_arguments()` returns the keyword arguments that you pass to `run()`, as a dictionary. Each value must be JSON-serializable, or an object that the client can encode, such as a `QuantumCircuit`. Encoded objects arrive as the same objects that you passed.
+- `update_status(Job.OPTIMIZING_HARDWARE)` sets the detailed status `RUNNING: OPTIMIZING_FOR_HARDWARE`, which you can see while the job runs. See [Report progress with update_status()](/guides/manage-quantum-classical-workflows#report-progress-with-update_status).
+- `save_result()` stores a JSON-serializable value that you read later with `job.result()`. The workflow returns the counts as a dictionary and the two-qubit depth of the optimized circuit as an integer.
+
+Anything that the workflow writes to standard output, such as the two-qubit depth, goes to the job's logs. To add timestamps and log levels, use the `logging` module. See [Write logs and handle errors](/guides/managed-workflow-logs-and-errors).
+## Upload the workflow
+
+In your local notebook, run the following code from the `hello_world_project` folder. The code connects with your saved account, defines the workflow, and uploads it. `entrypoint` is the file that the workflow runs, and `working_dir` is the folder that you upload:
+
+```python
+from qiskit_ibm_catalog import ManagedWorkflow, ManagedWorkflowClient
+
+client = ManagedWorkflowClient()
+
+hello_world = ManagedWorkflow(
+    title="hello-world",
+    entrypoint="hello_world.py",
+    working_dir="./source_files/",
+)
+
+hello_world = client.upload(hello_world)
+```
+
+## Run the workflow with inputs
+
+Construct a three-qubit GHZ circuit to pass to `hello_world` as an input:
+
+```python
+from qiskit import QuantumCircuit
+
+circuit = QuantumCircuit(3)
+circuit.h(0)
+circuit.cx(0, 1)
+circuit.cx(1, 2)
+circuit.measure_all()
+```
+
+Run `hello_world` with the circuit and the number of shots as keyword arguments. The argument names match the keys that the entrypoint reads with `get_arguments()`:
+
+```python
+job = hello_world.run(circuit=circuit, shots=1024)
+print(job.job_id)
+```
+
+```text
+54705348-5117-44b7-935b-e6986ef182fa
+```
+
+`run()` returns a `Job` after the workflow queues the job. It does not wait for the job to run. The job continues in the cloud after you close your Python session. To find it again later, list your recent jobs with `client.jobs()`.
+
+{/* REVIEW: add the web UI for job history when it is available. */}
+## Get the status, result, and logs
+
+Immediately after you call `run()`, the status is usually `QUEUED`:
+
+```python
+job.status()
+```
+
+```text
+'QUEUED'
+```
+
+The status changes from `QUEUED` to `INITIALIZING`, `RUNNING`, and then `DONE`.
+
+`job.result()` waits until the job ends, then returns the value that the workflow passed to `save_result()`:
+
+```python
+job.result()
+```
+
+```text
+{'counts': {'111': 514, '000': 510}, 'two_qubit_depth': 2}
+```
+
+```python
+# This cell is hidden from users. It checks the result.
+assert set(_["counts"]) <= {"000", "111"}  # noqa: F821
+assert sum(_["counts"].values()) == 1024  # noqa: F821
+```
+
+```python
+from qiskit.visualization import plot_histogram
+
+plot_histogram(job.result()["counts"])
+```
+
+![Output of the previous code cell](/docs/images/managed-workflows/deploy-first-managed-workflow/extracted-outputs/b4e7a2fe-0.avif)
+
+You can read the logs while the job runs. The workflow uploads new lines about every 15 seconds. The logs include the line that the workflow printed:
+
+```python
+print(job.logs())
+```
+
+```text
+Two-qubit depth after optimization: 2
+```
+
+```python
+# This cell is hidden from users. It checks the logs.
+assert "Two-qubit depth after optimization" in job.logs()
+```
+
+## Update the workflow
+
+To change a workflow, edit its files and call `upload()` again with the same `title`. The new upload replaces the earlier one, and jobs that already started are not affected.
+
+Fields such as `arguments_schema` and `sizes_map` keep their stored values when you omit them from the new upload.
+## Next steps
+
+<Admonition type="tip" title="Recommendations">
+- [Define inputs and outputs](/guides/managed-workflow-inputs-and-outputs) to learn which argument and result types a workflow supports.
+- [Declare dependencies](/guides/managed-workflow-dependencies) to use more Python packages in your workflow.
+- [Run quantum jobs from a workflow](/guides/manage-quantum-classical-workflows) to run your circuits on a QPU, report each stage, and track the QPU jobs.
+- [Run a managed workflow](/guides/run-managed-workflow) to learn all job statuses, debug a failed job, and find a job later.
+- To start from working code, deploy one of the [Qiskit Function templates](/guides/qiskit-function-templates), or adapt a template for your own workflow.
+</Admonition>
