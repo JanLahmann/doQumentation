@@ -135,6 +135,10 @@ def ibm_url(route: str) -> str:
     return f"{IBM}{route}" if route.startswith("/learning/") else f"{IBM}/docs{route}"
 
 
+# IBM pages renamed upstream whose content we still serve under the old name:
+# IBM redirects /docs/guides/addons to its "Tools index" (same overview page).
+IBM_ALIASES = {"/guides/tools-index": "/guides/addons"}
+
 # IBM sends some retired notebooks to their last version on GitHub.
 ARCHIVE = "https://github.com/Qiskit/"
 
@@ -151,7 +155,8 @@ def ibm_to_route(url: str) -> tuple[str, str] | None:
     path = re.sub(rf"^/learning/{LANG}(?=/)", "/learning", path)
     subsites = "|".join(re.escape(s) for s in GUIDE_SUBSITES)
     route = re.sub(rf"^/docs(?=/(guides|tutorials|functions|{subsites})(/|$))", "", path)
-    return guide_subsite_route(route), f"{IBM}{path}"
+    route = guide_subsite_route(route)
+    return IBM_ALIASES.get(route, route), f"{IBM}{path}"
 
 
 def probe_once(url: str) -> tuple[int, str]:
@@ -231,6 +236,13 @@ def main() -> int:
             unresolved[route] = str(status) if status else final
             continue
         target, ibm_target = mapped
+        # IBM keeps adding subsites (e.g. /docs/ibm-quantum-platform/x, live
+        # before it is in Qiskit/documentation); we mirror those pages flat
+        # under /guides/, so the same page name here is the same page.
+        if target not in local_now and target.startswith("/docs/"):
+            flat = "/guides/" + target.rsplit("/", 1)[-1]
+            if flat in local_now:
+                target = flat
         if target in local_now and target != route:
             redirects[route] = target
         else:
