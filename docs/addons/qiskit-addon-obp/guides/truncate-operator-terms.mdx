@@ -1,0 +1,494 @@
+---
+title: "Truncate Pauli terms during backpropagation"
+sidebar_label: "Truncate Pauli terms during backpropagation"
+description: "Truncate Pauli terms during backpropagation for the latest version of Operator backpropagation (OBP)"
+notebook_path: "addons/qiskit-addon-obp/guides/truncate-operator-terms.ipynb"
+---
+
+
+<OpenInLabBanner notebookPath="addons/qiskit-addon-obp/guides/truncate-operator-terms.ipynb" />
+
+
+This guide explains how to configure the Pauli term truncation mechanism provided by the [qiskit_addon_obp.utils.truncating](https://docs.quantum.ibm.com/api/qiskit-addon-obp/utils-truncating#module-qiskit_addon_obp.utils.truncating) module.
+
+Operator backpropagation (OBP) can be used to reduce the depth of quantum circuits at the cost of a more complex observable. In order to get meaningful results from OBP, one usually needs to truncate terms from their observable to prevent it from growing too large. One way to allow for deeper backpropagation into the circuit, while preventing the operator from growing too large, is to truncate terms with small coefficients, rather than adding them to the operator. Truncating terms can result in fewer quantum circuits to execute, but doing so results in some error in the final expectation value calculation, proportional to the magnitude of the truncated terms' coefficients.
+
+The [backpropagate](https://docs.quantum.ibm.com/api/qiskit-addon-obp/qiskit-addon-obp#backpropagate) method takes an optional [TruncationErrorBudget](https://docs.quantum.ibm.com/api/qiskit-addon-obp/utils-truncating#truncationerrorbudget), which configures the truncation of low-weight Pauli terms for each observable after the successful backpropagation of every slice.
+The amount of terms that are truncated depends on various configuration parameters specified by the user.
+As of now, only a single truncation strategy is available - the [truncate_binary_search](https://docs.quantum.ibm.com/api/qiskit-addon-obp/utils-truncating#truncate_binary_search) method.
+Given an observable and some _budget_ it will perform a binary search over the Pauli terms and coefficients within that observable to find the optimal threshold,
+such that the sum of the truncated coefficients is maximal but lower than the budget.
+
+**Note**: By default, the L1 norm is used to evaluate and bound the truncation error; however, the `p_norm` setting enables the specification of the Lp-norm to be used.
+For more information on how to use that setting, refer to the [Use different Lp-norms for Pauli term truncation](/addons/qiskit-addon-obp/guides/bound-error-using-p-norm) guide.
+The following examples illustrate various ways of building an [TruncationErrorBudget](https://docs.quantum.ibm.com/api/qiskit-addon-obp/utils-truncating#truncationerrorbudget) by using the accompanying [setup_budget](https://docs.quantum.ibm.com/api/qiskit-addon-obp/utils-truncating#setup_budget) function.
+## Construct an example circuit
+
+This guide uses the following circuit slices:
+
+```python
+# Added by doQumentation — installs the packages this notebook needs if they are missing
+import importlib.util
+
+_needed = {"matplotlib": "matplotlib", "qiskit": "qiskit", "qiskit_addon_obp": "qiskit-addon-obp", "qiskit_addon_utils": "qiskit-addon-utils", "rustworkx": "rustworkx"}
+_missing = [pip for module, pip in _needed.items()
+            if importlib.util.find_spec(module) is None]
+# One at a time, so a package that fails to install does not block the others
+for _pip in _missing:
+    %pip install -q {_pip}
+if not _missing:
+    print("\u2713 All required packages are installed")
+```
+
+```python
+import rustworkx.generators
+from qiskit.synthesis import LieTrotter
+from qiskit_addon_utils.problem_generators import (
+    PauliOrderStrategy,
+    generate_time_evolution_circuit,
+    generate_xyz_hamiltonian,
+)
+from qiskit_addon_utils.slicing import combine_slices, slice_by_gate_types
+
+# Generate a linear chain of 10 qubits
+linear_chain = rustworkx.generators.path_graph(10)
+
+# Use an arbitrary XY model
+hamiltonian = generate_xyz_hamiltonian(
+    linear_chain,
+    coupling_constants=(0.05, 0.02, 0.0),
+    ext_magnetic_field=(0.02, 0.08, 0.0),
+    pauli_order_strategy=PauliOrderStrategy.InteractionThenColor,
+)
+# Evolve for some time
+circuit = generate_time_evolution_circuit(
+    hamiltonian, synthesis=LieTrotter(reps=3), time=2.0
+)
+# slice the circuit by gate type
+slices = slice_by_gate_types(circuit)
+
+# for visualization purposes, recombine the slices with barriers between them and draw the resulting circuit
+combine_slices(slices, include_barriers=True).draw("mpl", fold=50, scale=0.6)
+```
+
+![Output of the previous code cell](/docs/images/addons/qiskit-addon-obp/guides/truncate-operator-terms/extracted-outputs/297fc3b0-d3b4-432d-96cd-7e175b7e6a52-0.avif)
+
+We will look at a single simple observable:
+
+```python
+from qiskit.quantum_info import SparsePauliOp
+
+obs = SparsePauliOp("IIIIIZIIII")
+```
+
+## The simplest case: a fixed truncation budget for each slice
+The available budget for truncation of Pauli terms can vary at each step of the backpropagation.
+To understand how this works, we first look at the simplest case of a fixed truncation budget as specified by the user.
+
+The most straightforward way to specify the truncation budget is by using the `max_error_per_slice` argument.
+In fact, this is what is being done in the [Reducing depth of circuits with operator backpropagation](/tutorials/operator-back-propagation) tutorial. Setting `max_error_per_slice` to a `float` results in each slice being allotted a budget equaling that value.
+In the example below, we set this value to `0.001` which guarantees an implicit truncation error of at most `0.018`, if all 18 slices were backpropagated.
+
+<div class="alert alert-info">
+Note that any error budget remaining after backpropagating a slice and truncating terms with small coefficients will always be added to the following slice's error budget.
+</div>
+
+```python
+from qiskit_addon_obp.utils.truncating import setup_budget
+
+truncation_error_budget = setup_budget(max_error_per_slice=0.001)
+print(truncation_error_budget)
+```
+
+```text
+TruncationErrorBudget(per_slice_budget=[0.001], max_error_total=inf, p_norm=1)
+```
+
+```python
+from qiskit_addon_obp import backpropagate
+from qiskit_addon_obp.utils.simplify import OperatorBudget
+
+op_budget = OperatorBudget(max_qwc_groups=10)
+bp_obs, remaining_slices, metadata = backpropagate(
+    obs,
+    slices,
+    operator_budget=op_budget,
+    truncation_error_budget=truncation_error_budget,
+)
+reduced_circuit = combine_slices(remaining_slices)
+print(f"Backpropagated {len(slices) - len(remaining_slices)} circuit slices.")
+print(
+    f"New observable contains {len(bp_obs)} terms and {len(bp_obs.group_commuting(qubit_wise=True))} commuting groups."
+)
+```
+
+```text
+Backpropagated 11 circuit slices.
+New observable contains 29 terms and 10 commuting groups.
+```
+
+We next use the [OBPMetadata](https://docs.quantum.ibm.com/api/qiskit-addon-obp/utils-metadata-obp-metadata) instance and the tools provided by the [visualization](https://docs.quantum.ibm.com/api/qiskit-addon-obp/utils-visualization#module-qiskit_addon_obp.utils.visualization) module to visualize the backpropagation process.
+
+- **The top left plot** shows that we have enough budget to begin truncating observable terms after backpropagating the third slice. Starting from the third slice, we know that we truncate at least one term from each slice we backpropagate because we are incurring some truncation error after each slice.
+- **The top right plot** shows that the error budget grows to `.003` for the third slice. We see a sharp drop in remaining budget, which means terms were truncated from the observable. This is consistent with what we inferred from the top left plot.
+- **The bottom left plot** shows that as we truncate terms from our observable, our overall accumulated error is growing monotonically. This graph also confirms that no terms were truncated until after the third slice had been backpropagated.
+- **The bottom right plot** shows that the number of commuting Pauli groups in our observable has grown to the specified limit of `10`. This plot also shows how backpropagating one more layer would cause our observable to outgrow the specified bound as you can see from the crossover of the black and red lines.
+<div class="alert alert-info">
+Note that in all of these plots, the x-axis enumerates the backpropagated slices, but since OBP works on the end of the circuit, `slice 1` is the very last slice, `slice 2` is the one before that, and so on.
+</div>
+
+```python
+from matplotlib import pyplot as plt
+from qiskit_addon_obp.utils.visualization import (
+    plot_accumulated_error,
+    plot_left_over_error_budget,
+    plot_num_qwc_groups,
+    plot_slice_errors,
+)
+
+fig, axes = plt.subplots(2, 2, figsize=(20, 10))
+plot_slice_errors(metadata, axes[(0, 0)])
+plot_left_over_error_budget(metadata, axes[(0, 1)])
+plot_accumulated_error(metadata, axes[(1, 0)])
+plot_num_qwc_groups(metadata, axes[(1, 1)])
+```
+
+![Output of the previous code cell](/docs/images/addons/qiskit-addon-obp/guides/truncate-operator-terms/extracted-outputs/68f118df-6718-49b2-ba80-c37ef461f71a-0.avif)
+
+## Specify slice budget explicitly
+If you know how to assign a budget to each slice, such that the backpropagation performance is optimized, you might want to explicitly assign a budget for each slice. For demonstration purposes, we will assign the first three slices zero budget and use a  budget of `.001` per slice for the remaining slices.
+
+```python
+# Zero out the first 3 slices' budgets
+max_error_per_slice = [0.0] * 3 + [0.001] * (len(slices) - 3)
+
+truncation_error_budget = setup_budget(
+    max_error_per_slice=max_error_per_slice
+)
+print(truncation_error_budget)
+```
+
+```text
+TruncationErrorBudget(per_slice_budget=[0.0, 0.0, 0.0, 0.001, 0.001, 0.001, 0.001, 0.001, 0.001, 0.001, 0.001, 0.001, 0.001, 0.001, 0.001, 0.001, 0.001, 0.001], max_error_total=inf, p_norm=1)
+```
+
+```python
+bp_obs, remaining_slices, metadata = backpropagate(
+    obs,
+    slices,
+    operator_budget=op_budget,
+    truncation_error_budget=truncation_error_budget,
+)
+reduced_circuit = combine_slices(remaining_slices)
+print(f"Backpropagated {len(slices) - len(remaining_slices)} circuit slices.")
+print(
+    f"New observable contains {len(bp_obs)} terms and {len(bp_obs.group_commuting(qubit_wise=True))} commuting groups."
+)
+```
+
+```text
+Backpropagated 11 circuit slices.
+New observable contains 32 terms and 10 commuting groups.
+```
+
+Removing the budget from the first three layers resulted in no terms being truncated until after the fourth layer, as can be confirmed in three of these plots. What might be somewhat surprising is that although the fourth slice had no leftover budget passed to it, a term was still truncated by using the allocated `.001` budget. This is obvious from the **top left** plot, but can also be observed in the **top right** plot, as the leftover budget curve flattens between slices three and four. Another notable detail is that at least one term was truncated from this point on, the same as in the previous example.
+
+The key takeaway is that although we incurred less truncation error in the second example due to zeroing out some slices' budgets, we were able to backpropagate the same number of slices, and our observable contains the same number of commuting Pauli groups. We can confirm that the bound on our error is smaller in the second example by inspecting the **bottom left** plot.
+
+```python
+fig, axes = plt.subplots(2, 2, figsize=(20, 10))
+plot_slice_errors(metadata, axes[(0, 0)])
+plot_left_over_error_budget(metadata, axes[(0, 1)])
+plot_accumulated_error(metadata, axes[(1, 0)])
+plot_num_qwc_groups(metadata, axes[(1, 1)])
+```
+
+![Output of the previous code cell](/docs/images/addons/qiskit-addon-obp/guides/truncate-operator-terms/extracted-outputs/b7167f80-5d29-4c32-be97-cba733f18b1d-0.avif)
+
+## Specify the budget cyclically
+If you have a circuit with some repeatable pattern, such as a Trotter circuit, you might want to specify a budget for that repeated subset of slices and have that budget used for all of the following repetitions of those slices.
+
+More concretely, the example circuit we are using has six slices that are repeated three times, for a total of 18 slices. We will arbitrarily assign zero budget to the single-qubit and `RYY` layers, and `.003` budget to each of the `RXX` layers. We will observe how specifying the budget as a length-6 sequence causes the budget to be applied to all 18 slices cyclically.
+
+<div class="alert alert-info">
+Again, note that the slices are backpropagated in reverse order (that is, starting at the end). Therefore, the first entry in our cyclic budget actually gets used for the last slice, the second entry for the slice before that, and so on.
+</div>
+
+```python
+# Specify a length-6 per-slice budget.
+# This will be cycled over three times to be applied to the 18 slices
+max_error_per_slice = [0.0] * 4 + [0.003] * 2
+
+truncation_error_budget = setup_budget(
+    max_error_per_slice=max_error_per_slice
+)
+print(truncation_error_budget)
+```
+
+```text
+TruncationErrorBudget(per_slice_budget=[0.0, 0.0, 0.0, 0.0, 0.003, 0.003], max_error_total=inf, p_norm=1)
+```
+
+```python
+op_budget = OperatorBudget(max_qwc_groups=20)
+bp_obs, remaining_slices, metadata = backpropagate(
+    obs,
+    slices,
+    operator_budget=op_budget,
+    truncation_error_budget=truncation_error_budget,
+)
+reduced_circuit = combine_slices(remaining_slices)
+print(f"Backpropagated {len(slices) - len(remaining_slices)} circuit slices.")
+print(
+    f"New observable contains {len(bp_obs)} terms and {len(bp_obs.group_commuting(qubit_wise=True))} commuting groups."
+)
+```
+
+```text
+Backpropagated 13 circuit slices.
+New observable contains 49 terms and 14 commuting groups.
+```
+
+As seen in the **top left** and **bottom left** images, no truncation was performed over the first four slices since they were allocated no error budget. Slices five and six had some of their terms truncated as budget became available.
+
+As seen in the **top left** image, a relatively large amount of error was incurred after backpropagating slice seven, even though that slice was allocated no budget. This is because only about `.002` of the `.006` total budget allocated to slices five and six was used, so the remaining was forwarded to slice seven and mostly expended, as seen in the **top right** image.
+
+The **top left** and **top right** images show that the small amount of leftover budget is used up between slices 8-10, and new budget becomes available in slice 11, as expected. The **top left**, **top right**, and **bottom left** images all demonstrate the cyclical behavior of the `max_error_per_slice` argument when its length is less than the number of slices. This cyclical behavior would have continued through all the slices, but the `max_qwc_groups` stopping criteria was reached after backpropagating 13 slices, as seen in the **bottom right** image.
+
+Also interesting is that the number of Pauli groups actually drops after the second round of budget becomes available at slice 11. This is because there were groups with small coefficients that could not be truncated until there was more budget after backpropagating slice 11, so they accumulated in the observable for several iterations. This case also highlights that `max_qwc_groups` must be _exceeded_ for the algorithm to terminate.
+
+```python
+fig, axes = plt.subplots(2, 2, figsize=(20, 10))
+plot_slice_errors(metadata, axes[(0, 0)])
+plot_left_over_error_budget(metadata, axes[(0, 1)])
+plot_accumulated_error(metadata, axes[(1, 0)])
+plot_num_qwc_groups(metadata, axes[(1, 1)])
+```
+
+![Output of the previous code cell](/docs/images/addons/qiskit-addon-obp/guides/truncate-operator-terms/extracted-outputs/4c36768e-03e7-4e1b-81b3-59b6e9eab43e-0.avif)
+
+## Cap the total error
+
+In addition to specifying the per-slice error budget, one can specify the maximum amount of error to incur from truncation. Once that limit is hit, no more truncation will be performed; however, backpropagation will continue until the observable becomes too large and one of the stopping criteria is met.
+
+We next re-run the above experiment, setting a cap on `max_error_total` such that the error budget is expended after backpropagating slice seven.
+
+```python
+# Specify a length-6 per-slice budget.
+# This will be cycled over 3 times to be applied to the 18 slices
+max_error_per_slice = [0.0] * 4 + [0.003] * 2
+
+truncation_error_budget = setup_budget(
+    max_error_per_slice=max_error_per_slice, max_error_total=0.006
+)
+print(truncation_error_budget)
+```
+
+```text
+TruncationErrorBudget(per_slice_budget=[0.0, 0.0, 0.0, 0.0, 0.003, 0.003], max_error_total=0.006, p_norm=1)
+```
+
+```python
+bp_obs, remaining_slices, metadata = backpropagate(
+    obs,
+    slices,
+    operator_budget=op_budget,
+    truncation_error_budget=truncation_error_budget,
+)
+reduced_circuit = combine_slices(remaining_slices)
+print(f"Backpropagated {len(slices) - len(remaining_slices)} circuit slices.")
+print(
+    f"New observable contains {len(bp_obs)} terms and {len(bp_obs.group_commuting(qubit_wise=True))} commuting groups."
+)
+```
+
+```text
+Backpropagated 10 circuit slices.
+New observable contains 67 terms and 20 commuting groups.
+```
+
+As expected, our truncation error caps out at `.006` (**bottom left** chart). It is notable that in this run we were not able to backpropagate slice 11. This is because we did not have enough budget to truncate terms and the number of commuting Pauli groups grew past the limit of `20`, as seen in the **bottom right** image.
+
+```python
+fig, axes = plt.subplots(2, 2, figsize=(20, 10))
+plot_slice_errors(metadata, axes[(0, 0)])
+plot_left_over_error_budget(metadata, axes[(0, 1)])
+plot_accumulated_error(metadata, axes[(1, 0)])
+plot_num_qwc_groups(metadata, axes[(1, 1)])
+```
+
+![Output of the previous code cell](/docs/images/addons/qiskit-addon-obp/guides/truncate-operator-terms/extracted-outputs/69c9069a-9038-4319-8dc6-37a1be973ebf-0.avif)
+
+It may be desirable to simply cap the overall budget with `max_error_total` without specifying `max_error_per_slice`.
+
+```python
+truncation_error_budget = setup_budget(max_error_total=0.018)
+print(truncation_error_budget)
+```
+
+```text
+TruncationErrorBudget(per_slice_budget=[0.018], max_error_total=0.018, p_norm=1)
+```
+
+The output of the cell above might be slightly surprising because the `per_slice_budget` is set to the `max_error_total`. This indicates that the entire available budget will be consumed **greedily**.
+You can think of it this way: the entire budget is available to each slice (because we loop over the `per_slice_budget`). But any budget that has already been consumed will be deducted from the budget that is available at that given point in the algorithm.
+
+```python
+op_budget = OperatorBudget(max_qwc_groups=10)
+bp_obs, remaining_slices, metadata = backpropagate(
+    obs,
+    slices,
+    operator_budget=op_budget,
+    truncation_error_budget=truncation_error_budget,
+)
+reduced_circuit = combine_slices(remaining_slices)
+print(f"Backpropagated {len(slices) - len(remaining_slices)} circuit slices.")
+print(
+    f"New observable contains {len(bp_obs)} terms and {len(bp_obs.group_commuting(qubit_wise=True))} commuting groups."
+)
+```
+
+```text
+Backpropagated 9 circuit slices.
+New observable contains 25 terms and 9 commuting groups.
+```
+
+The **top right** image shows how the entire `.018` error budget is made available to the first slice. No truncation is performed until the third slice, so the leftover budget remains constant. The budget monotonically decreases, as the full budget is made available to each backpropagated slice until it is expended.
+
+It is notable that this experiment yielded two fewer backpropagated slices compared to the first experiment in this notebook, which is almost identical. This demonstrates that for some problems, distributing the budget evenly might be optimal. For other problems, allowing slices to greedily expend the full budget might yield better performance.
+
+```python
+fig, axes = plt.subplots(2, 2, figsize=(20, 10))
+plot_slice_errors(metadata, axes[(0, 0)])
+plot_left_over_error_budget(metadata, axes[(0, 1)])
+plot_accumulated_error(metadata, axes[(1, 0)])
+plot_num_qwc_groups(metadata, axes[(1, 1)])
+```
+
+![Output of the previous code cell](/docs/images/addons/qiskit-addon-obp/guides/truncate-operator-terms/extracted-outputs/51d36d7e-0bd5-4388-bbb8-6831bf1f02e6-0.avif)
+
+## Cap the number of backpropagated slices and the total error together
+
+If you don't want to distribute their error budget all the way through the circuit but you don't want to greedily expend it either, you can specify the number of slices you intend to backpropagate (`num_slices`), along with a total error budget (`max_error_total`). This will distribute the error budget uniformly (accordingly to `p_norm`) across the input slices.
+
+Here, we will cap the number of slices we might backpropagate at `12`, and we will keep the same total error budget.
+
+```python
+num_slices = 12
+
+truncation_error_budget = setup_budget(
+    max_error_total=0.018, num_slices=num_slices, p_norm=1
+)
+print(truncation_error_budget)
+```
+
+```text
+TruncationErrorBudget(per_slice_budget=[0.0014999999999999998], max_error_total=0.018, p_norm=1)
+```
+
+Now we will attempt to backpropagate the 12 slices for which we allocated some budget in the previous step. We do this by just passing in the final 12 slices in our circuit. With `p_norm=1`, each of the 12 slices has an available budget of `0.018 / num_slices = 0.0015`.
+
+```python
+bp_obs, remaining_slices, metadata = backpropagate(
+    obs,
+    slices[-num_slices:],
+    operator_budget=op_budget,
+    truncation_error_budget=truncation_error_budget,
+)
+```
+
+Since we passed a subset of our slices (in the code ``slices[-num_slices:]``) to ``backpropagate``, we must combine the slices remaining after backpropagation with the slices that were never sent for backpropagation (in the code  ``slices[:-num_slices]``).
+
+Once we have combined all of the remaining slices, we can use [combine_slices](https://docs.quantum.ibm.com/api/qiskit-addon-utils/slicing#combine_slices) to generate the reduced-depth [QuantumCircuit](https://docs.quantum.ibm.com/api/qiskit/qiskit.circuit.QuantumCircuit). Next, we inspect how many slices were backpropagated versus how large our observable became.
+
+```python
+# Recombine the slices remaining after backprop with the rest of the original circuit
+reduced_circuit = combine_slices(slices[:-num_slices] + remaining_slices)
+
+print(f"Backpropagated {num_slices - len(remaining_slices)} circuit slices.")
+print(
+    f"New observable contains {len(bp_obs)} terms and {len(bp_obs.group_commuting(qubit_wise=True))} commuting groups."
+)
+```
+
+```text
+Backpropagated 12 circuit slices.
+New observable contains 29 terms and 9 commuting groups.
+```
+
+The plots show that we did successfully backpropagate all 12 slices while keeping our observable under 10 commuting Pauli groups. We can also see that using `num_slices` along with `max_error_total` results in a distribution of budgets across the slices and unused budget is again forwarded to the next slice. This is most apparent in the **top right** plot, as the budget is both expended and replenished throughout backpropagation.
+
+It is notable that this method of distributing error produced the best results (more backpropagated slices), compared with the first experiment in this notebook and the example just previous this one. All of these examples allotted `.018` error budget, but backpropagation performed differently depending on how that budget was distributed.
+
+```python
+fig, axes = plt.subplots(2, 2, figsize=(20, 10))
+plot_slice_errors(metadata, axes[(0, 0)])
+plot_left_over_error_budget(metadata, axes[(0, 1)])
+plot_accumulated_error(metadata, axes[(1, 0)])
+plot_num_qwc_groups(metadata, axes[(1, 1)])
+```
+
+![Output of the previous code cell](/docs/images/addons/qiskit-addon-obp/guides/truncate-operator-terms/extracted-outputs/b0bf5050-2928-41a1-9c3d-c9d79e918f6f-0.avif)
+
+## Work with multiple observables
+
+The `qiskit_addon_obp.backpropagate` method allows one to pass in a sequence of observables. This simplifies the workflow when dealing with multiple target observables.
+
+We explicitly mention this here to teach you how the truncation strategy handles such a case. For the sake of this example, we add an extra observable to the one which we have been using so far:
+
+```python
+obs = [SparsePauliOp("IIIIIZIIII"), SparsePauliOp("IIIIIXIIII")]
+```
+
+Finally, we repeat the first experiment from this tutorial., but with two observables to backpropagate the circuit into.
+
+For this example, this does not affect the number of slices that could be backpropagated. However, we can see that the two observables resulted in different numbers of Pauli terms and commuting groups.
+
+```python
+truncation_error_budget = setup_budget(max_error_per_slice=0.001)
+print(truncation_error_budget)
+```
+
+```text
+TruncationErrorBudget(per_slice_budget=[0.001], max_error_total=inf, p_norm=1)
+```
+
+```python
+bp_obs, remaining_slices, metadata = backpropagate(
+    obs,
+    slices,
+    operator_budget=op_budget,
+    truncation_error_budget=truncation_error_budget,
+)
+reduced_circuit = combine_slices(remaining_slices)
+print(f"Backpropagated {len(slices) - len(remaining_slices)} circuit slices.")
+print(
+    f"The new first observable contains {len(bp_obs[0])} terms and {len(bp_obs[0].group_commuting(qubit_wise=True))} commuting groups."
+)
+print(
+    f"The new second observable contains {len(bp_obs[1])} terms and {len(bp_obs[1].group_commuting(qubit_wise=True))} commuting groups."
+)
+```
+
+```text
+Backpropagated 11 circuit slices.
+The new first observable contains 29 terms and 10 commuting groups.
+The new second observable contains 23 terms and 8 commuting groups.
+```
+
+The plots below help illustrate how the backpropagation algorithm handles multiple observables.
+
+First, the plots in the **top left**, **top right**, and **bottom left** show that the budget for truncating terms is set individually for each observable. In other words, both observables have the ability to truncate terms assuming an error of `0.001` per backpropagated slice.
+Due to the different nature of the observables, this results in different consumption of the budget. In this example, they exhibit a lot of overlap, which does not always happen.
+
+The **bottom right** plot illustrates that `max_qwc_groups` takes _all_ observables into account. That means that the terms of all observables are grouped together to arrive at one final number of qubit-wise commuting groups, which is compared against `max_qwc_paulis`. The same is done for the `max_paulis` threshold (not discussed in this notebook), which allows you to set a limit on the number of Pauli terms across all observables.
+
+```python
+fig, axes = plt.subplots(2, 2, figsize=(20, 10))
+plot_slice_errors(metadata, axes[(0, 0)])
+plot_left_over_error_budget(metadata, axes[(0, 1)])
+plot_accumulated_error(metadata, axes[(1, 0)])
+plot_num_qwc_groups(metadata, axes[(1, 1)])
+```
+
+![Output of the previous code cell](/docs/images/addons/qiskit-addon-obp/guides/truncate-operator-terms/extracted-outputs/82271b0d-ddaf-4ad2-b5c6-e9e4c2a4cff7-0.avif)

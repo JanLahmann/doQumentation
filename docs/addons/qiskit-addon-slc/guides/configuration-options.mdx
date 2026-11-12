@@ -1,0 +1,361 @@
+---
+title: "How to tune the configuration options"
+sidebar_label: "How to tune the configuration options"
+description: "How to tune the configuration options for the latest version of Shaded lightcones"
+notebook_path: "addons/qiskit-addon-slc/guides/configuration-options.ipynb"
+---
+
+
+<OpenInLabBanner notebookPath="addons/qiskit-addon-slc/guides/configuration-options.ipynb" />
+
+
+The bounds computation is exact in principle but approximate in practice: evolving a Pauli error
+term through a circuit produces an operator with exponentially many terms, and finding the spectral
+norm of the resulting commutator is itself expensive. The options below control that cost. They fall
+into three groups:
+
+- **Accuracy** options change the numerical value of the bounds, trading tightness for cost.
+- **Scope** determines *which* bounds are computed.
+- **Execution** options change *how* the computation runs (not what it computes).
+
+| Option | Default | Controls | Effect on the result |
+| --- | --- | --- | --- |
+| **Accuracy** | | | |
+| `evolution_max_terms` | `1_000_000` | How many operator terms survive the evolution | Lower: cheaper, looser bounds |
+| `atol_simplify` | `1e-8` | Which commutator terms are discarded as negligible | Higher: cheaper, looser bounds |
+| `eigval_max_qubits` | `14` | How wide a commutator can be for its spectral norm to be computed | Lower: cheaper, looser bounds |
+| `atol_eigenvalue` | `1e-10` | When the iterative eigensolver counts as converged | Higher: cheaper, less accurate bounds |
+| **Scope** | | | |
+| `max_num_boxes` | `None` | How many boxes have bounds computed | Boxes beyond the limit keep the trivial bound of 2.0 |
+| **Execution** | | | |
+| `timeout` | `None` | A wall-clock budget for the whole computation | Any remaining work keeps the trivial bound of 2.0 |
+| `num_processes` | `1` | How many worker processes compute bounds in parallel | None on its own |
+
+A bound is only useful if it is *valid*: it must never understate an error term's effect on the
+observable. Loosening any of these options other than `atol_eigenvalue` can only make the bounds
+larger (more conservative), never smaller. Thus, the cost of a loose setting is a larger sampling
+overhead, not a wrong expectation value - [`atol_eigenvalue`](#atol_eigenvalue) is the exception.
+## Circuit definition
+
+The following experiments use the same Trotterized Ising circuit and observable as the [quickstart guide](/addons/qiskit-addon-slc/guides/quickstart). At
+this size, every option has a visible effect while each computation still takes less than a second.
+
+```python
+# Added by doQumentation — installs the packages this notebook needs if they are missing
+import importlib.util
+
+_needed = {"numpy": "numpy", "qiskit": "qiskit", "qiskit_addon_slc": "qiskit-addon-slc", "samplomatic": "samplomatic"}
+_missing = [pip for module, pip in _needed.items()
+            if importlib.util.find_spec(module) is None]
+# One at a time, so a package that fails to install does not block the others
+for _pip in _missing:
+    %pip install -q {_pip}
+if not _missing:
+    print("\u2713 All required packages are installed")
+```
+
+```python
+import numpy as np
+from qiskit import QuantumCircuit
+from qiskit.quantum_info import Pauli
+from qiskit_addon_slc.utils import generate_noise_model_paulis
+from samplomatic.transpiler import generate_boxing_pass_manager
+from samplomatic.utils import find_unique_box_instructions
+
+def trotter_ising_circuit(num_qubits, num_steps, rx_angle, rzz_angle):
+    """Trotterized transverse-field Ising evolution on a 1D chain."""
+    circuit = QuantumCircuit(num_qubits)
+    for _ in range(num_steps):
+        circuit.rx(rx_angle, range(num_qubits))
+        circuit.barrier()
+        for start in (0, 1):  # even then odd bonds
+            for i in range(start, num_qubits - 1, 2):
+                circuit.rzz(rzz_angle, i, i + 1)
+        circuit.barrier()
+    return circuit
+
+num_qubits = 10
+circuit = trotter_ising_circuit(
+    num_qubits, num_steps=4, rx_angle=np.pi / 16, rzz_angle=-np.pi / 3
+)
+observable = Pauli("I" * num_qubits).compose("Z", [num_qubits // 2])
+
+boxing_pass = generate_boxing_pass_manager(
+    inject_noise_targets="all",
+    inject_noise_strategy="individual_modification",
+    inject_noise_site="after",
+    twirling_strategy="active",
+    remove_barriers="never",
+)
+boxed_circuit = boxing_pass.run(circuit)
+noise_model_paulis = generate_noise_model_paulis(
+    find_unique_box_instructions(boxed_circuit)
+)
+
+print(f"noisy layers: {len(noise_model_paulis)}")
+print(
+    f"Pauli error terms: {sum(len(p) for p in noise_model_paulis.values())}"
+)
+```
+
+```text
+noisy layers: 2
+Pauli error terms: 198
+```
+
+A small helper summarizes each set of bounds in one line, so the effect of an option shows up as a
+few numbers rather than a wall of arrays.
+
+Every bound lies between 0 and the trivial bound of 2.0. The summary reports the mean bound and its
+standard deviation, followed by how the terms fall into these groups:
+    - Terms bounded by exactly 0 because they commute with the evolved observable
+    - Terms with a bound computed between 0 and 2.0
+    - Terms left at the trivial 2.0
+
+Note that **a lower mean is tighter, and tighter means a smaller sampling overhead later.**
+
+A sweep over one option marks the option's default with `*`:
+
+```python
+import inspect
+import time
+
+from qiskit_addon_slc.bounds import compute_forward_bounds
+
+def summarize(rates, label, elapsed):
+    """Prints a one-line summary of a set of bounds."""
+    # The bounds are floating-point results, so a term counts as bounded by 0, or as left at the
+    # trivial 2.0, when it is within rounding error of that value.
+    exact = np.isclose(rates, 0.0, rtol=0.0, atol=1e-12)
+    trivial = np.isclose(rates, 2.0, rtol=0.0, atol=1e-12)
+    computed = ~exact & ~trivial
+    print(
+        f"{label:28} mean {rates.mean():.4f} ± {rates.std():.3f} │ "
+        f"at 0: {exact.mean():4.0%}  computed: {computed.mean():4.0%}  "
+        f"at 2.0: {trivial.mean():4.0%} │ "
+        f"{elapsed:4.2f}s"
+    )
+
+def forward(label, **kwargs):
+    """Computes the forward bounds, summarizes them and returns all their rates."""
+    start = time.perf_counter()
+    bounds = compute_forward_bounds(
+        boxed_circuit, noise_model_paulis, observable, **kwargs
+    )
+    elapsed = time.perf_counter() - start
+    rates = np.concatenate([bound.rates for bound in bounds.values()])
+    summarize(rates, label, elapsed)
+    return rates
+
+def sweep(option, values):
+    """Computes the forward bounds for each value of one option, marking the default with `*`."""
+    default = (
+        inspect.signature(compute_forward_bounds).parameters[option].default
+    )
+    for value in values:
+        marker = "*" if value == default else " "
+        forward(f"{marker} {option}={value:g}", **{option: value})
+
+baseline = forward("  defaults")
+```
+
+```text
+defaults                   mean 0.3639 ± 0.684 │ at 0:  59%  computed:  36%  at 2.0:   5% │ 0.29s
+```
+
+## Accuracy
+
+### `evolution_max_terms`
+
+Evolving a Pauli error term through non-Clifford gates turns it into a sum of Paulis, and that sum
+grows with circuit depth. `evolution_max_terms` caps how many of those terms are kept. The 1-norm of
+whatever is discarded is added to the bound, so nothing is silently lost.
+
+The sweep runs from tighter than the default down to an extreme cut. Lowering the cap makes the
+computation cheaper and the bounds looser.
+
+```python
+sweep("evolution_max_terms", (10_000_000, 1_000_000, 1000, 100, 10, 2))
+```
+
+```text
+evolution_max_terms=1e+07  mean 0.3639 ± 0.684 │ at 0:  59%  computed:  36%  at 2.0:   5% │ 0.38s
+* evolution_max_terms=1e+06  mean 0.3639 ± 0.684 │ at 0:  59%  computed:  36%  at 2.0:   5% │ 0.31s
+  evolution_max_terms=1000   mean 0.3639 ± 0.684 │ at 0:  59%  computed:  36%  at 2.0:   5% │ 0.30s
+  evolution_max_terms=100    mean 0.3639 ± 0.684 │ at 0:  59%  computed:  36%  at 2.0:   5% │ 0.29s
+  evolution_max_terms=10     mean 0.3927 ± 0.711 │ at 0:  59%  computed:  31%  at 2.0:   9% │ 0.28s
+  evolution_max_terms=2      mean 0.5245 ± 0.792 │ at 0:  59%  computed:  23%  at 2.0:  18% │ 0.21s
+```
+
+Raising the cap past its default changes nothing here. For a circuit of this size, the default
+already keeps every term, so the bounds are as tight as this option can make them. That is the
+typical situation. Tightening an accuracy option only pays off once its default is actually limiting,
+and the way to find out is the experiment above. Rerun it with a tighter value and see whether the
+bounds move.
+
+<div class="alert alert-warning">
+
+**Warning:** The underlying propagation routine treats `evolution_max_terms` as a *capacity to
+pre-allocate*, not as an upper limit to check against. Passing something nominally unlimited, such
+as `numpy.iinfo(numpy.uint).max`, asks the allocator for terabytes of memory and aborts the process.
+Keep it to a realistic number. The default of one million is already generous.
+
+</div>
+
+### `atol_simplify`
+
+After the commutator is formed, terms with a coefficient below `atol_simplify` are dropped. As with
+the evolution cap, the 1-norm lost this way is added to the bound.
+
+```python
+sweep("atol_simplify", (0.0, 1e-8, 1e-4, 1e-2, 1e-1))
+```
+
+```text
+atol_simplify=0            mean 0.3639 ± 0.684 │ at 0:  59%  computed:  36%  at 2.0:   5% │ 0.32s
+* atol_simplify=1e-08        mean 0.3639 ± 0.684 │ at 0:  59%  computed:  36%  at 2.0:   5% │ 0.31s
+  atol_simplify=0.0001       mean 0.3639 ± 0.684 │ at 0:  59%  computed:  36%  at 2.0:   5% │ 0.33s
+  atol_simplify=0.01         mean 0.3656 ± 0.685 │ at 0:  59%  computed:  35%  at 2.0:   6% │ 0.31s
+  atol_simplify=0.1          mean 0.3837 ± 0.697 │ at 0:  59%  computed:  31%  at 2.0:  10% │ 0.31s
+```
+
+### `eigval_max_qubits`
+
+The tightest available bound is the spectral norm of the commutator, which needs an eigenvalue
+computation. That becomes expensive as the commutator widens, so `eigval_max_qubits` sets the width
+beyond which the attempt is abandoned in favour of the triangle inequality. That bound,
+$2 \sum_i |c_i|$ over the commutator's coefficients $c_i$, is valid but looser.
+
+Setting it to zero forces the fallback everywhere, which shows the benefit of the eigensolver
+in one number.
+
+```python
+sweep("eigval_max_qubits", (20, 14, 8, 4, 2, 0))
+```
+
+```text
+eigval_max_qubits=20       mean 0.3639 ± 0.684 │ at 0:  59%  computed:  36%  at 2.0:   5% │ 0.31s
+* eigval_max_qubits=14       mean 0.3639 ± 0.684 │ at 0:  59%  computed:  36%  at 2.0:   5% │ 0.30s
+  eigval_max_qubits=8        mean 0.3639 ± 0.684 │ at 0:  59%  computed:  36%  at 2.0:   5% │ 0.32s
+  eigval_max_qubits=4        mean 0.3742 ± 0.694 │ at 0:  59%  computed:  35%  at 2.0:   6% │ 0.30s
+  eigval_max_qubits=2        mean 0.4983 ± 0.809 │ at 0:  59%  computed:  23%  at 2.0:  18% │ 0.27s
+  eigval_max_qubits=0        mean 0.5081 ± 0.810 │ at 0:  59%  computed:  21%  at 2.0:  19% │ 0.27s
+```
+
+Even with the eigensolver switched off, the mean stays far below the trivial 2.0. The share
+of terms bounded by 0 does not change: a term that commutes exactly with the evolved observable
+has a zero commutator, which is recognized before any eigenvalue computation is considered. Of the
+others, the triangle-inequality bound reaches 2.0 for some and is capped there, but for many it is
+still smaller, so they keep a computed bound below 2.0.
+
+### `atol_eigenvalue`
+
+When the spectral norm *is* computed, `atol_eigenvalue` is the convergence tolerance of the
+iterative eigensolver. Most commutators never reach that solver, though:
+
+- A commutator acting on at most four qubits is diagonalized exactly, directly.
+- A wider one is first reduced to the smallest number of qubits that its Pauli terms need,
+  and if that reduced form acts on at most eight qubits, it is diagonalized exactly.
+
+Only a commutator that still needs more than eight qubits after that reduction goes to the iterative
+solver, which is the only place this tolerance applies. Circuits of the size used in this guide never get
+that far, so a sweep over this option would show identical bounds for every value. It matters for
+wide light cones on large devices.
+
+Unlike the other accuracy options, loosening `atol_eigenvalue` is *not* safe in one direction. An
+iterative eigensolver approaches the extremal eigenvalue from inside the spectrum, so an estimate
+that has not fully converged understates the spectral norm, and the bound. The default is
+deliberately tight for that reason. If the solver fails to converge, the triangle-inequality
+fallback takes over, which is valid again.
+## Scope
+
+### `max_num_boxes`
+
+Sometimes the useful limit is not accuracy but depth. `max_num_boxes` stops spawning bound
+computations past a given number of boxes, and every layer beyond it is assigned the trivial bound
+of 2.0 instead.
+
+The limit counts the noisy `BoxOp` instructions (those carrying an `InjectNoise` annotation) rather
+than, for example, a depth in gates. That keeps it tied to the user-visible structure of the circuit and
+avoids coupling to the auto-generated annotation references, which can change between
+transpilation runs.
+
+This is the natural choice for a circuit whose two halves are handled by forward and backward bounds
+respectively: compute each only as deep as it will be used.
+
+```python
+from qiskit.circuit import BoxOp
+from samplomatic import InjectNoise
+
+# The limit counts the noisy boxes encountered while iterating the circuit, not the unique ones:
+# a repeated layer is one noise model but several boxes. Boxes without an `InjectNoise`
+# annotation carry no error terms and do not count.
+num_boxes = sum(
+    1
+    for inst in boxed_circuit.data
+    if isinstance(inst.operation, BoxOp)
+    and any(
+        isinstance(annotation, InjectNoise)
+        for annotation in inst.operation.annotations
+    )
+)
+print(
+    f"the circuit has {num_boxes} noisy boxes drawn from "
+    f"{len(noise_model_paulis)} distinct noise models\n"
+)
+
+for limit in (None, 6, 4, 2, 1):
+    marker = "*" if limit is None else " "
+    forward(f"{marker} max_num_boxes={limit}", max_num_boxes=limit)
+```
+
+```text
+the circuit has 9 noisy boxes drawn from 2 distinct noise models
+
+* max_num_boxes=None         mean 0.3639 ± 0.684 │ at 0:  59%  computed:  36%  at 2.0:   5% │ 0.33s
+  max_num_boxes=6            mean 0.7486 ± 0.935 │ at 0:  53%  computed:  18%  at 2.0:  30% │ 0.18s
+  max_num_boxes=4            mean 1.1506 ± 0.980 │ at 0:  40%  computed:   5%  at 2.0:  55% │ 0.11s
+  max_num_boxes=2            mean 1.5707 ± 0.821 │ at 0:  21%  computed:   0%  at 2.0:  79% │ 0.05s
+  max_num_boxes=1            mean 1.8157 ± 0.579 │ at 0:   9%  computed:   0%  at 2.0:  91% │ 0.03s
+```
+
+## Execution
+
+### `timeout`
+
+`timeout` is a wall-clock budget in seconds. When it expires, the bounds that have been computed are kept
+and everything outstanding keeps the trivial bound of 2.0, so the result is always usable, just
+looser the earlier you cut it off.
+
+It is not a hard deadline: already-running tasks are allowed to finish, so the call can overrun the
+budget by the duration of one task.
+
+### `num_processes`
+
+Bounds for different error terms are independent, so `num_processes` distributes them over worker
+processes. On its own, this affects only how long the computation takes, never its result.
+
+<div class="alert alert-info">
+
+**Note:** A `timeout` combined with `num_processes` makes the result depend on timing: which tasks
+finish before the budget expires is not deterministic. The bounds stay valid, but they are no longer
+reproducible from run to run.
+
+</div>
+## Where to start
+
+The defaults are chosen to give tight bounds on circuits of a size where that is affordable. When a
+computation is too slow, try applying the options in roughly this order:
+
+1. `num_processes`: A free speed-up, with no accuracy cost.
+2. `max_num_boxes`: If you know in advance how deep into the circuit you care about.
+3. `eigval_max_qubits`: Skips the most expensive step for the widest commutators, which are usually
+   a small minority of the terms.
+4. `evolution_max_terms` and `atol_simplify`: These impact accuracy throughout, so tune
+   them last, checking with a sweep like the ones above to determine how far the bounds move.
+5. `timeout`: A hard stop rather than a tuning aid, for when a computation must finish by a deadline,
+   whatever the quality.
+
+The looser the bounds, the larger the sampling overhead that `compute_local_scales` will report for
+a given bias tolerance. That overhead is the quantity worth watching while tuning: it tells you what
+the approximations actually cost.

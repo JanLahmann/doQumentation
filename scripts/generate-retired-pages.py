@@ -55,7 +55,23 @@ IBM = "https://quantum.cloud.ibm.com"
 # page that replaced them. Overrides the probe.
 MANUAL = {
     # Removed upstream in 5b24bb708 "Post selection changes" (#5737).
-    "/guides/post-selection": f"{IBM}/docs/addons/qiskit-mitigation/guides/postselection-with-non-markovian-error-checks",
+    "/guides/post-selection": "/addons/qiskit-mitigation/guides/postselection-with-non-markovian-error-checks",
+    # Our old addon tutorials (taken from the addons' GitHub repos) for addons
+    # IBM now documents under /addons/ (ADDONS_DOCUMENTED_BY_IBM in
+    # scripts/sync-content.py), removed 2026-11-12: each goes to IBM's
+    # tutorial on the same problem (same model or title; the addon guides'
+    # quickstarts use other examples), which the addon's sidebar lists.
+    "/qiskit-addons/obp/getting_started": "/tutorials/operator-back-propagation",
+    "/qiskit-addons/pna/generate_noise_mitigating_observable": "/tutorials/propagated-noise-absorption",
+    "/qiskit-addons/slc/getting_started": "/tutorials/pec-with-shaded-lightcones",
+    "/qiskit-addons/sqd/chemistry_hamiltonian": "/tutorials/sample-based-quantum-diagonalization",
+    "/qiskit-addons/sqd/fermionic_lattice_hamiltonian": "/tutorials/sample-based-krylov-quantum-diagonalization",
+    # Removed the same day because an IBM tutorial covers the same technique
+    # and API (ADDON_SOURCES "skip", and MPF/AQC-Tensor dropped):
+    "/qiskit-addons/cutting/gate_cutting_to_reduce_circuit_depth": "/tutorials/depth-reduction-with-circuit-cutting",
+    "/qiskit-addons/cutting/wire_cutting_via_move_instruction": "/tutorials/wire-cutting",
+    "/qiskit-addons/mpf/getting_started": "/tutorials/multi-product-formula",
+    "/qiskit-addons/aqc-tensor/initial_state_aqc": "/tutorials/approximate-quantum-compilation-for-time-evolution",
     # Tutorials IBM renamed to shorter slugs without redirecting the old ones;
     # each successor is the same tutorial (same title topic, same addon).
     "/guides/colibri-td-pde": "/guides/colibritd-pde",
@@ -88,9 +104,12 @@ GUIDE_SUBSITES = {
     "ibm-quantum-compute": "run-on-quantum-hardware",
     "managed-workflows": "managed-workflows",
 }
+# docs/addons is mirrored at the same path (/addons/<addon>/…), see
+# ADDON_DOCS_DIR in scripts/sync-content.py.
 UPSTREAM_DIRS = ["docs/guides", *(f"docs/{s}" for s in GUIDE_SUBSITES), "docs/functions",
-                 "docs/tutorials", "learning/courses", "learning/modules"]
-LOCAL_DIRS = ["docs/guides", "docs/tutorials", "docs/learning/courses", "docs/learning/modules"]
+                 "docs/addons", "docs/tutorials", "learning/courses", "learning/modules"]
+LOCAL_DIRS = ["docs/guides", "docs/addons", "docs/tutorials", "docs/learning/courses",
+              "docs/learning/modules"]
 LANG = r"[a-z]{2}(?:[-_][a-zA-Z]{2,4})?"
 
 
@@ -154,7 +173,7 @@ def ibm_to_route(url: str) -> tuple[str, str] | None:
     path = re.sub(rf"^/docs/{LANG}(?=/)", "/docs", path)
     path = re.sub(rf"^/learning/{LANG}(?=/)", "/learning", path)
     subsites = "|".join(re.escape(s) for s in GUIDE_SUBSITES)
-    route = re.sub(rf"^/docs(?=/(guides|tutorials|functions|{subsites})(/|$))", "", path)
+    route = re.sub(rf"^/docs(?=/(guides|tutorials|functions|addons|{subsites})(/|$))", "", path)
     route = guide_subsite_route(route)
     return IBM_ALIASES.get(route, route), f"{IBM}{path}"
 

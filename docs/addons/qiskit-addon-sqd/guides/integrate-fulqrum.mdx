@@ -1,0 +1,157 @@
+---
+title: "Scale SQD chemistry workflows with Fulqrum"
+sidebar_label: "Scale SQD chemistry workflows with Fulqrum"
+description: "Scale SQD chemistry workflows with Fulqrum for the latest version of Sample-based quantum diagonalization (SQD)"
+notebook_path: "addons/qiskit-addon-sqd/guides/integrate-fulqrum.ipynb"
+---
+
+
+<OpenInLabBanner notebookPath="addons/qiskit-addon-sqd/guides/integrate-fulqrum.ipynb" />
+
+
+[Fulqrum](https://github.com/Qiskit/fulqrum) is a software package that computes eigenvalues and eigenvectors of Hamiltonians projected into a subspace. It constructs a portable representation of the projected Hamiltonian that you can pass to an eigenvalue solver of your choice, including standard off-the-shelf solvers. These solvers can provide a much faster alternative to the default PySCF solver that the SQD addon uses for diagonalization. For information on how to install and use Fulqrum, see the [Fulqrum documentation](https://qiskit.github.io/fulqrum/).
+
+Fulqrum's `addon_sqd_support` module builds a solver that [`diagonalize_fermionic_hamiltonian`](https://docs.quantum.ibm.com/api/qiskit-addon-sqd/fermion) accepts directly, so you pass the same integrals to both and Fulqrum handles the projection and diagonalization.
+
+For more details on the SQD code used in this example, see the [chemistry Hamilton tutorial](/tutorials/sample-based-quantum-diagonalization).
+
+```python
+# Added by doQumentation — installs the packages this notebook needs if they are missing
+import importlib.util
+
+_needed = {"fulqrum": "fulqrum", "numpy": "numpy", "primme": "primme", "pyscf": "pyscf", "qiskit_addon_sqd": "qiskit-addon-sqd"}
+_missing = [pip for module, pip in _needed.items()
+            if importlib.util.find_spec(module) is None]
+# One at a time, so a package that fails to install does not block the others
+for _pip in _missing:
+    %pip install -q {_pip}
+if not _missing:
+    print("\u2713 All required packages are installed")
+```
+
+```python
+import numpy as np
+import pyscf
+import pyscf.cc
+import pyscf.mcscf
+from fulqrum.addon_sqd_support import sci_solver_from_integrals
+from qiskit_addon_sqd.counts import generate_bit_array_uniform
+from qiskit_addon_sqd.fermion import diagonalize_fermionic_hamiltonian
+
+# Build N2 molecule
+mol = pyscf.gto.Mole()
+mol.build(
+    atom=[["N", (0, 0, 0)], ["N", (1.0, 0, 0)]],
+    basis="6-31g",
+    symmetry="Dooh",
+)
+
+# Define active space
+n_frozen = 2
+active_space = range(n_frozen, mol.nao_nr())
+
+# Get molecular integrals
+scf = pyscf.scf.RHF(mol).run()
+num_orbitals = len(active_space)
+n_electrons = int(sum(scf.mo_occ[active_space]))
+num_elec_a = (n_electrons + mol.spin) // 2
+num_elec_b = (n_electrons - mol.spin) // 2
+cas = pyscf.mcscf.CASCI(scf, num_orbitals, (num_elec_a, num_elec_b))
+mo = cas.sort_mo(active_space, base=0)
+hcore, nuclear_repulsion_energy = cas.get_h1cas(mo)
+eri = pyscf.ao2mo.restore(1, cas.get_h2cas(mo), num_orbitals)
+
+# Compute exact energy
+exact_energy = cas.run().e_tot
+
+# Create a seed to control randomness throughout this workflow
+rng = np.random.default_rng(24)
+
+# Generate random samples
+bit_array = generate_bit_array_uniform(
+    10_000, num_orbitals * 2, rand_seed=rng
+)
+
+# Build a solver that diagonalizes with Fulqrum. It converts the integrals to a
+# Fulqrum operator once, then projects onto each subspace the SQD loop requests.
+sci_solver = sci_solver_from_integrals(hcore, eri, tol=1e-12)
+
+# Run SQD
+result = diagonalize_fermionic_hamiltonian(
+    hcore,
+    eri,
+    bit_array,
+    samples_per_batch=300,
+    norb=num_orbitals,
+    nelec=(num_elec_a, num_elec_b),
+    num_batches=5,
+    max_iterations=5,
+    sci_solver=sci_solver,
+    symmetrize_spin=True,
+    seed=rng,
+)
+```
+
+```text
+WARN: Unable to to identify input symmetry using original axes.
+Different symmetry axes will be used.
+```
+
+```text
+converged SCF energy = -108.835236570774
+```
+
+```text
+CASCI E = -109.046671778080  E(CI) = -32.8155692383188  S^2 = 0.0000000
+```
+
+```python
+print(f"Exact energy: {exact_energy}")
+print(f"Estimated energy: {result.energy + nuclear_repulsion_energy}")
+```
+
+```text
+Exact energy: -109.04667177808024
+Estimated energy: -109.03402667559365
+```
+
+## Use a different eigensolver
+
+Because Fulqrum exposes the projected Hamiltonian as a standard [`scipy.sparse.linalg.LinearOperator`](https://docs.scipy.org/doc/scipy/reference/generated/scipy.sparse.linalg.LinearOperator.html), you can diagonalize it with any eigensolver of your choosing rather than being tied to `scipy.sparse.linalg.eigsh`. This makes it straightforward to substitute a solver that is better suited to your problem size or hardware.
+
+Pass the eigensolver you want as the `eigensolver` argument. As an example, this guide demonstrates [PRIMME](https://github.com/primme/primme), a high-performance eigensolver library. Its Python interface, `primme.eigsh`, follows a calling convention similar to `scipy.sparse.linalg.eigsh`, so you can use it as a direct replacement.
+
+```python
+import primme
+
+# Build a solver that diagonalizes with PRIMME instead of the default,
+# scipy.sparse.linalg.eigsh
+sci_solver = sci_solver_from_integrals(
+    hcore, eri, eigensolver=primme.eigsh, tol=1e-12
+)
+
+# Run SQD using the PRIMME-based solver
+result = diagonalize_fermionic_hamiltonian(
+    hcore,
+    eri,
+    bit_array,
+    samples_per_batch=300,
+    norb=num_orbitals,
+    nelec=(num_elec_a, num_elec_b),
+    num_batches=5,
+    max_iterations=5,
+    sci_solver=sci_solver,
+    symmetrize_spin=True,
+    seed=rng,
+)
+```
+
+```python
+print(f"Exact energy: {exact_energy}")
+print(f"Estimated energy: {result.energy + nuclear_repulsion_energy}")
+```
+
+```text
+Exact energy: -109.04667177808024
+Estimated energy: -109.03937429196168
+```

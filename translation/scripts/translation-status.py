@@ -64,7 +64,7 @@ def section_of(rel: str) -> str:
 
 
 def en_pages() -> list[str]:
-    return sorted(str(p.relative_to(DOCS_DIR)) for p in DOCS_DIR.rglob("*.mdx"))
+    return _io.all_pages()  # without translation/v2/english-only.json's pages
 
 
 def locale_pages(locale: str) -> dict[str, dict]:

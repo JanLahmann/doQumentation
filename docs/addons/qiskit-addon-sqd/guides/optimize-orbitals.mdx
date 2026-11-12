@@ -1,0 +1,269 @@
+---
+title: "Improve an SQD estimate with orbital optimization"
+sidebar_label: "Improve an SQD estimate with orbital optimization"
+description: "Improve an SQD estimate with orbital optimization for the latest version of Sample-based quantum diagonalization (SQD)"
+notebook_path: "addons/qiskit-addon-sqd/guides/optimize-orbitals.ipynb"
+---
+
+
+<OpenInLabBanner notebookPath="addons/qiskit-addon-sqd/guides/optimize-orbitals.ipynb" />
+
+
+Sample-based quantum diagonalization (SQD) approximates a ground-state energy by
+diagonalizing the Hamiltonian in a fixed subspace of electronic configurations. That
+estimate depends on the orbital basis in which the Hamiltonian is expressed, and
+*orbital optimization* (OO) exploits this freedom to lower the energy without enlarging
+the subspace.
+
+This guide runs SQD on an $N_2$ molecule and then improves the result with orbital
+optimization, using [`ffsim`](https://qiskit-community.github.io/ffsim/) to represent
+the Hamiltonian and find the energy-minimizing orbital rotation.
+## Run SQD
+
+We build the molecular integrals for $N_2$ in the molecular-orbital (MO) basis, generate
+uniform random samples, and run SQD to obtain a ground-state approximation.
+
+```python
+# Added by doQumentation — installs the packages this notebook needs if they are missing
+import importlib.util
+
+_needed = {"ffsim": "ffsim", "numpy": "numpy", "pyscf": "pyscf", "qiskit_addon_sqd": "qiskit-addon-sqd"}
+_missing = [pip for module, pip in _needed.items()
+            if importlib.util.find_spec(module) is None]
+# One at a time, so a package that fails to install does not block the others
+for _pip in _missing:
+    %pip install -q {_pip}
+if not _missing:
+    print("\u2713 All required packages are installed")
+```
+
+```python
+import numpy as np
+import pyscf
+import pyscf.cc
+import pyscf.mcscf
+from qiskit_addon_sqd.counts import generate_bit_array_uniform
+from qiskit_addon_sqd.fermion import diagonalize_fermionic_hamiltonian
+
+# Specify molecule properties
+num_orbitals = 16
+num_elec_a = num_elec_b = 5
+spin_sq = 0
+
+# Build N2 molecule
+mol = pyscf.gto.Mole()
+mol.build(
+    atom=[["N", (0, 0, 0)], ["N", (1.0, 0, 0)]],
+    basis="6-31g",
+    symmetry="Dooh",
+)
+
+# Define active space
+n_frozen = 2
+active_space = range(n_frozen, mol.nao_nr())
+
+# Get molecular integrals
+scf = pyscf.scf.RHF(mol).run()
+num_orbitals = len(active_space)
+n_electrons = int(sum(scf.mo_occ[active_space]))
+num_elec_a = (n_electrons + mol.spin) // 2
+num_elec_b = (n_electrons - mol.spin) // 2
+cas = pyscf.mcscf.CASCI(scf, num_orbitals, (num_elec_a, num_elec_b))
+mo = cas.sort_mo(active_space, base=0)
+hcore, nuclear_repulsion_energy = cas.get_h1cas(mo)
+eri = pyscf.ao2mo.restore(1, cas.get_h2cas(mo), num_orbitals)
+
+# Compute exact energy
+exact_energy = cas.run().e_tot
+
+# Create a seed to control randomness throughout this workflow
+rng = np.random.default_rng(24)
+
+# Generate random samples
+bit_array = generate_bit_array_uniform(
+    10_000, num_orbitals * 2, rand_seed=rng
+)
+
+# Run SQD
+result = diagonalize_fermionic_hamiltonian(
+    hcore,
+    eri,
+    bit_array,
+    samples_per_batch=100,
+    norb=num_orbitals,
+    nelec=(num_elec_a, num_elec_b),
+    num_batches=1,
+    max_iterations=5,
+    symmetrize_spin=True,
+    seed=rng,
+)
+```
+
+```text
+converged SCF energy = -108.835236570775
+CASCI E = -109.046671778080  E(CI) = -32.8155692383187  S^2 = 0.0000000
+```
+
+```python
+sqd_energy = result.energy + nuclear_repulsion_energy
+print(f"Exact energy:  {exact_energy:.8f}")
+print(f"SQD energy:    {sqd_energy:.8f}")
+```
+
+```text
+Exact energy:  -109.04667178
+SQD energy:    -108.98469255
+```
+
+## Optimize the orbitals
+
+Orbital optimization searches for an orbital rotation that lowers the variational energy
+
+$$
+E = \langle \psi | \mathcal{U}^\dagger\, H\, \mathcal{U} | \psi \rangle
+$$
+
+of the SQD ground-state approximation $|\psi\rangle$. An orbital rotation is specified by
+an $N \times N$ unitary matrix $\mathbf{U}$ ($N$ is the number of spatial orbitals), which
+acts on the many-body state through the operator
+
+$$
+\mathcal{U} = \exp\left[\sum_{pq, \sigma} \log(\mathbf{U})_{pq}\, a^\dagger_{p\sigma} a_{q\sigma}\right].
+$$
+
+`ffsim.optimize_orbitals` returns the **matrix** $\mathbf{U}$, and applying it to the
+orbital basis (via `hamiltonian.rotated`) is equivalent to applying $\mathcal{U}$ to the
+state. See the
+[ffsim orbital-rotation explanation](https://qiskit-community.github.io/ffsim/explanations/orbital-rotation.html)
+for details.
+
+Since rotating the orbitals changes the Hamiltonian seen by the subspace, we alternate
+two steps until the energy stops improving:
+
+1. **Diagonalize** the Hamiltonian in the current basis over the fixed set of
+   configurations.
+2. **Optimize the orbitals** by finding the rotation that minimizes the energy of the
+   resulting state, then rotate the integrals into the new basis.
+
+We delegate the orbital-rotation step to
+[`ffsim.optimize_orbitals`](https://qiskit-community.github.io/ffsim/api/ffsim.html#ffsim.optimize_orbitals),
+which finds the energy-minimizing rotation from the one- and two-body reduced density
+matrices (RDMs) of the state. See
+[Sec. II A 4](https://arxiv.org/pdf/2405.05068) for details.
+### Why orbital optimization helps here
+
+The SCF molecular-orbital (MO) basis is stationary with respect to orbital rotations
+for the *full*-CI problem. But SQD works in a small truncated subspace (here a few
+hundred CI strings out of roughly 19 million full-CI determinants), for which the MO
+basis is generally not optimal, so rotating the orbitals lowers the energy the subspace
+can represent.
+
+```python
+import ffsim
+from pyscf import fci
+
+# ffsim's ``MolecularHamiltonian`` uses the same "chemist" ordering for the two-body
+# tensor as PySCF's ``eri``, and stores the nuclear repulsion energy as the constant
+# term so that expectation values come out as total energies.
+```
+
+### Alternate diagonalization and orbital optimization
+
+We keep the diagonalization subspace **fixed** to the configurations discovered by SQD
+above, so that each iteration isolates the effect of rotating the orbitals. Each
+iteration:
+
+1. **Diagonalizes** the Hamiltonian over the fixed subspace in the current basis, using
+   PySCF's selected-CI solver.
+2. **Builds the RDMs** of the resulting state, which is all `ffsim.optimize_orbitals`
+   needs.
+3. **Optimizes the orbitals**: `ffsim.optimize_orbitals` returns the energy-minimizing
+   rotation, which we apply to the integrals to move into the improved basis.
+
+We record the energy *before* each optimization step. Because the basis improves every
+iteration, this sequence decreases monotonically toward the best energy achievable in
+the fixed subspace.
+
+```python
+# Fix the diagonalization subspace to the configurations found by SQD.
+ci_strings = (result.sci_state.ci_strs_a, result.sci_state.ci_strs_b)
+nelec = (num_elec_a, num_elec_b)
+
+# Start from the MO basis in which we ran SQD.
+hamiltonian_opt = ffsim.MolecularHamiltonian(
+    hcore, eri, constant=nuclear_repulsion_energy
+)
+
+num_iters = 10
+for i in range(num_iters):
+    # Diagonalize over the fixed subspace in the current basis.
+    myci = fci.selected_ci.SelectedCI()
+    myci = fci.addons.fix_spin_(myci, ss=spin_sq)
+    _, amplitudes = fci.selected_ci.kernel_fixed_space(
+        myci,
+        hamiltonian_opt.one_body_tensor,
+        hamiltonian_opt.two_body_tensor,
+        num_orbitals,
+        nelec,
+        ci_strs=ci_strings,
+    )
+
+    # Build the RDMs and record the energy before re-optimizing the orbitals.
+    dm1, dm2 = myci.make_rdm12(amplitudes, num_orbitals, nelec)
+    rdm = ffsim.ReducedDensityMatrix(dm1, dm2)
+    energy = rdm.expectation(hamiltonian_opt).real
+    print(f"Iteration {i}: energy = {energy:.8f}")
+
+    # Rotate the Hamiltonian into the energy-minimizing basis for the next iteration.
+    # optimize_orbitals returns the unitary matrix U minimizing
+    # rdm.rotated(U).expectation(hamiltonian), equivalently
+    # rdm.expectation(hamiltonian.rotated(U.conj().T)), so we rotate by U^dagger.
+    orbital_rotation = ffsim.optimize_orbitals(rdm, hamiltonian_opt)
+    hamiltonian_opt = hamiltonian_opt.rotated(orbital_rotation.T.conj())
+```
+
+```text
+Iteration 0: energy = -108.98452447
+Iteration 1: energy = -108.99981993
+Iteration 2: energy = -109.00585329
+Iteration 3: energy = -109.00816569
+Iteration 4: energy = -109.00936616
+Iteration 5: energy = -109.01014322
+Iteration 6: energy = -109.01069439
+Iteration 7: energy = -109.01109308
+Iteration 8: energy = -109.01138928
+Iteration 9: energy = -109.01161411
+```
+
+### Compare the results
+
+Orbital optimization improves the fixed-subspace estimate, closing much of the gap to
+the exact energy while staying above it.
+
+```python
+# Diagonalize once more in the final optimized basis to report the improved energy.
+myci = fci.selected_ci.SelectedCI()
+myci = fci.addons.fix_spin_(myci, ss=spin_sq)
+_, amplitudes = fci.selected_ci.kernel_fixed_space(
+    myci,
+    hamiltonian_opt.one_body_tensor,
+    hamiltonian_opt.two_body_tensor,
+    num_orbitals,
+    nelec,
+    ci_strs=ci_strings,
+)
+dm1, dm2 = myci.make_rdm12(amplitudes, num_orbitals, nelec)
+energy_after_oo = (
+    ffsim.ReducedDensityMatrix(dm1, dm2).expectation(hamiltonian_opt).real
+)
+
+print(f"Exact energy:      {exact_energy:.8f}")
+print(f"SQD energy (MO):   {sqd_energy:.8f}")
+print(f"Energy after OO:   {energy_after_oo:.8f}")
+```
+
+```text
+Exact energy:      -109.04667178
+SQD energy (MO):   -108.98469255
+Energy after OO:   -109.01178727
+```

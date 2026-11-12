@@ -44,15 +44,54 @@ LOCAL_CONTENT_DIR = PROJECT_ROOT / "local-content"
 
 # Qiskit Addon sources — Phase 1: core addons with docs/tutorials/
 # Each entry: display name → {submodule dir name, notebook path within repo, pip package}
+# Only addons IBM's documentation no longer covers: their tutorials carry a
+# notice saying so (see ADDON_ARCHIVE_NOTICE). `docs` is the addon's own
+# documentation site, where IBM's addons overview (guides/addons) points.
+# `skip`: tutorials an IBM tutorial now covers (same technique and API; Jan,
+# 2026-11-12: "then we don't need them twice"); their routes redirect on the
+# 404 page (MANUAL in scripts/generate-retired-pages.py).
 ADDON_SOURCES = {
-    "Circuit Cutting":    {"repo": "qiskit-addon-cutting",    "path": "docs/tutorials", "pip": "qiskit-addon-cutting"},
-    "SQD":                {"repo": "qiskit-addon-sqd",        "path": "docs/tutorials", "pip": "qiskit-addon-sqd"},
-    "OBP":                {"repo": "qiskit-addon-obp",        "path": "docs/tutorials", "pip": "qiskit-addon-obp"},
-    "MPF":                {"repo": "qiskit-addon-mpf",        "path": "docs/tutorials", "pip": "qiskit-addon-mpf"},
-    "AQC-Tensor":         {"repo": "qiskit-addon-aqc-tensor", "path": "docs/tutorials", "pip": "qiskit-addon-aqc-tensor"},
-    "PNA":                {"repo": "qiskit-addon-pna",        "path": "docs/tutorials", "pip": "qiskit-addon-pna"},
-    "SLC":                {"repo": "qiskit-addon-slc",        "path": "docs/tutorials", "pip": "qiskit-addon-slc"},
+    "Circuit Cutting":    {"repo": "qiskit-addon-cutting",    "path": "docs/tutorials", "pip": "qiskit-addon-cutting",
+                           "docs": "https://qiskit.github.io/qiskit-addon-cutting",
+                           "skip": ["02_gate_cutting_to_reduce_circuit_depth.ipynb",   # tutorials/depth-reduction-with-circuit-cutting
+                                    "03_wire_cutting_via_move_instruction.ipynb"]},    # tutorials/wire-cutting
 }
+# IBM tutorials that cover the addons whose tutorials we dropped for that
+# reason (MPF, AQC-Tensor) and the dropped cutting tutorials; the
+# qiskit-addons index links them.
+ADDON_TUTORIALS_AT_IBM = {
+    "Circuit cutting: depth reduction": "/tutorials/depth-reduction-with-circuit-cutting",
+    "Circuit cutting: wire cutting": "/tutorials/wire-cutting",
+    "Multi-product formulas (MPF)": "/tutorials/multi-product-formula",
+    "AQC-Tensor": "/tutorials/approximate-quantum-compilation-for-time-evolution",
+}
+# Addons whose tutorials we used to take from their GitHub repos and that IBM
+# now documents itself under docs/addons/ (mirrored at /addons/, see
+# ADDON_DOCS_DIR); Jan, 2026-11-12: remove the old tutorial where a new page
+# exists. The old routes redirect on the 404 page (MANUAL in
+# scripts/generate-retired-pages.py). Display name → the addon's folder there.
+ADDONS_DOCUMENTED_BY_IBM = {
+    "SQD": "qiskit-addon-sqd",
+    "OBP": "qiskit-addon-obp",
+    "PNA": "qiskit-addon-pna",
+    "SLC": "qiskit-addon-slc",
+}
+ADDON_ARCHIVE_NOTICE = """<Admonition type="caution" title="Not part of IBM Quantum's documentation">
+IBM Quantum's documentation no longer has guides for {name}: its [addons overview](/guides/addons) links to the addon's own documentation at [{docs_label}]({docs}). This tutorial comes from the addon's GitHub repository ([Qiskit/{repo}](https://github.com/Qiskit/{repo})) and may be outdated.
+</Admonition>
+"""
+
+
+def add_addon_archive_notice(content: str, name: str, config: dict) -> str:
+    """Put ADDON_ARCHIVE_NOTICE after the "Open in Lab" banner (or the front matter)."""
+    notice = ADDON_ARCHIVE_NOTICE.format(
+        name=name, docs=config["docs"], repo=config["repo"],
+        docs_label=re.sub(r"^https://|/$", "", config["docs"]))
+    m = re.search(r"^<OpenInLabBanner[^\n]*/>\n", content, re.M)
+    if not m:
+        m = re.match(r"---\n.*?\n---\n", content, re.S)
+    at = m.end() if m else 0
+    return content[:at] + "\n" + notice + content[at:]
 
 # Upstream split docs/guides into subsites in Nov 2026 (Qiskit/documentation
 # #5899 "Create subsite for Qiskit SDK", #5925 "managed workflows subsite"):
@@ -74,6 +113,12 @@ KNOWN_GUIDE_SUBSITES = ["qiskit", "ibm-quantum-compute", "managed-workflows"]
 # (its own small subsite on IBM's site). The page stays /guides/<name> in the
 # main guides sidebar; the API reference links to IBM.
 FUNCTIONS_DIR = "docs/functions"
+# IBM's addon documentation (since June 2026): docs/addons/<addon>/, each with
+# its own _toc.json (parentUrl /docs/guides/addons) and its own sidebar on
+# IBM's site. Mirrored at the same path, /addons/<addon>/..., one sidebar per
+# addon. English only for now: translation/v2/english-only.json keeps these
+# pages and sidebars out of the translation pipeline and the label check.
+ADDON_DOCS_DIR = "docs/addons"
 
 # What to sync from upstream (content + images)
 CONTENT_PATHS = [
@@ -81,7 +126,9 @@ CONTENT_PATHS = [
     "docs/guides",
     *(f"docs/{s}" for s in KNOWN_GUIDE_SUBSITES),
     FUNCTIONS_DIR,
+    ADDON_DOCS_DIR,
     *(f"public/docs/images/{s}" for s in KNOWN_GUIDE_SUBSITES),
+    "public/docs/images/addons",
     "learning/courses",
     "learning/modules",
     "public/docs/images/tutorials",
@@ -332,13 +379,48 @@ def guide_subsites() -> list[dict]:
     return found
 
 
+_ADDON_DOCS_CACHE: Optional[list] = None
+
+
+def addon_docs() -> list[dict]:
+    """The addons in upstream docs/addons/ (see ADDON_DOCS_DIR).
+
+    Each entry: folder (the addon's folder name, also its route under
+    /addons/), sidebar (the Docusaurus sidebar id, "addons" + camelCase +
+    "Sidebar") and toc (the parsed _toc.json).
+    """
+    global _ADDON_DOCS_CACHE
+    if _ADDON_DOCS_CACHE is not None:
+        return _ADDON_DOCS_CACHE
+    found = []
+    for toc_path in sorted((UPSTREAM_DIR / ADDON_DOCS_DIR).glob("*/_toc.json")):
+        folder = toc_path.parent.name
+        camel = re.sub(r"-(\w)", lambda m: m.group(1).upper(), "-" + folder)
+        found.append({"folder": folder, "sidebar": f"addons{camel}Sidebar",
+                      "toc": json.loads(toc_path.read_text())})
+    _ADDON_DOCS_CACHE = found
+    return found
+
+
+def _addon_link(m: "re.Match") -> str:
+    """/docs/addons/<addon>/x → /addons/<addon>/x for an addon we mirror."""
+    prefix, addon, rest = m.group(1), m.group(2), m.group(3) or ""
+    if addon not in {a["folder"] for a in addon_docs()}:
+        return m.group(0)
+    rest = re.sub(r"/index$", "", rest.rstrip("/"))
+    return f"{prefix}/addons/{addon}{rest}"
+
+
 def rewrite_subsite_links(content: str) -> str:
     """/docs/<subsite>/x → /guides/x, and /docs/<subsite> → its overview page;
-    /docs/functions/<name> → /guides/<name> (see FUNCTIONS_DIR).
+    /docs/functions/<name> → /guides/<name> (see FUNCTIONS_DIR);
+    /docs/addons/<addon>/x → /addons/<addon>/x (see ADDON_DOCS_DIR).
 
     Runs before MDX_TRANSFORMS, whose catch-all would otherwise send these
     links to IBM's site.
     """
+    content = re.sub(r'(\(|href=")/docs/addons/([\w-]+)((?:/[\w./-]*)?)(?=[)"#?])',
+                     _addon_link, content)
     content = re.sub(r'(\(|href=")/docs/functions/([\w-]+)(?=[)"#?])', r'\1/guides/\2', content)
     for s in guide_subsites():
         folder = re.escape(s["folder"])
@@ -1272,6 +1354,78 @@ def process_guides():
           f"{stats['images']} images, {stats['skipped']} skipped")
 
 
+def process_addon_docs():
+    """Mirror upstream docs/addons/<addon>/ to docs/addons/<addon>/ (English only)."""
+    print("\n🧩 Processing addon documentation...")
+    src_root = UPSTREAM_DIR / ADDON_DOCS_DIR
+    dst_root = DOCS_OUTPUT / "addons"
+    nb_root = NOTEBOOKS_OUTPUT / "addons"
+    for d in (dst_root, nb_root):
+        if d.exists():
+            shutil.rmtree(d)
+    if not src_root.exists():
+        print(f"  Warning: {ADDON_DOCS_DIR} not found in upstream")
+        return
+    stats = {"mdx": 0, "ipynb": 0}
+    for addon in addon_docs():
+        src = src_root / addon["folder"]
+        for src_path in sorted(src.rglob("*")):
+            rel = src_path.relative_to(src_root)
+            if src_path.is_dir() or src_path.name == "_toc.json":
+                continue
+            if src_path.suffix == ".mdx":
+                content = src_path.read_text()
+                if src_path.name == "index.mdx":
+                    # A relative link on an index page resolves against the
+                    # parent route here (/addons/x/index is served at /addons/x).
+                    base = f"/addons/{rel.parent.as_posix()}/"
+                    content = re.sub(r'(\]\()(?![a-z]+:|/|#)', rf"\g<1>{base}", content)
+                dst = dst_root / rel
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                dst.write_text(transform_mdx(content, src_path))
+                stats["mdx"] += 1
+            elif src_path.suffix == ".ipynb":
+                dst = dst_root / rel.with_suffix(".mdx")
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                nb_rel = Path("addons") / rel
+                if convert_notebook(src_path, dst, notebook_path=nb_rel.as_posix()):
+                    stats["ipynb"] += 1
+                copy_notebook_with_rewrite(src_path, NOTEBOOKS_OUTPUT / nb_rel, nb_rel)
+    # Docusaurus strips a number prefix from a file name ("1-d-fermi-hubbard"
+    # → "d-fermi-hubbard"), so 1-d- and 2-d-fermi-hubbard would share an id
+    # and the URL would differ from IBM's. Pin both to the file name.
+    for page in dst_root.rglob("*.mdx"):
+        if re.match(r"^\d+\s*[-_.]+\s*[^-_.\s]", page.stem):
+            text = page.read_text()
+            if text.startswith("---\n"):
+                page.write_text(f"---\nid: {page.stem}\nslug: {page.stem}\n{text[4:]}")
+    print(f"  {len(addon_docs())} addons: {stats['mdx']} MDX, {stats['ipynb']} notebooks")
+
+
+def _addon_doc_id(url: str) -> Optional[str]:
+    """/docs/addons/<addon>/x → addons/<addon>/x (…/index for a folder), if mirrored."""
+    path = url.split('#')[0].rstrip('/')
+    if not path.startswith(f"/{ADDON_DOCS_DIR}/"):
+        return None
+    doc_id = url_to_doc_id(path)
+    if (DOCS_OUTPUT / f"{doc_id}.mdx").exists():
+        return doc_id
+    if (DOCS_OUTPUT / doc_id / "index.mdx").exists():
+        return f"{doc_id}/index"
+    return None
+
+
+def _local_ibm_url(url: str) -> Optional[str]:
+    """IBM's absolute URL of a tutorial or a course/module page we mirror → our route."""
+    m = re.match(r"^https://quantum\.cloud\.ibm\.com/(?:docs/)?((?:tutorials|learning/(?:courses|modules))/[\w/-]+?)/?(?:#.*)?$", url)
+    if not m:
+        return None
+    doc_id = m.group(1)
+    if (DOCS_OUTPUT / f"{doc_id}.mdx").exists() or (DOCS_OUTPUT / doc_id / "index.mdx").exists():
+        return f"/{doc_id}"
+    return None
+
+
 def generate_guides_sidebar():
     """Parse guides _toc.json and generate structured sidebar configuration."""
     print("\n📋 Generating guides sidebar from _toc.json...")
@@ -1294,6 +1448,11 @@ def generate_guides_sidebar():
         for p in src.glob('*'):
             if p.suffix in ('.mdx', '.ipynb') and p.stem != 'index':
                 home[f"guides/{p.stem}"] = sub["sidebar"]
+    for addon in addon_docs():
+        overview_id = f"addons/{addon['folder']}/index"
+        overviews[overview_id] = addon["sidebar"]
+        for p in (DOCS_OUTPUT / "addons" / addon["folder"]).rglob('*.mdx'):
+            home[p.relative_to(DOCS_OUTPUT).with_suffix('').as_posix()] = addon["sidebar"]
 
     sidebars: Dict[str, list] = {}
     for sub in subsites:
@@ -1321,6 +1480,28 @@ def generate_guides_sidebar():
         })
         items.extend(toc_children_to_sidebar(toc.get('children', []), guides=ctx))
         sidebars[sub["sidebar"]] = items
+
+    # One sidebar per addon (ADDON_DOCS_DIR), built the same way. Its back
+    # link goes to the toc's parent, /docs/guides/addons, which we keep as
+    # /guides/addons.
+    for addon in addon_docs():
+        toc = addon["toc"]
+        if not (DOCS_OUTPUT / "addons" / addon["folder"] / "index.mdx").exists():
+            continue
+        # English-only sidebars (translation/v2/english-only.json) can keep
+        # IBM's entry labels ("Documentation home"): nothing to translate.
+        ctx = {"sidebar": addon["sidebar"], "home": home, "overviews": overviews,
+               "labels": True}
+        parent = toc.get('parentUrl', '/docs/guides/addons')
+        parent = re.sub(r'^/docs/guides(?=/|$)', '/guides', parent)
+        sidebars[addon["sidebar"]] = [
+            {'type': 'link', 'href': parent, 'label': 'Guides',
+             'key': 'back', 'className': 'dq-subsite-back'},
+            {'type': 'link', 'href': f"/addons/{addon['folder']}",
+             'label': toc.get('title', addon['folder']),
+             'key': 'title', 'className': 'dq-subsite-title'},
+            *toc_children_to_sidebar(toc.get('children', []), guides=ctx),
+        ]
 
     GENERATED_DIR.mkdir(parents=True, exist_ok=True)
     sidebar_json = GENERATED_DIR / "sidebar-guides.json"
@@ -1408,13 +1589,19 @@ def _guide_entry(doc_id: str, child: dict, guides: dict) -> object:
             item = {'type': 'doc', 'id': doc_id}
         if extra:
             item['customProps'] = {**item.get('customProps', {}), **extra['customProps']}
+        if guides.get('labels') and child.get('title'):
+            item['label'] = child['title']
     if classes:
         item['className'] = ' '.join(classes)
     return item
 
 
 def _guide_doc_id(url: str, guides: dict) -> str:
-    """/docs/qiskit/foo → guides/foo; /docs/qiskit → guides/qiskit-sdk."""
+    """/docs/qiskit/foo → guides/foo; /docs/qiskit → guides/qiskit-sdk;
+    /docs/addons/x → addons/x/index (see _addon_doc_id)."""
+    addon_id = _addon_doc_id(url)
+    if addon_id:
+        return addon_id
     doc_id = url_to_doc_id(url.split('#')[0])
     head, _, rest = doc_id.partition('/')
     if head == 'functions' and rest and '/' not in rest:
@@ -1443,8 +1630,9 @@ def toc_children_to_sidebar(children: list, parent_key: str = "",
     items = []
     for child in children:
         if 'children' in child and child['children']:
-            # "Lessons"/"Modules" are wrappers in upstream _toc.json — unwrap children directly
-            if child.get('title') in ('Lessons', 'Modules'):
+            # "Lessons"/"Modules" are wrappers in upstream _toc.json — unwrap children directly;
+            # so is an untitled section (the addon tocs open with one).
+            if child.get('title') in ('Lessons', 'Modules') or (guides and not child.get('title')):
                 items.extend(toc_children_to_sidebar(child['children'], parent_key, guides))
                 continue
             # Category with sub-items
@@ -1473,8 +1661,12 @@ def toc_children_to_sidebar(children: list, parent_key: str = "",
                 items.append(cat)
         elif 'url' in child:
             url = child['url']
-            # External URLs → Docusaurus link items
+            # External URLs → Docusaurus link items (IBM's URL of a page we
+            # mirror, as the addon tocs give their tutorials, → our page)
             if url.startswith('http://') or url.startswith('https://'):
+                local = _local_ibm_url(url) if guides else None
+                if local:
+                    url = local
                 items.append({
                     'type': 'link',
                     'label': child.get('title', url),
@@ -1483,7 +1675,11 @@ def toc_children_to_sidebar(children: list, parent_key: str = "",
                 continue
             if guides:
                 doc_id = _guide_doc_id(url, guides)
+                # addons/ pages we mirror were resolved above (…/index).
                 external = ('addons/', 'api/', 'functions/')
+                if doc_id.startswith('addons/') and (DOCS_OUTPUT / f"{doc_id}.mdx").exists():
+                    items.append(_guide_entry(doc_id, child, guides))
+                    continue
                 if doc_id.startswith(external) or not (DOCS_OUTPUT / f"{doc_id}.mdx").exists():
                     if doc_id.startswith(external):
                         items.append({'type': 'link', 'label': child.get('title', doc_id),
@@ -2039,6 +2235,7 @@ def sync_upstream_images():
         # Guide subsites with images of their own (only some have them).
         *((f"public/docs/images/{s}", f"docs/images/{s}") for s in KNOWN_GUIDE_SUBSITES
           if (UPSTREAM_DIR / "public/docs/images" / s).exists()),
+        ("public/docs/images/addons", "docs/images/addons"),
         ("public/docs/open-source", "docs/open-source"),
         ("public/learning/images", "learning/images"),
     ]
@@ -2084,6 +2281,7 @@ def sync_upstream_images():
     nb_image_mappings = [
         (STATIC_DIR / "docs/images/tutorials", NOTEBOOKS_OUTPUT / "docs/images/tutorials"),
         (STATIC_DIR / "docs/images/guides", NOTEBOOKS_OUTPUT / "docs/images/guides"),
+        (STATIC_DIR / "docs/images/addons", NOTEBOOKS_OUTPUT / "docs/images/addons"),
         (STATIC_DIR / "learning/images", NOTEBOOKS_OUTPUT / "learning/images"),
     ]
 
@@ -2905,6 +3103,7 @@ def scan_notebook_deps():
         ("tutorials", UPSTREAM_DIR / "docs" / "tutorials"),
         ("guides", UPSTREAM_DIR / "docs" / "guides"),
         *(("guides", UPSTREAM_DIR / "docs" / s) for s in KNOWN_GUIDE_SUBSITES),
+        ("addon docs", UPSTREAM_DIR / ADDON_DOCS_DIR),
         ("courses", UPSTREAM_DIR / "learning" / "courses"),
         ("modules", UPSTREAM_DIR / "learning" / "modules"),
     ]
@@ -2997,43 +3196,50 @@ def process_addons():
     if notebooks_dst.exists():
         shutil.rmtree(notebooks_dst)
     notebooks_dst.mkdir(parents=True)
+    # Their images too (tracked in git; only these pages use them), so an
+    # addon dropped from ADDON_SOURCES leaves nothing behind.
+    if (STATIC_DIR / "img" / "qiskit-addons").exists():
+        shutil.rmtree(STATIC_DIR / "img" / "qiskit-addons")
 
     # Generate the Qiskit Addons index page
     addon_rows = []
     for display_name, config in ADDON_SOURCES.items():
         pip_pkg = config["pip"]
         desc_map = {
-            "Circuit Cutting": "Reduce circuit width and depth by cutting gates and wires",
-            "SQD": "Sample-based Quantum Diagonalization for ground state estimation",
-            "OBP": "Operator Back-Propagation to reduce circuit depth",
-            "MPF": "Multi-Product Formulas for improved Hamiltonian simulation",
-            "AQC-Tensor": "Approximate Quantum Compilation with tensor networks",
-            "PNA": "Propagated Noise Absorption for error mitigation",
-            "SLC": "Shaded Lightcones for reducing PEC sampling overhead",
+            "Circuit Cutting": "Reduce circuit width by cutting gates, and find cuts automatically",
         }
         desc = desc_map.get(display_name, "")
         addon_rows.append(f"| **{display_name}** | `{pip_pkg}` | {desc} |")
+    documented = ", ".join(f"[{name}](/addons/{folder})"
+                           for name, folder in ADDONS_DOCUMENTED_BY_IBM.items())
+    at_ibm = "\n".join(f"- [{name}]({url})" for name, url in ADDON_TUTORIALS_AT_IBM.items())
 
     index_content = f"""---
 title: Qiskit Addons
 sidebar_label: Overview
 sidebar_position: 1
-description: Tutorials for official Qiskit Addons — circuit cutting, sample-based quantum diagonalization, operator backpropagation, and more.
+description: Circuit-cutting tutorials from the Qiskit addon's GitHub repository, and where IBM Quantum's documentation covers the other addons.
 ---
 
 # Qiskit Addons
 
-[Qiskit Addons](https://github.com/Qiskit?q=qiskit-addon) are official extension packages that provide specialized quantum computing algorithms and techniques. Each addon focuses on a specific area and includes tutorials with executable code.
+[Qiskit Addons](https://github.com/Qiskit?q=qiskit-addon) are official extension packages that provide specialized quantum computing algorithms and techniques.
 
-## Available Addons
+## Tutorials here
 
 | Addon | Package | Description |
 |-------|---------|-------------|
 {chr(10).join(addon_rows)}
 
-All tutorials can be executed directly in your browser using Binder, or on your own Jupyter server.
+IBM Quantum's documentation no longer has guides for this addon, and no IBM tutorial covers these two. They come from the addon's GitHub repository and may be outdated. They can be executed directly in your browser using Binder, or on your own Jupyter server.
 
-For API documentation, visit the individual addon repos on [GitHub](https://github.com/Qiskit?q=qiskit-addon).
+## In IBM Quantum's documentation
+
+IBM tutorials, mirrored on this site, now cover the other addon tutorials that used to be here:
+
+{at_ibm}
+
+IBM Quantum also documents these addons itself, mirrored here: {documented}. All addons: [Advanced techniques - Qiskit addons](/guides/addons).
 """
     index_path = addons_dst / "index.mdx"
     index_path.write_text(index_content)
@@ -3057,11 +3263,15 @@ For API documentation, visit the individual addon repos on [GitHub](https://gith
         addon_nb_dst.mkdir(parents=True, exist_ok=True)
 
         for src_path in sorted(tutorials_src.glob('*.ipynb')):
+            if src_path.name in config.get("skip", ()):
+                continue
             rel_name = src_path.name
             dst_path = addon_dst / src_path.with_suffix('.mdx').name
             notebook_path = f"qiskit-addons/{slug_name}/{rel_name}"
 
             if convert_notebook(src_path, dst_path, notebook_path=notebook_path):
+                dst_path.write_text(add_addon_archive_notice(
+                    dst_path.read_text(), display_name, config))
                 total_stats["ipynb"] += 1
                 print(f"  ✓ {display_name}: {rel_name} → .mdx")
             else:
@@ -3182,7 +3392,8 @@ def main():
     parser.add_argument("--sample-only", action="store_true",
                         help="Only create sample content (for testing)")
     parser.add_argument("--skip", action="append", default=[],
-                        choices=["tutorials", "courses", "modules", "guides", "addons", "workshops"],
+                        choices=["tutorials", "courses", "modules", "guides", "addons",
+                                 "addon-docs", "workshops"],
                         help="Skip specific content types (can be repeated)")
     parser.add_argument("--scan-deps", action="store_true",
                         help="Scan notebooks for missing deps (report only, no conversion)")
@@ -3261,6 +3472,8 @@ def main():
             process_tutorials()
         if "guides" not in skip:
             process_guides()
+        if "addon-docs" not in skip:
+            process_addon_docs()
         if "courses" not in skip:
             process_courses()
         if "modules" not in skip:
@@ -3353,6 +3566,7 @@ def _guide_subsite_source(local_file: Path) -> Optional[str]:
 
 PAGE_DATE_PATH_MAP = {
     "guides": "docs/guides",
+    "addons": ADDON_DOCS_DIR,
     "tutorials": "docs/tutorials",
     "learning/courses": "learning/courses",
     "learning/modules": "learning/modules",

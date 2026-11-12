@@ -43,6 +43,7 @@ from __future__ import annotations
 
 import hashlib
 import importlib.util
+import json
 import os
 import re
 import subprocess
@@ -242,8 +243,19 @@ def tr_path(locale: str, rel: str) -> Path:
     return I18N / locale / DOC_SUB / rel
 
 
+# Pages kept in English on every language site (translation/v2/english-only.json):
+# no POT, no PO, never rendered; Docusaurus serves the English page.
+ENGLISH_ONLY = tuple(json.loads((Path(__file__).with_name("english-only.json"))
+                                .read_text(encoding="utf-8"))["docs"])
+
+
+def is_english_only(rel: str) -> bool:
+    return rel.startswith(ENGLISH_ONLY)
+
+
 def all_pages() -> list[str]:
-    return sorted(str(p.relative_to(DOCS)) for p in DOCS.rglob("*.mdx"))
+    return sorted(rel for rel in (str(p.relative_to(DOCS)) for p in DOCS.rglob("*.mdx"))
+                  if not is_english_only(rel))
 
 
 def is_genuine(path: Path) -> bool:
