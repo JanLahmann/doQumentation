@@ -1,0 +1,160 @@
+---
+title: "Scale SQD chemistry workflows with the SBD eigensolver"
+sidebar_label: "Scale SQD chemistry workflows with the SBD eigensolver"
+description: "Scale SQD chemistry workflows with the SBD eigensolver for the latest version of Sample-based quantum diagonalization (SQD)"
+notebook_path: "addons/qiskit-addon-sqd/guides/integrate-sbd.ipynb"
+---
+
+
+<OpenInLabBanner notebookPath="addons/qiskit-addon-sqd/guides/integrate-sbd.ipynb" />
+
+
+
+```python
+# Added by doQumentation — installs the packages this notebook needs if they are missing
+import importlib.util
+
+_needed = {"numpy": "numpy", "pyscf": "pyscf", "qiskit_addon_sqd": "qiskit-addon-sqd", "sbd": "sbd"}
+_missing = [pip for module, pip in _needed.items()
+            if importlib.util.find_spec(module) is None]
+# One at a time, so a package that fails to install does not block the others
+for _pip in _missing:
+    %pip install -q {_pip}
+if not _missing:
+    print("\u2713 All required packages are installed")
+```
+
+This guide shows how to use the [SBD eigensolver](https://github.com/Qiskit/sbd-eigensolver-python) as an alternative selected configuration interaction (SCI) solver to diagonalize larger fermionic problems beyond what the default PySCF solver can support. SBD (Selected Basis Diagonalization) runs in-process, is parallelized with MPI, and offers both CPU and CUDA backends. For information on how to install and use it, see the [SBD documentation](https://github.com/Qiskit/sbd-eigensolver-python).
+
+SBD compiles a C++ extension against the MPI and BLAS libraries available on the machine, so you must install both before you install the `sbd` extra:
+
+```bash
+pip install qiskit-addon-sqd[sbd]
+```
+
+Because `solve_sci_batch` already matches the solver interface that `diagonalize_fermionic_hamiltonian` expects, you can pass it directly to `sci_solver` after you bind its configuration options with `functools.partial`. To run on a CUDA-capable GPU instead of the CPU, pass `device_config=DeviceConfig.gpu()` from `sbd.device_config`.
+
+For more details on the SQD code used in this example, see the [chemistry Hamiltonian tutorial](/tutorials/sample-based-quantum-diagonalization).
+
+```python
+from functools import partial
+
+import numpy as np
+import pyscf
+import pyscf.cc
+import pyscf.mcscf
+from qiskit_addon_sqd.counts import generate_bit_array_uniform
+from qiskit_addon_sqd.fermion import diagonalize_fermionic_hamiltonian
+from sbd.sbd_solver import solve_sci_batch
+
+# Specify molecule properties
+num_orbitals = 16
+num_elec_a = num_elec_b = 5
+spin_sq = 0
+
+# Build N2 molecule
+mol = pyscf.gto.Mole()
+mol.build(
+    atom=[["N", (0, 0, 0)], ["N", (1.0, 0, 0)]],
+    basis="6-31g",
+    symmetry="Dooh",
+)
+
+# Define active space
+n_frozen = 2
+active_space = range(n_frozen, mol.nao_nr())
+
+# Get molecular integrals
+scf = pyscf.scf.RHF(mol).run()
+num_orbitals = len(active_space)
+n_electrons = int(sum(scf.mo_occ[active_space]))
+num_elec_a = (n_electrons + mol.spin) // 2
+num_elec_b = (n_electrons - mol.spin) // 2
+cas = pyscf.mcscf.CASCI(scf, num_orbitals, (num_elec_a, num_elec_b))
+mo = cas.sort_mo(active_space, base=0)
+hcore, nuclear_repulsion_energy = cas.get_h1cas(mo)
+eri = pyscf.ao2mo.restore(1, cas.get_h2cas(mo), num_orbitals)
+
+# Compute exact energy
+exact_energy = cas.run().e_tot
+
+# Create a seed to control randomness throughout this workflow
+rng = np.random.default_rng(24)
+
+# Generate random samples
+bit_array = generate_bit_array_uniform(
+    10_000, num_orbitals * 2, rand_seed=rng
+)
+
+# Bind the SBD solver options. method=0 selects the Davidson eigensolver.
+sbd_solver = partial(
+    solve_sci_batch,
+    sbd_config={"method": 0, "eps": 1e-5, "max_it": 10, "max_nb": 10},
+)
+
+# Run SQD
+result = diagonalize_fermionic_hamiltonian(
+    hcore,
+    eri,
+    bit_array,
+    samples_per_batch=300,
+    norb=num_orbitals,
+    nelec=(num_elec_a, num_elec_b),
+    num_batches=5,
+    max_iterations=5,
+    sci_solver=sbd_solver,
+    symmetrize_spin=True,
+    seed=rng,
+)
+```
+
+```text
+WARN: Unable to to identify input symmetry using original axes.
+Different symmetry axes will be used.
+```
+
+```text
+converged SCF energy = -108.835236570774
+```
+
+```text
+CASCI E = -109.046671778080  E(CI) = -32.8155692383188  S^2 = 0.0000000
+```
+
+```text
+Energy = -28.25375765030941
+Energy = -28.25375765030941
+Energy = -28.25375765030941
+Energy = -28.25375765030941
+Energy = -28.25375765030941
+Energy = -30.63923484895107
+Energy = -31.84189676459039
+Energy = -32.67859713028513
+Energy = -31.68346579646724
+Energy = -31.89038148016397
+Energy = -32.77440443557443
+Energy = -32.7445862988791
+Energy = -32.77705680502877
+Energy = -32.781393512705
+Energy = -32.76632732988578
+Energy = -32.80004322621618
+Energy = -32.79978483683345
+Energy = -32.79978311278118
+Energy = -32.79811950451766
+Energy = -32.80031839350911
+Energy = -32.80388159827887
+Energy = -32.80421476938036
+Energy = -32.80490490614043
+Energy = -32.80449612243751
+Energy = -32.80517636244122
+```
+
+```python
+print(f"Exact energy: {exact_energy}")
+print(f"Estimated energy: {result.energy + nuclear_repulsion_energy}")
+```
+
+```text
+Exact energy: -109.04667177808021
+Estimated energy: -109.03627890220267
+```

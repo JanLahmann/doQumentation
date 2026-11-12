@@ -1,0 +1,383 @@
+---
+title: "How to compute custom bounds"
+sidebar_label: "How to compute custom bounds"
+description: "How to compute custom bounds for the latest version of Shaded lightcones"
+notebook_path: "addons/qiskit-addon-slc/guides/custom-bounds.ipynb"
+---
+
+
+<OpenInLabBanner notebookPath="addons/qiskit-addon-slc/guides/custom-bounds.ipynb" />
+
+
+`compute_forward_bounds` and `compute_backward_bounds` are convenience wrappers. Both are built from
+the same three pieces, which the public API exposes:
+
+- A **norm function**, which bounds a single evolved Pauli error term
+- A **light cone**, which seeds what the error terms are evolved toward
+- `compute_bounds`, which iterates the circuit and distributes the per-term work
+
+Assembling them yourself means you can bound something the wrappers don't cover. This guide works
+through one case where that is worth doing: a **mirror circuit**, where the usual backward bound is
+needlessly loose.
+## What the wrappers actually do
+
+The two wrappers differ in the three places listed above:
+
+| | `compute_forward_bounds` | `compute_backward_bounds` |
+| --- | --- | --- |
+| circuit | as given | `remove_measure(circuit).inverse()` |
+| norm function | `time_evolved_norm_forward`, against the observable | `time_evolved_norm_backward`, against the initial state |
+| light cone | `LightCone.initialize_from_pauli`, seeded from the observable | `LightCone.initialize_from_measurements`, seeded from every active qubit |
+| `backwards` | `False` | `True` |
+
+The forward bound asks *"How much can this error change the observable I am about to measure?"* and
+answers it with the spectral norm of a commutator. The backward bound asks *"How much can this error
+change the state I started from?"* and answers with a nuclear norm, taking that state to be the
+all-zero state on every active qubit. They are different questions, and each is the right one for
+errors in its own half of the circuit.
+## The mirror circuit case
+
+A mirror circuit applies some unitary and then undoes it: $U^\dagger U$. These appear whenever
+the ideal outcome has to be known exactly (generally Loschmidt echoes, randomized benchmarking, and
+verification experiments).
+
+Mirror circuits have a property the generic backward bound cannot exploit. Because the second half
+is the inverse of the first, *evolving an error backward to the initial state* traverses the same
+gates as *evolving it forward to the observable*. The two questions coincide, so the sharper
+forward-style bound is valid for the backward direction too.
+
+```python
+# Added by doQumentation — installs the packages this notebook needs if they are missing
+import importlib.util
+
+_needed = {"numpy": "numpy", "qiskit": "qiskit", "qiskit_addon_slc": "qiskit-addon-slc", "samplomatic": "samplomatic"}
+_missing = [pip for module, pip in _needed.items()
+            if importlib.util.find_spec(module) is None]
+# One at a time, so a package that fails to install does not block the others
+for _pip in _missing:
+    %pip install -q {_pip}
+if not _missing:
+    print("\u2713 All required packages are installed")
+```
+
+```python
+import numpy as np
+from qiskit import QuantumCircuit
+from qiskit.quantum_info import Pauli
+from qiskit_addon_slc.utils import generate_noise_model_paulis
+from samplomatic.transpiler import generate_boxing_pass_manager
+from samplomatic.utils import find_unique_box_instructions
+
+def trotter_ising_circuit(num_qubits, num_steps, rx_angle, rzz_angle):
+    """Trotterized transverse-field Ising evolution on a 1D chain."""
+    circuit = QuantumCircuit(num_qubits)
+    for _ in range(num_steps):
+        circuit.rx(rx_angle, range(num_qubits))
+        circuit.barrier()
+        for start in (0, 1):  # even then odd bonds
+            for i in range(start, num_qubits - 1, 2):
+                circuit.rzz(rzz_angle, i, i + 1)
+        circuit.barrier()
+    return circuit
+
+num_qubits = 10
+# The circuit of the quickstart guide...
+forward_half = trotter_ising_circuit(
+    num_qubits, num_steps=4, rx_angle=np.pi / 16, rzz_angle=-np.pi / 3
+)
+# ...followed by its inverse. The ideal result is the initial state.
+circuit = forward_half.compose(forward_half.inverse())
+
+observable = Pauli("I" * num_qubits).compose("Z", [num_qubits // 2])
+
+boxing_pass = generate_boxing_pass_manager(
+    inject_noise_targets="all",
+    inject_noise_strategy="individual_modification",
+    inject_noise_site="after",
+    twirling_strategy="active",
+    remove_barriers="never",
+)
+boxed_circuit = boxing_pass.run(circuit)
+noise_model_paulis = generate_noise_model_paulis(
+    find_unique_box_instructions(boxed_circuit)
+)
+
+print(f"mirror circuit: {num_qubits} qubits, depth {circuit.depth()}")
+print(f"noisy layers: {len(noise_model_paulis)}")
+```
+
+```text
+mirror circuit: 10 qubits, depth 24
+noisy layers: 4
+```
+
+## Assemble the custom bound
+
+The recipe keeps what `compute_backward_bounds` does with the circuit (strip the measurements,
+invert it, and iterate it with `backwards=True`) and substitutes the other two pieces: the forward
+norm function, and a light cone seeded from the observable with `LightCone.initialize_from_pauli`,
+exactly as `compute_forward_bounds` seeds its own. Each substitution is one line.
+
+```python
+from functools import partial
+
+from qiskit_addon_slc.bounds import (
+    LightCone,
+    compute_bounds,
+    time_evolved_norm_forward,
+)
+from qiskit_addon_slc.utils import remove_measure
+
+def compute_mirror_backward_bounds(
+    circuit,
+    noise_model_paulis,
+    /,
+    observable,
+    *,
+    evolution_max_terms=1_000_000,
+    **kwargs,
+):
+    """Bounds the backward direction of a mirror circuit with a forward-style bound.
+
+    Valid only for circuits whose second half inverts the first: the backward evolution then
+    traverses the same gates as the forward one, and reproduces the forward bounds.
+    """
+    # As `compute_backward_bounds` does: strip measurements and invert, so that walking the circuit
+    # backwards from its end becomes walking the inverted circuit forwards.
+    circuit = remove_measure(circuit).inverse()
+
+    # The substitution: the forward norm function, bounding against the observable rather than
+    # against the initial state.
+    norm_fn = partial(
+        time_evolved_norm_forward,
+        observable=observable,
+        evolution_max_terms=evolution_max_terms,
+    )
+
+    # Seed the light cone from the observable, not from every active qubit.
+    light_cone = LightCone.initialize_from_pauli(circuit, observable)
+
+    return compute_bounds(
+        circuit,
+        noise_model_paulis,
+        light_cone,
+        norm_fn,
+        backwards=True,
+        **kwargs,
+    )
+```
+
+## How much it gains
+
+Comparing against the stock backward bound on the same circuit, summarized the same way as in the
+[configuration guide](/addons/qiskit-addon-slc/guides/configuration-options): the mean bound and its standard deviation,
+followed by the share of terms bounded by 0, with a bound computed in between, and left at the
+trivial 2.0.
+
+```python
+from qiskit_addon_slc.bounds import (
+    compute_backward_bounds,
+    compute_forward_bounds,
+)
+
+forward_bounds = compute_forward_bounds(
+    boxed_circuit, noise_model_paulis, observable
+)
+stock_backward = compute_backward_bounds(boxed_circuit, noise_model_paulis)
+custom_backward = compute_mirror_backward_bounds(
+    boxed_circuit, noise_model_paulis, observable
+)
+
+def summarize(label, bounds):
+    """Prints a one-line summary of a set of bounds."""
+    rates = np.concatenate([bound.rates for bound in bounds.values()])
+    # The bounds are floating-point results, so a term counts as bounded by 0, or as left at the
+    # trivial 2.0, when it is within rounding error of that value.
+    exact = np.isclose(rates, 0.0, rtol=0.0, atol=1e-12)
+    trivial = np.isclose(rates, 2.0, rtol=0.0, atol=1e-12)
+    computed = ~exact & ~trivial
+    print(
+        f"{label:18} mean {rates.mean():.4f} ± {rates.std():.3f} │ "
+        f"at 0: {exact.mean():4.0%}  computed: {computed.mean():4.0%}  "
+        f"at 2.0: {trivial.mean():4.0%}"
+    )
+
+summarize("forward", forward_bounds)
+summarize("backward (stock)", stock_backward)
+summarize("backward (custom)", custom_backward)
+```
+
+```text
+forward            mean 0.4323 ± 0.679 │ at 0:  38%  computed:  61%  at 2.0:   1%
+backward (stock)   mean 1.7218 ± 0.592 │ at 0:   0%  computed:  95%  at 2.0:   5%
+backward (custom)  mean 0.4323 ± 0.679 │ at 0:  38%  computed:  61%  at 2.0:   1%
+```
+
+The stock backward bound sits near the trivial value of 2.0, which carries almost no information. On
+a mirror circuit, every error is "close to the initial state" in the sense that bound measures, so
+it cannot discriminate between terms. The custom bound is several times tighter and bounds many of the terms by 0.
+
+To check the implementation, the two can be compared box by box. For every box, the
+custom backward bound comes out **identical** to that same box's forward bound, up to rounding
+error. Both bound the same error at the same point in the circuit, and on a mirror circuit the gates
+after that point cancel to the inverse of the gates before it, so the two computations evaluate the
+same quantity from opposite ends:
+
+```python
+matches = sum(
+    np.allclose(forward_bounds[box_id].rates, custom_backward[box_id].rates)
+    for box_id in forward_bounds
+)
+print(f"{matches} of {len(forward_bounds)} boxes match the forward bounds")
+
+worst = max(
+    np.abs(forward_bounds[box_id].rates - custom_backward[box_id].rates).max()
+    for box_id in forward_bounds
+)
+print(f"largest disagreement across all terms: {worst:.2e}")
+```
+
+```text
+16 of 16 boxes match the forward bounds
+largest disagreement across all terms: 6.00e-15
+```
+
+<div class="alert alert-info">
+
+**Note:** This equality is a property of the mirror structure, not of the technique. On a circuit
+that is not self-inverting, the same substitution still runs but no longer computes a *valid* bound
+for the backward direction: it answers the forward question about a circuit half where that
+question does not apply. **Only use this when the second half of your circuit inverts the
+first.**
+
+</div>
+
+## Feed it into the rest of the workflow
+
+The result is an ordinary `Bounds` dictionary, so everything that follows is unchanged.
+
+On a mirror circuit there is also no reason to compute either bound for the whole circuit. The
+forward bounds are only needed for the boxes of $U^\dagger$, counted from the end, and the backward
+bounds only for the boxes of $U$, counted from the start. `max_num_boxes` therefore limits each of
+them to half of the noisy boxes, and `merge_bounds` joins the two halves.
+
+This is how the bounds are used in practice, and it means the box-for-box comparison above is no
+longer available: it needs both bounds for every box. It is a check of the implementation for this guide, not workflow step.
+
+```python
+from qiskit.quantum_info import PauliLindbladMap, QubitSparsePauliList
+from qiskit_addon_slc.bounds import compute_local_scales, merge_bounds
+
+# Stand-in for rates that a noise-learning experiment would measure on hardware.
+rng = np.random.default_rng(42)
+noise_rates = {
+    layer: PauliLindbladMap.from_components(
+        rng.random(len(terms)) * 5e-3,
+        QubitSparsePauliList.from_sparse_list(
+            terms.to_sparse_list(), terms.num_qubits
+        ),
+    )
+    for layer, terms in noise_model_paulis.items()
+}
+
+# Compute each bound for its own half of the mirror circuit only. `forward_bounds` has an entry
+# for every noisy box, which are the boxes `max_num_boxes` counts.
+half = len(forward_bounds) // 2
+half_forward = compute_forward_bounds(
+    boxed_circuit, noise_model_paulis, observable, max_num_boxes=half
+)
+half_stock = compute_backward_bounds(
+    boxed_circuit, noise_model_paulis, max_num_boxes=half
+)
+half_custom = compute_mirror_backward_bounds(
+    boxed_circuit, noise_model_paulis, observable, max_num_boxes=half
+)
+
+print(
+    f"each bound computed for {half} of {len(forward_bounds)} noisy boxes\n"
+)
+print(f"{'bounds':34} {'overhead':>12} {'residual bias':>14}")
+for label, bounds in (
+    (
+        "forward + stock backward",
+        merge_bounds(boxed_circuit, half_forward, half_stock, noise_rates),
+    ),
+    (
+        "forward + custom backward",
+        merge_bounds(boxed_circuit, half_forward, half_custom, noise_rates),
+    ),
+    ("forward only, whole circuit", forward_bounds),
+):
+    _, cost, bias = compute_local_scales(
+        boxed_circuit, bounds, noise_rates, bias_tolerance=0.05
+    )
+    print(f"{label:34} {cost:12.4f} {bias:14.4f}")
+```
+
+```text
+Optimal spacetime partitioning not implemented! Just partitioning list of noisy boxes.
+Optimal spacetime partitioning not implemented! Just partitioning list of noisy boxes.
+```
+
+```text
+each bound computed for 8 of 16 noisy boxes
+
+bounds                                 overhead  residual bias
+forward + stock backward             29848.0583         0.0498
+forward + custom backward              465.4028         0.0498
+forward only, whole circuit            465.4028         0.0498
+```
+
+With the stock backward bounds, the sampling overhead is far larger. `merge_bounds` uses the
+backward bounds up to one switch point in the circuit and the forward bounds from there on,
+choosing the point that minimizes the total bias. With each bound computed for one half, that point
+falls in the middle of the circuit, so the boxes of $U$ are covered by backward bounds alone. The
+stock backward bound is close to the trivial 2.0 there, which drives the overhead up. The custom
+one is as tight as the forward bound would have been, so the overhead matches that of the complete
+forward bounds.
+
+That raises the obvious question of why to bother, when the complete forward bounds alone give the
+same result. The answer is cost. A forward bound for a box early in the circuit evolves its error
+through the rest of $U$ and then all of $U^\dagger$, which is the longest and widest evolution in
+the circuit. The evolved operator can grow exponentially in the number of non-Clifford gates
+it passes through, and computing the commutator's spectral norm gets exponentially more expensive as
+the light cone widens. In the half-and-half approach, no error is evolved through more than half of
+the circuit.
+
+The saving therefore grows with the circuit depth. More importantly, the complete forward
+bounds stop being computable long before the halfway ones do. Once the evolutions of the early
+boxes exceed `evolution_max_terms` or `eigval_max_qubits`, their bounds are truncated or fall back
+to the triangle inequality, and eventually they cost too much to compute. Wherever that point
+lies, the half-and-half approach only needs it to fall somewhere in the first half of the circuit.
+The forward bounds have to reach no further than the middle, and on a mirror circuit, the backward
+bounds for the boxes of $U$ evolve their errors back to the start through as much of the
+circuit as the forward bounds for the matching boxes of $U^\dagger$ do to the end, so they run out
+at the same depth.
+
+<div class="alert alert-info">
+
+**Note:** Why compute backward bounds for the boxes of $U$, when the forward bounds of the
+boxes of $U^\dagger$ look like they should hold the same numbers? Because the boxes are not mirror
+images of each other. Each box injects its noise on one side of its gates, and the inverse layers of
+$U^\dagger$ are separate boxes with noise models of their own, so the box that mirrors a box of $U$
+sees its errors at a different point in the circuit. Therefore, their bounds only partly agree, and
+the bounds for the boxes of $U$ have to be computed for those boxes.
+
+</div>
+
+## Writing other custom bounds
+
+The same three substitutions cover other cases:
+
+- **A different norm.** `time_evolved_norm_forward` accepts `comm_norm_order`; passing anything
+  other than `2` skips the eigensolver and computes that norm directly.
+- **A different light cone.** `LightCone.initialize_from_pauli` seeds a light cone from any Pauli,
+  and the `LightCone` constructor takes the qubits to track and the operations seeding it, so a
+  bound can be computed against any operator you can express that way.
+- **A different norm function entirely.** `compute_bounds` only requires a callable: taking a
+  `Pauli` and `RotationGates` and returning a `CommutatorBounds`. Anything satisfying that signature
+  works, including a closed-form bound specific to your circuit family.
+
+Whatever you substitute, you must prove that the result is a genuine upper bound.
+Understating an error term's effect does not produce a visible failure. It produces an expectation
+value that is quietly wrong, because the term will have been dropped from the mitigated noise model.
