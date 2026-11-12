@@ -47,13 +47,23 @@ LOCAL_CONTENT_DIR = PROJECT_ROOT / "local-content"
 # Only addons IBM's documentation no longer covers: their tutorials carry a
 # notice saying so (see ADDON_ARCHIVE_NOTICE). `docs` is the addon's own
 # documentation site, where IBM's addons overview (guides/addons) points.
+# `skip`: tutorials an IBM tutorial now covers (same technique and API; Jan,
+# 2026-11-12: "then we don't need them twice"); their routes redirect on the
+# 404 page (MANUAL in scripts/generate-retired-pages.py).
 ADDON_SOURCES = {
     "Circuit Cutting":    {"repo": "qiskit-addon-cutting",    "path": "docs/tutorials", "pip": "qiskit-addon-cutting",
-                           "docs": "https://qiskit.github.io/qiskit-addon-cutting"},
-    "MPF":                {"repo": "qiskit-addon-mpf",        "path": "docs/tutorials", "pip": "qiskit-addon-mpf",
-                           "docs": "https://qiskit.github.io/qiskit-addon-mpf/"},
-    "AQC-Tensor":         {"repo": "qiskit-addon-aqc-tensor", "path": "docs/tutorials", "pip": "qiskit-addon-aqc-tensor",
-                           "docs": "https://qiskit.github.io/qiskit-addon-aqc-tensor/"},
+                           "docs": "https://qiskit.github.io/qiskit-addon-cutting",
+                           "skip": ["02_gate_cutting_to_reduce_circuit_depth.ipynb",   # tutorials/depth-reduction-with-circuit-cutting
+                                    "03_wire_cutting_via_move_instruction.ipynb"]},    # tutorials/wire-cutting
+}
+# IBM tutorials that cover the addons whose tutorials we dropped for that
+# reason (MPF, AQC-Tensor) and the dropped cutting tutorials; the
+# qiskit-addons index links them.
+ADDON_TUTORIALS_AT_IBM = {
+    "Circuit cutting: depth reduction": "/tutorials/depth-reduction-with-circuit-cutting",
+    "Circuit cutting: wire cutting": "/tutorials/wire-cutting",
+    "Multi-product formulas (MPF)": "/tutorials/multi-product-formula",
+    "AQC-Tensor": "/tutorials/approximate-quantum-compilation-for-time-evolution",
 }
 # Addons whose tutorials we used to take from their GitHub repos and that IBM
 # now documents itself under docs/addons/ (mirrored at /addons/, see
@@ -3196,39 +3206,40 @@ def process_addons():
     for display_name, config in ADDON_SOURCES.items():
         pip_pkg = config["pip"]
         desc_map = {
-            "Circuit Cutting": "Reduce circuit width and depth by cutting gates and wires",
-            "MPF": "Multi-Product Formulas for improved Hamiltonian simulation",
-            "AQC-Tensor": "Approximate Quantum Compilation with tensor networks",
+            "Circuit Cutting": "Reduce circuit width by cutting gates, and find cuts automatically",
         }
         desc = desc_map.get(display_name, "")
         addon_rows.append(f"| **{display_name}** | `{pip_pkg}` | {desc} |")
     documented = ", ".join(f"[{name}](/addons/{folder})"
                            for name, folder in ADDONS_DOCUMENTED_BY_IBM.items())
+    at_ibm = "\n".join(f"- [{name}]({url})" for name, url in ADDON_TUTORIALS_AT_IBM.items())
 
     index_content = f"""---
 title: Qiskit Addons
 sidebar_label: Overview
 sidebar_position: 1
-description: Tutorials for Qiskit Addons that IBM Quantum's documentation no longer covers — circuit cutting, multi-product formulas and AQC-Tensor.
+description: Circuit-cutting tutorials from the Qiskit addon's GitHub repository, and where IBM Quantum's documentation covers the other addons.
 ---
 
 # Qiskit Addons
 
-[Qiskit Addons](https://github.com/Qiskit?q=qiskit-addon) are official extension packages that provide specialized quantum computing algorithms and techniques. Each addon focuses on a specific area and includes tutorials with executable code.
+[Qiskit Addons](https://github.com/Qiskit?q=qiskit-addon) are official extension packages that provide specialized quantum computing algorithms and techniques.
 
-## Available Addons
+## Tutorials here
 
 | Addon | Package | Description |
 |-------|---------|-------------|
 {chr(10).join(addon_rows)}
 
-IBM Quantum's documentation no longer has guides for these addons. Their tutorials here come from the addons' GitHub repositories and may be outdated.
+IBM Quantum's documentation no longer has guides for this addon, and no IBM tutorial covers these two. They come from the addon's GitHub repository and may be outdated. They can be executed directly in your browser using Binder, or on your own Jupyter server.
 
-All tutorials can be executed directly in your browser using Binder, or on your own Jupyter server.
+## In IBM Quantum's documentation
 
-For API documentation, visit the individual addon repos on [GitHub](https://github.com/Qiskit?q=qiskit-addon).
+IBM tutorials, mirrored on this site, now cover the other addon tutorials that used to be here:
 
-IBM Quantum documents other addons itself, and this site mirrors that documentation: {documented}. All addons: [Advanced techniques - Qiskit addons](/guides/addons).
+{at_ibm}
+
+IBM Quantum also documents these addons itself, mirrored here: {documented}. All addons: [Advanced techniques - Qiskit addons](/guides/addons).
 """
     index_path = addons_dst / "index.mdx"
     index_path.write_text(index_content)
@@ -3252,6 +3263,8 @@ IBM Quantum documents other addons itself, and this site mirrors that documentat
         addon_nb_dst.mkdir(parents=True, exist_ok=True)
 
         for src_path in sorted(tutorials_src.glob('*.ipynb')):
+            if src_path.name in config.get("skip", ()):
+                continue
             rel_name = src_path.name
             dst_path = addon_dst / src_path.with_suffix('.mdx').name
             notebook_path = f"qiskit-addons/{slug_name}/{rel_name}"

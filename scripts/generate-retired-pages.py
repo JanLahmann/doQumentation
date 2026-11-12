@@ -66,6 +66,12 @@ MANUAL = {
     "/qiskit-addons/slc/getting_started": "/tutorials/pec-with-shaded-lightcones",
     "/qiskit-addons/sqd/chemistry_hamiltonian": "/tutorials/sample-based-quantum-diagonalization",
     "/qiskit-addons/sqd/fermionic_lattice_hamiltonian": "/tutorials/sample-based-krylov-quantum-diagonalization",
+    # Removed the same day because an IBM tutorial covers the same technique
+    # and API (ADDON_SOURCES "skip", and MPF/AQC-Tensor dropped):
+    "/qiskit-addons/cutting/gate_cutting_to_reduce_circuit_depth": "/tutorials/depth-reduction-with-circuit-cutting",
+    "/qiskit-addons/cutting/wire_cutting_via_move_instruction": "/tutorials/wire-cutting",
+    "/qiskit-addons/mpf/getting_started": "/tutorials/multi-product-formula",
+    "/qiskit-addons/aqc-tensor/initial_state_aqc": "/tutorials/approximate-quantum-compilation-for-time-evolution",
     # Tutorials IBM renamed to shorter slugs without redirecting the old ones;
     # each successor is the same tutorial (same title topic, same addon).
     "/guides/colibri-td-pde": "/guides/colibritd-pde",
