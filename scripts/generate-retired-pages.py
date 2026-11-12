@@ -55,7 +55,7 @@ IBM = "https://quantum.cloud.ibm.com"
 # page that replaced them. Overrides the probe.
 MANUAL = {
     # Removed upstream in 5b24bb708 "Post selection changes" (#5737).
-    "/guides/post-selection": f"{IBM}/docs/addons/qiskit-mitigation/guides/postselection-with-non-markovian-error-checks",
+    "/guides/post-selection": "/addons/qiskit-mitigation/guides/postselection-with-non-markovian-error-checks",
     # Tutorials IBM renamed to shorter slugs without redirecting the old ones;
     # each successor is the same tutorial (same title topic, same addon).
     "/guides/colibri-td-pde": "/guides/colibritd-pde",
@@ -88,9 +88,12 @@ GUIDE_SUBSITES = {
     "ibm-quantum-compute": "run-on-quantum-hardware",
     "managed-workflows": "managed-workflows",
 }
+# docs/addons is mirrored at the same path (/addons/<addon>/…), see
+# ADDON_DOCS_DIR in scripts/sync-content.py.
 UPSTREAM_DIRS = ["docs/guides", *(f"docs/{s}" for s in GUIDE_SUBSITES), "docs/functions",
-                 "docs/tutorials", "learning/courses", "learning/modules"]
-LOCAL_DIRS = ["docs/guides", "docs/tutorials", "docs/learning/courses", "docs/learning/modules"]
+                 "docs/addons", "docs/tutorials", "learning/courses", "learning/modules"]
+LOCAL_DIRS = ["docs/guides", "docs/addons", "docs/tutorials", "docs/learning/courses",
+              "docs/learning/modules"]
 LANG = r"[a-z]{2}(?:[-_][a-zA-Z]{2,4})?"
 
 
@@ -154,7 +157,7 @@ def ibm_to_route(url: str) -> tuple[str, str] | None:
     path = re.sub(rf"^/docs/{LANG}(?=/)", "/docs", path)
     path = re.sub(rf"^/learning/{LANG}(?=/)", "/learning", path)
     subsites = "|".join(re.escape(s) for s in GUIDE_SUBSITES)
-    route = re.sub(rf"^/docs(?=/(guides|tutorials|functions|{subsites})(/|$))", "", path)
+    route = re.sub(rf"^/docs(?=/(guides|tutorials|functions|addons|{subsites})(/|$))", "", path)
     route = guide_subsite_route(route)
     return IBM_ALIASES.get(route, route), f"{IBM}{path}"
 
