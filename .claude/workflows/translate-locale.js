@@ -91,7 +91,7 @@ Do exactly this, in this order, with no other tool calls:
 ${step2}
 3. Write ${outFile(b)} with ONE Write call: ${TASK === 'gauge'
     ? `a JSON list of exactly ${b.items} objects, one per item in the batch's order, each {"n": <the item's own "n" value, copied>, "verdict": ${VERDICTS.map(v => `"${v}"`).join('|')}, "note": "<a few words; empty unless the rules ask for one>"}. Copy each item's "n" exactly — it is how your verdict is matched back to its item. It must be a valid JSON array: objects separated by COMMAS, opened with [ and closed with ]. Nothing else in the file; no comments.`
-    : `a JSON list of exactly ${b.items} strings, the ${TASK === 'fix' ? 'corrected translation' : 'translation'} of each item in the same order as the batch, one string per line. Nothing else in the file; no keys, no ids, no comments.`}
+    : `a JSON list of exactly ${b.items} strings, the ${TASK === 'fix' ? 'corrected translation' : 'translation'} of each item in the same order as the batch, one string per line. Nothing else in the file; no keys, no ids, no comments. A one-line heading such as "The experiment {#the-experiment}" is an item too and gets its own string (keep the {#anchor}).`}
 4. Reply with exactly one line and nothing else: done <count>/${b.items}
 
 Do not read any other file, do not run scripts or shell, do not verify by re-reading, do not write partial files. Keep reasoning to a minimum; the ${TASK === 'gauge' ? 'judgement' : 'translation'} is the work.${retry}`

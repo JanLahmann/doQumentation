@@ -383,6 +383,13 @@ def main() -> int:
     sub.choices["bake"].add_argument("--concurrency", type=int, default=10)
     sub.choices["finish"].add_argument("-v", "--verbose", action="store_true")
     args = ap.parse_args()
+    # "--locales ar,fr" used to reach the scripts as ONE locale named "ar,fr":
+    # on 2026-11-12 a redo seeded i18n/ar,fr,id,pl/ with 472 POs and batched
+    # 26,045 entries. Accept commas and refuse anything not a known locale.
+    args.locales = [l for a in args.locales for l in a.split(",") if l]
+    unknown = sorted(set(args.locales) - set(io.MAIN_LOCALES))
+    if unknown:
+        ap.error(f"unknown locale(s): {', '.join(unknown)}")
     return {"prepare": cmd_prepare, "redo": cmd_redo, "bake": cmd_bake, "status": cmd_status,
             "finish": cmd_finish}[args.cmd](args)
 
