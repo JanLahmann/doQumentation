@@ -11,6 +11,7 @@ send an old link on to where the page went instead of showing "not found".
    every page deleted from this repo's own docs/ that is not in docs/ now.
    File paths map to our routes as in scripts/sync-content.py:
    docs/guides/X → /guides/X, docs/tutorials/X → /tutorials/X,
+   docs/<guide subsite>/X → /guides/X (see GUIDE_SUBSITES),
    learning/(courses|modules)/… → /learning/(courses|modules)/…, …/index → its folder.
 2. Each candidate's IBM address is requested, following redirects.
 3. Where IBM ends up decides the entry:
@@ -79,7 +80,16 @@ MANUAL = {
 }
 
 PAGE_EXT = (".mdx", ".md", ".ipynb")
-UPSTREAM_DIRS = ["docs/guides", "docs/tutorials", "learning/courses", "learning/modules"]
+# Guide subsites upstream (Nov 2026) whose pages we keep under /guides/; their
+# index page is the overview named here (as GUIDE_SUBSITE_OVERVIEWS in
+# scripts/sync-content.py, plus managed-workflows, whose name is its folder).
+GUIDE_SUBSITES = {
+    "qiskit": "qiskit-sdk",
+    "ibm-quantum-compute": "run-on-quantum-hardware",
+    "managed-workflows": "managed-workflows",
+}
+UPSTREAM_DIRS = ["docs/guides", *(f"docs/{s}" for s in GUIDE_SUBSITES), "docs/functions",
+                 "docs/tutorials", "learning/courses", "learning/modules"]
 LOCAL_DIRS = ["docs/guides", "docs/tutorials", "docs/learning/courses", "docs/learning/modules"]
 LANG = r"[a-z]{2}(?:[-_][a-zA-Z]{2,4})?"
 
@@ -103,13 +113,31 @@ def route_of(path: str, prefix: str) -> str:
     return p
 
 
+def guide_subsite_route(route: str) -> str:
+    """/qiskit/x → /guides/x and /qiskit → /guides/qiskit-sdk (see GUIDE_SUBSITES);
+    /functions/<name> → /guides/<name>."""
+    m = re.match(r"^/functions/([\w-]+)$", route)
+    if m:
+        return f"/guides/{m.group(1)}"
+    for folder, overview in GUIDE_SUBSITES.items():
+        if route == f"/{folder}":
+            return f"/guides/{overview}"
+        if route.startswith(f"/{folder}/"):
+            return "/guides/" + route[len(folder) + 2:]
+    return route
+
+
 def upstream_route(path: str) -> str:
-    return route_of(path, "docs/")  # learning/… keeps its path
+    return guide_subsite_route(route_of(path, "docs/"))  # learning/… keeps its path
 
 
 def ibm_url(route: str) -> str:
     return f"{IBM}{route}" if route.startswith("/learning/") else f"{IBM}/docs{route}"
 
+
+# IBM pages renamed upstream whose content we still serve under the old name:
+# IBM redirects /docs/guides/addons to its "Tools index" (same overview page).
+IBM_ALIASES = {"/guides/tools-index": "/guides/addons"}
 
 # IBM sends some retired notebooks to their last version on GitHub.
 ARCHIVE = "https://github.com/Qiskit/"
@@ -125,8 +153,10 @@ def ibm_to_route(url: str) -> tuple[str, str] | None:
     path = m.group(1).rstrip("/") or "/"
     path = re.sub(rf"^/docs/{LANG}(?=/)", "/docs", path)
     path = re.sub(rf"^/learning/{LANG}(?=/)", "/learning", path)
-    route = re.sub(r"^/docs(?=/(guides|tutorials)(/|$))", "", path)
-    return route, f"{IBM}{path}"
+    subsites = "|".join(re.escape(s) for s in GUIDE_SUBSITES)
+    route = re.sub(rf"^/docs(?=/(guides|tutorials|functions|{subsites})(/|$))", "", path)
+    route = guide_subsite_route(route)
+    return IBM_ALIASES.get(route, route), f"{IBM}{path}"
 
 
 def probe_once(url: str) -> tuple[int, str]:
@@ -206,6 +236,13 @@ def main() -> int:
             unresolved[route] = str(status) if status else final
             continue
         target, ibm_target = mapped
+        # IBM keeps adding subsites (e.g. /docs/ibm-quantum-platform/x, live
+        # before it is in Qiskit/documentation); we mirror those pages flat
+        # under /guides/, so the same page name here is the same page.
+        if target not in local_now and target.startswith("/docs/"):
+            flat = "/guides/" + target.rsplit("/", 1)[-1]
+            if flat in local_now:
+                target = flat
         if target in local_now and target != route:
             redirects[route] = target
         else:
