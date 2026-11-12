@@ -44,15 +44,44 @@ LOCAL_CONTENT_DIR = PROJECT_ROOT / "local-content"
 
 # Qiskit Addon sources — Phase 1: core addons with docs/tutorials/
 # Each entry: display name → {submodule dir name, notebook path within repo, pip package}
+# Only addons IBM's documentation no longer covers: their tutorials carry a
+# notice saying so (see ADDON_ARCHIVE_NOTICE). `docs` is the addon's own
+# documentation site, where IBM's addons overview (guides/addons) points.
 ADDON_SOURCES = {
-    "Circuit Cutting":    {"repo": "qiskit-addon-cutting",    "path": "docs/tutorials", "pip": "qiskit-addon-cutting"},
-    "SQD":                {"repo": "qiskit-addon-sqd",        "path": "docs/tutorials", "pip": "qiskit-addon-sqd"},
-    "OBP":                {"repo": "qiskit-addon-obp",        "path": "docs/tutorials", "pip": "qiskit-addon-obp"},
-    "MPF":                {"repo": "qiskit-addon-mpf",        "path": "docs/tutorials", "pip": "qiskit-addon-mpf"},
-    "AQC-Tensor":         {"repo": "qiskit-addon-aqc-tensor", "path": "docs/tutorials", "pip": "qiskit-addon-aqc-tensor"},
-    "PNA":                {"repo": "qiskit-addon-pna",        "path": "docs/tutorials", "pip": "qiskit-addon-pna"},
-    "SLC":                {"repo": "qiskit-addon-slc",        "path": "docs/tutorials", "pip": "qiskit-addon-slc"},
+    "Circuit Cutting":    {"repo": "qiskit-addon-cutting",    "path": "docs/tutorials", "pip": "qiskit-addon-cutting",
+                           "docs": "https://qiskit.github.io/qiskit-addon-cutting"},
+    "MPF":                {"repo": "qiskit-addon-mpf",        "path": "docs/tutorials", "pip": "qiskit-addon-mpf",
+                           "docs": "https://qiskit.github.io/qiskit-addon-mpf/"},
+    "AQC-Tensor":         {"repo": "qiskit-addon-aqc-tensor", "path": "docs/tutorials", "pip": "qiskit-addon-aqc-tensor",
+                           "docs": "https://qiskit.github.io/qiskit-addon-aqc-tensor/"},
 }
+# Addons whose tutorials we used to take from their GitHub repos and that IBM
+# now documents itself under docs/addons/ (mirrored at /addons/, see
+# ADDON_DOCS_DIR); Jan, 2026-11-12: remove the old tutorial where a new page
+# exists. The old routes redirect on the 404 page (MANUAL in
+# scripts/generate-retired-pages.py). Display name → the addon's folder there.
+ADDONS_DOCUMENTED_BY_IBM = {
+    "SQD": "qiskit-addon-sqd",
+    "OBP": "qiskit-addon-obp",
+    "PNA": "qiskit-addon-pna",
+    "SLC": "qiskit-addon-slc",
+}
+ADDON_ARCHIVE_NOTICE = """<Admonition type="caution" title="Not part of IBM Quantum's documentation">
+IBM Quantum's documentation no longer has guides for {name}: its [addons overview](/guides/addons) links to the addon's own documentation at [{docs_label}]({docs}). This tutorial comes from the addon's GitHub repository ([Qiskit/{repo}](https://github.com/Qiskit/{repo})) and may be outdated.
+</Admonition>
+"""
+
+
+def add_addon_archive_notice(content: str, name: str, config: dict) -> str:
+    """Put ADDON_ARCHIVE_NOTICE after the "Open in Lab" banner (or the front matter)."""
+    notice = ADDON_ARCHIVE_NOTICE.format(
+        name=name, docs=config["docs"], repo=config["repo"],
+        docs_label=re.sub(r"^https://|/$", "", config["docs"]))
+    m = re.search(r"^<OpenInLabBanner[^\n]*/>\n", content, re.M)
+    if not m:
+        m = re.match(r"---\n.*?\n---\n", content, re.S)
+    at = m.end() if m else 0
+    return content[:at] + "\n" + notice + content[at:]
 
 # Upstream split docs/guides into subsites in Nov 2026 (Qiskit/documentation
 # #5899 "Create subsite for Qiskit SDK", #5925 "managed workflows subsite"):
@@ -3157,6 +3186,10 @@ def process_addons():
     if notebooks_dst.exists():
         shutil.rmtree(notebooks_dst)
     notebooks_dst.mkdir(parents=True)
+    # Their images too (tracked in git; only these pages use them), so an
+    # addon dropped from ADDON_SOURCES leaves nothing behind.
+    if (STATIC_DIR / "img" / "qiskit-addons").exists():
+        shutil.rmtree(STATIC_DIR / "img" / "qiskit-addons")
 
     # Generate the Qiskit Addons index page
     addon_rows = []
@@ -3164,21 +3197,19 @@ def process_addons():
         pip_pkg = config["pip"]
         desc_map = {
             "Circuit Cutting": "Reduce circuit width and depth by cutting gates and wires",
-            "SQD": "Sample-based Quantum Diagonalization for ground state estimation",
-            "OBP": "Operator Back-Propagation to reduce circuit depth",
             "MPF": "Multi-Product Formulas for improved Hamiltonian simulation",
             "AQC-Tensor": "Approximate Quantum Compilation with tensor networks",
-            "PNA": "Propagated Noise Absorption for error mitigation",
-            "SLC": "Shaded Lightcones for reducing PEC sampling overhead",
         }
         desc = desc_map.get(display_name, "")
         addon_rows.append(f"| **{display_name}** | `{pip_pkg}` | {desc} |")
+    documented = ", ".join(f"[{name}](/addons/{folder})"
+                           for name, folder in ADDONS_DOCUMENTED_BY_IBM.items())
 
     index_content = f"""---
 title: Qiskit Addons
 sidebar_label: Overview
 sidebar_position: 1
-description: Tutorials for official Qiskit Addons — circuit cutting, sample-based quantum diagonalization, operator backpropagation, and more.
+description: Tutorials for Qiskit Addons that IBM Quantum's documentation no longer covers — circuit cutting, multi-product formulas and AQC-Tensor.
 ---
 
 # Qiskit Addons
@@ -3191,9 +3222,13 @@ description: Tutorials for official Qiskit Addons — circuit cutting, sample-ba
 |-------|---------|-------------|
 {chr(10).join(addon_rows)}
 
+IBM Quantum's documentation no longer has guides for these addons. Their tutorials here come from the addons' GitHub repositories and may be outdated.
+
 All tutorials can be executed directly in your browser using Binder, or on your own Jupyter server.
 
 For API documentation, visit the individual addon repos on [GitHub](https://github.com/Qiskit?q=qiskit-addon).
+
+IBM Quantum documents other addons itself, and this site mirrors that documentation: {documented}. All addons: [Advanced techniques - Qiskit addons](/guides/addons).
 """
     index_path = addons_dst / "index.mdx"
     index_path.write_text(index_content)
@@ -3222,6 +3257,8 @@ For API documentation, visit the individual addon repos on [GitHub](https://gith
             notebook_path = f"qiskit-addons/{slug_name}/{rel_name}"
 
             if convert_notebook(src_path, dst_path, notebook_path=notebook_path):
+                dst_path.write_text(add_addon_archive_notice(
+                    dst_path.read_text(), display_name, config))
                 total_stats["ipynb"] += 1
                 print(f"  ✓ {display_name}: {rel_name} → .mdx")
             else:
