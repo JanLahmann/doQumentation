@@ -37,8 +37,15 @@ function keysOf(items, sidebar, out) {
   return out;
 }
 
+// Sidebars kept in English by decision (translation/v2/english-only.json),
+// like the pages they lead to.
+const englishOnly = JSON.parse(
+  fs.readFileSync(path.join(root, 'translation/v2/english-only.json'), 'utf8'),
+).sidebarPrefixes;
+
 const expected = new Set();
 for (const [name, items] of Object.entries(sidebars)) {
+  if (englishOnly.some((p) => name.startsWith(p))) continue;
   if (Array.isArray(items)) keysOf(items, name, expected);
 }
 
