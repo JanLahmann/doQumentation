@@ -56,6 +56,16 @@ IBM = "https://quantum.cloud.ibm.com"
 MANUAL = {
     # Removed upstream in 5b24bb708 "Post selection changes" (#5737).
     "/guides/post-selection": "/addons/qiskit-mitigation/guides/postselection-with-non-markovian-error-checks",
+    # Our old addon tutorials (taken from the addons' GitHub repos) for addons
+    # IBM now documents under /addons/ (ADDONS_DOCUMENTED_BY_IBM in
+    # scripts/sync-content.py), removed 2026-11-12: each goes to IBM's
+    # tutorial on the same problem (same model or title; the addon guides'
+    # quickstarts use other examples), which the addon's sidebar lists.
+    "/qiskit-addons/obp/getting_started": "/tutorials/operator-back-propagation",
+    "/qiskit-addons/pna/generate_noise_mitigating_observable": "/tutorials/propagated-noise-absorption",
+    "/qiskit-addons/slc/getting_started": "/tutorials/pec-with-shaded-lightcones",
+    "/qiskit-addons/sqd/chemistry_hamiltonian": "/tutorials/sample-based-quantum-diagonalization",
+    "/qiskit-addons/sqd/fermionic_lattice_hamiltonian": "/tutorials/sample-based-krylov-quantum-diagonalization",
     # Tutorials IBM renamed to shorter slugs without redirecting the old ones;
     # each successor is the same tutorial (same title topic, same addon).
     "/guides/colibri-td-pde": "/guides/colibritd-pde",
