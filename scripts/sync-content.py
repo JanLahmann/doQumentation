@@ -52,7 +52,7 @@ LOCAL_CONTENT_DIR = PROJECT_ROOT / "local-content"
 # 404 page (MANUAL in scripts/generate-retired-pages.py).
 ADDON_SOURCES = {
     "Circuit Cutting":    {"repo": "qiskit-addon-cutting",    "path": "docs/tutorials", "pip": "qiskit-addon-cutting",
-                           "docs": "https://qiskit.github.io/qiskit-addon-cutting",
+                           "docs": "https://github.com/Qiskit/qiskit-cutting",  # qiskit.github.io site retired
                            "skip": ["02_gate_cutting_to_reduce_circuit_depth.ipynb",   # tutorials/depth-reduction-with-circuit-cutting
                                     "03_wire_cutting_via_move_instruction.ipynb"]},    # tutorials/wire-cutting
 }
@@ -411,6 +411,10 @@ def _addon_link(m: "re.Match") -> str:
     return f"{prefix}/addons/{addon}{rest}"
 
 
+def _mirrored_addons() -> set[str]:
+    return {a["folder"] for a in addon_docs()}
+
+
 def _github_io_addon_link(m: "re.Match") -> str:
     """https://qiskit.github.io/<addon>/... → our mirror or the addon's repo.
 
@@ -424,10 +428,11 @@ def _github_io_addon_link(m: "re.Match") -> str:
     prefix, repo, path = m.group(1), m.group(2), m.group(3) or ""
     if repo not in RETIRED_GITHUB_IO_ADDONS:
         return m.group(0)
-    if repo in {a["folder"] for a in addon_docs()}:
+    if repo in _mirrored_addons():
         stem = re.sub(r"\.html$", "", path.rstrip("/").rsplit("/", 1)[-1]).replace("_", "-")
-        guide = UPSTREAM_DIR / ADDON_DOCS_DIR / repo / "guides" / f"{stem}.mdx"
-        if stem and stem != "index" and guide.is_file():
+        guides = UPSTREAM_DIR / ADDON_DOCS_DIR / repo / "guides"
+        if stem and stem != "index" and any((guides / f"{stem}{ext}").is_file()
+                                            for ext in (".mdx", ".md", ".ipynb")):
             return f"{prefix}/addons/{repo}/guides/{stem}"
         return f"{prefix}/addons/{repo}"
     return f"{prefix}https://github.com/Qiskit/{RETIRED_GITHUB_IO_ADDONS[repo]}"
