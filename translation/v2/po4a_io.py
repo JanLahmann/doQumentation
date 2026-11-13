@@ -243,19 +243,26 @@ def tr_path(locale: str, rel: str) -> Path:
     return I18N / locale / DOC_SUB / rel
 
 
-# Pages kept in English on every language site (translation/v2/english-only.json):
-# no POT, no PO, never rendered; Docusaurus serves the English page.
-ENGLISH_ONLY = tuple(json.loads((Path(__file__).with_name("english-only.json"))
-                                .read_text(encoding="utf-8"))["docs"])
+# Pages kept in English on a language site (translation/v2/english-only.json):
+# no PO, never rendered; Docusaurus serves the English page. A locale listed in
+# "translatedIn" translates them like any other page, and their POTs exist as
+# soon as one locale is listed (extract runs without a locale).
+_EO = json.loads((Path(__file__).with_name("english-only.json")).read_text(encoding="utf-8"))
+ENGLISH_ONLY = tuple(_EO["docs"])
+TRANSLATED_IN = frozenset(_EO.get("translatedIn", []))
 
 
-def is_english_only(rel: str) -> bool:
-    return rel.startswith(ENGLISH_ONLY)
+def is_english_only(rel: str, locale: str | None = None) -> bool:
+    """locale None: English-only in every locale (no POT is extracted)."""
+    if not rel.startswith(ENGLISH_ONLY):
+        return False
+    return not TRANSLATED_IN if locale is None else locale not in TRANSLATED_IN
 
 
-def all_pages() -> list[str]:
+def all_pages(locale: str | None = None) -> list[str]:
+    """Every page that has a POT (locale None), or a PO in that locale."""
     return sorted(rel for rel in (str(p.relative_to(DOCS)) for p in DOCS.rglob("*.mdx"))
-                  if not is_english_only(rel))
+                  if not is_english_only(rel, locale))
 
 
 def is_genuine(path: Path) -> bool:

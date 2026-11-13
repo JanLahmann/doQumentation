@@ -68,7 +68,7 @@ def main() -> int:
                     help="POTs are already current (extract.py ran); lets locales bootstrap in parallel")
     args = ap.parse_args()
 
-    pages = [args.page] if args.page else io.all_pages()
+    pages = [args.page] if args.page else io.all_pages(args.locale)
     report: dict[str, dict] = {}
     counts = {"exact": 0, "positional": 0, "failed": 0, "skipped": 0}
     entries_total = entries_done = 0

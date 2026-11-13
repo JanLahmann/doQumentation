@@ -39,14 +39,16 @@ function keysOf(items, sidebar, out) {
 
 // Sidebars kept in English by decision (translation/v2/english-only.json),
 // like the pages they lead to.
-const englishOnly = JSON.parse(
+// A locale listed in "translatedIn" translates them like the rest.
+const {sidebarPrefixes: englishOnly, translatedIn = []} = JSON.parse(
   fs.readFileSync(path.join(root, 'translation/v2/english-only.json'), 'utf8'),
-).sidebarPrefixes;
+);
 
 const expected = new Set();
+const englishOnlyKeys = new Set();
 for (const [name, items] of Object.entries(sidebars)) {
-  if (englishOnly.some((p) => name.startsWith(p))) continue;
-  if (Array.isArray(items)) keysOf(items, name, expected);
+  if (!Array.isArray(items)) continue;
+  keysOf(items, name, englishOnly.some((p) => name.startsWith(p)) ? englishOnlyKeys : expected);
 }
 
 const args = process.argv.slice(2);
@@ -60,7 +62,8 @@ let failed = 0;
 for (const locale of locales) {
   const file = path.join(root, 'i18n', locale, 'docusaurus-plugin-content-docs', 'current.json');
   const have = JSON.parse(fs.readFileSync(file, 'utf8'));
-  const missing = [...expected].filter((k) => !(k in have));
+  const want = translatedIn.includes(locale) ? [...expected, ...englishOnlyKeys] : [...expected];
+  const missing = want.filter((k) => !(k in have));
   if (missing.length) {
     failed++;
     console.log(`${locale}: ${missing.length} sidebar label(s) without a translation entry`);
@@ -69,7 +72,8 @@ for (const locale of locales) {
   }
 }
 
-console.log(`${expected.size} sidebar keys checked in ${locales.length} locale(s)`);
+console.log(`${expected.size} sidebar keys checked in ${locales.length} locale(s)` +
+  (translatedIn.length ? `, plus ${englishOnlyKeys.size} English-only keys in ${translatedIn.join(', ')}` : ''));
 if (failed) {
   console.log('Add them: npx docusaurus write-translations --locale <locale>, then translate the new "message" values.');
   process.exit(1);
