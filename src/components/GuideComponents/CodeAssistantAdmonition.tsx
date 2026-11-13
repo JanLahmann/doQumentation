@@ -1,4 +1,5 @@
 import React from 'react';
+import {translate} from '@docusaurus/Translate';
 
 interface CodeAssistantAdmonitionProps {
   tagLine?: string;
@@ -21,7 +22,7 @@ export default function CodeAssistantAdmonition({ tagLine }: CodeAssistantAdmoni
         color: 'var(--ifm-color-content-secondary)',
       }}
     >
-      {tagLine || 'Try Qiskit Code Assistant for help with this topic.'}
+      {tagLine || translate({id: 'codeAssistant.defaultTagLine', message: 'Try Qiskit Code Assistant for help with this topic.', description: 'Default line of the Qiskit Code Assistant tip box; keep the product name'})}
     </div>
   );
 }

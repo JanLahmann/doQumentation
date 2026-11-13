@@ -173,7 +173,7 @@ export default function OpenInLabBanner({ notebookPath, description }: OpenInLab
             <span>
               {notebookPath.startsWith('workshop/')
                 ? translate({id: 'openInLab.workshopBanner', message: 'Community workshop notebook — not part of the official IBM Quantum documentation.'})
-                : (description || 'This page was generated from a Jupyter notebook.')}
+                : (description || translate({id: 'openInLab.generatedFromNotebook', message: 'This page was generated from a Jupyter notebook.', description: 'Banner text on pages made from a notebook'}))}
               {notebookPath.startsWith('workshop/') && (
                 <span style={{ display: 'block', fontSize: '0.8rem', color: 'var(--ifm-color-content-secondary)', marginTop: '0.15rem' }}>
                   Source: <code>{notebookPath.split('/').pop()}</code>
@@ -254,7 +254,7 @@ export default function OpenInLabBanner({ notebookPath, description }: OpenInLab
                   whiteSpace: 'nowrap',
                   alignSelf: 'center',
                 }}
-                title="See what doQumentation modifies in exported notebooks"
+                title={translate({id: 'openInLab.whatsModifiedTitle', message: 'See what doQumentation modifies in exported notebooks', description: "Tooltip of the What's modified? link"})}
               >
                 {translate({id: 'openInLab.whatsModified', message: "What's modified?"})}
               </a>
