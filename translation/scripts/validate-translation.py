@@ -154,12 +154,21 @@ def slugify(text: str) -> str:
     to #update_status worked in English and broke on every translated page.
     """
     s = EXISTING_ANCHOR_RE.sub('', text).strip()
-    s = re.sub(r'!?\[([^\]]*)\]\([^)]*\)', r'\1', s)        # link/image → its text
-    s = s.replace('`', '')
+    s = re.sub(r'!?\[((?:[^\[\]]|\[[^\]]*\])*)\]\([^)]*\)', r'\1', s)  # link/image → its text
+    # Code and math spans are text as written: set them aside so the HTML,
+    # entity and emphasis steps below cannot touch them.
+    kept: list[str] = []
+
+    def _keep(m: re.Match) -> str:
+        kept.append(m.group(1))
+        return f'\x00{len(kept) - 1}\x00'
+    s = re.sub(r'`+([^`]*?)`+', _keep, s)
+    s = re.sub(r'\$+([^$]*?)\$+', _keep, s)
     s = re.sub(r'<[^>]+>', '', s)
-    s = s.replace('$', '')
-    s = html.unescape(s)
+    s = re.sub(r'&(#\d+|#x[0-9a-fA-F]+|\w+);', lambda m: html.unescape(m.group(0)), s)
     s = s.replace('**', '').replace('*', '')
+    s = re.sub(r'(?<![\w\\])__?(?=\S)(.+?)(?<=\S)__?(?![\w])', r'\1', s)  # _x_ / __x__ emphasis
+    s = re.sub(r'\x00(\d+)\x00', lambda m: kept[int(m.group(1))], s)
     s = s.lower()
     s = _github_slugger.REMOVE_RE.sub('', s)
     return s.replace(' ', '-')
