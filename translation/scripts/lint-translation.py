@@ -731,6 +731,14 @@ def check_foreign_script(
                     continue
                 if tok.lower() in FOREIGN_TOKEN_ALLOWLIST:
                     continue
+                # A hyphenated compound whose umlaut part is a capitalised
+                # proper noun ("demi-Möbius", "quasi-Schrödinger") is a name,
+                # not contamination: judge each part on its own.
+                if not allow_cap and "-" in tok and disc is not None:
+                    parts = [p for p in tok.split("-") if any(c in disc for c in p)]
+                    if parts and all(p[:1].isupper() or p.lower() in FOREIGN_TOKEN_ALLOWLIST
+                                     for p in parts):
+                        continue
                 findings.append((
                     ERROR, i,
                     f"foreign-script intrusion ({label}): {tok!r}"
