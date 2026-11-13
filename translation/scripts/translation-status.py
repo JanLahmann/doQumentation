@@ -63,8 +63,8 @@ def section_of(rel: str) -> str:
     return "Other"
 
 
-def en_pages() -> list[str]:
-    return _io.all_pages()  # without translation/v2/english-only.json's pages
+def en_pages(locale: str) -> list[str]:
+    return _io.all_pages(locale)  # without the pages english-only.json keeps English there
 
 
 def locale_pages(locale: str) -> dict[str, dict]:
@@ -167,9 +167,8 @@ def main() -> int:
     ap.add_argument("--write-status", action="store_true", help="write translation/STATUS.md")
     args = ap.parse_args()
 
-    en = en_pages()
     locales = [args.locale] if args.locale else MAIN_LOCALES
-    rows = [summarize(loc, locale_pages(loc), en) for loc in locales]
+    rows = [summarize(loc, locale_pages(loc), en_pages(loc)) for loc in locales]
 
     if args.json:
         print(json.dumps(rows, indent=1, ensure_ascii=False))

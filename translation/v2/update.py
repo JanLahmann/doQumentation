@@ -155,7 +155,7 @@ def main() -> int:
                     help="seed an empty PO for pages that have none (new upstream pages)")
     args = ap.parse_args()
 
-    pages = [args.page] if args.page else io.all_pages()
+    pages = [args.page] if args.page else io.all_pages(args.locale)
     if not args.page:
         live = {str(io.po_path(args.locale, rel)) for rel in pages}
         for stale in (io.I18N / args.locale / "po").rglob("*.po"):

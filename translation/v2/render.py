@@ -34,7 +34,7 @@ def main() -> int:
     ap.add_argument("--out-dir", help="write here instead of into i18n/ (same relative layout)")
     args = ap.parse_args()
 
-    pages = [args.page] if args.page else io.all_pages()
+    pages = [args.page] if args.page else io.all_pages(args.locale)
     done = missing = failed = 0
     for rel in pages:
         po = io.po_path(args.locale, rel)
