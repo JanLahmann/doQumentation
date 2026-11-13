@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import BrowserOnly from '@docusaurus/BrowserOnly';
-import {translate} from '@docusaurus/Translate';
+import Translate, {translate} from '@docusaurus/Translate';
 import useDocusaurusContext from '@docusaurus/useDocusaurusContext';
 import { detectJupyterConfig, getLabUrl, getBinderLabUrl, getColabUrl, openBinderLab } from '../../config/jupyter';
 import { trackEvent } from '../../config/analytics';
@@ -176,7 +176,7 @@ export default function OpenInLabBanner({ notebookPath, description }: OpenInLab
                 : (description || translate({id: 'openInLab.generatedFromNotebook', message: 'This page was generated from a Jupyter notebook.', description: 'Banner text on pages made from a notebook'}))}
               {notebookPath.startsWith('workshop/') && (
                 <span style={{ display: 'block', fontSize: '0.8rem', color: 'var(--ifm-color-content-secondary)', marginTop: '0.15rem' }}>
-                  Source: <code>{notebookPath.split('/').pop()}</code>
+                  <Translate id="openInLab.workshopSource" description="Workshop banner: the notebook file the page was made from" values={{file: <code>{notebookPath.split('/').pop()}</code>}}>{'Source: {file}'}</Translate>
                 </span>
               )}
             </span>

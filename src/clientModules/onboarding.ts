@@ -28,11 +28,15 @@ function createTip(message: string): void {
   tip.className = 'dq-onboarding-tip';
   tip.innerHTML = `
     <span>${message}</span>
-    <button class="dq-onboarding-tip__dismiss" title="${translate({id: 'onboarding.dismiss', message: 'Dismiss', description: 'Tooltip of the button that closes the onboarding tip'})}" aria-label="${translate({id: 'onboarding.dismissAria', message: 'Dismiss tip', description: 'Screen-reader label of the button that closes the onboarding tip'})}">&times;</button>
+    <button class="dq-onboarding-tip__dismiss">&times;</button>
   `;
 
   const dismissBtn = tip.querySelector('.dq-onboarding-tip__dismiss');
   if (dismissBtn) {
+    // Set as properties, not in the HTML string, so a quote in a translation
+    // cannot break the attribute.
+    dismissBtn.setAttribute('title', translate({id: 'onboarding.dismiss', message: 'Dismiss', description: 'Tooltip of the button that closes the onboarding tip'}));
+    dismissBtn.setAttribute('aria-label', translate({id: 'onboarding.dismissAria', message: 'Dismiss tip', description: 'Screen-reader label of the button that closes the onboarding tip'}));
     dismissBtn.addEventListener('click', () => {
       completeOnboarding();
       removeTip();
