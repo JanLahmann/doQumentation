@@ -1,6 +1,6 @@
 # Translation Status
 
-*Auto-generated on 2026-11-13 by `translation-status.py --write-status`.*
+*Auto-generated on 2026-11-14 by `translation-status.py --write-status`.*
 *Do not edit manually — regenerate with:*
 
 ```bash
@@ -17,23 +17,23 @@ deep-review verdict in their PO header (`CONTRIBUTING-REVIEWS.md`).
 
 | Locale | Code | Pages | Entries | Fuzzy | Untranslated | Pages mid-update | Reviewed pages |
 |--------|------|------:|--------:|------:|-------------:|-----------------:|---------------:|
-| German | `de` | 472/463 | 30098 | 0 | 0 | 0 | 348 |
-| Spanish | `es` | 472/463 | 30098 | 0 | 0 | 0 | 348 |
-| Ukrainian | `uk` | 472/463 | 30098 | 0 | 0 | 0 | 348 |
-| Japanese | `ja` | 472/463 | 30098 | 0 | 0 | 0 | 348 |
-| French | `fr` | 472/463 | 30098 | 0 | 0 | 0 | 348 |
-| Italian | `it` | 472/463 | 30098 | 0 | 0 | 0 | 348 |
-| Portuguese | `pt` | 472/463 | 30098 | 0 | 0 | 0 | 348 |
-| Tagalog | `tl` | 472/463 | 30098 | 0 | 0 | 0 | 348 |
-| Arabic | `ar` | 472/463 | 30098 | 0 | 0 | 0 | 348 |
-| Hebrew | `he` | 472/463 | 30098 | 0 | 0 | 0 | 348 |
-| Malay | `ms` | 472/463 | 30098 | 0 | 0 | 0 | 348 |
-| Indonesian | `id` | 472/463 | 30098 | 0 | 0 | 0 | 348 |
-| Thai | `th` | 472/463 | 30098 | 0 | 0 | 0 | 348 |
-| Korean | `ko` | 472/463 | 30098 | 0 | 0 | 0 | 348 |
-| Polish | `pl` | 472/463 | 30098 | 0 | 0 | 0 | 348 |
-| Romanian | `ro` | 472/463 | 30098 | 0 | 0 | 0 | 348 |
-| Czech | `cs` | 472/463 | 30098 | 0 | 0 | 0 | 348 |
+| German | `de` | 559/559 | 32830 | 0 | 0 | 0 | 310 |
+| Spanish | `es` | 559/559 | 32830 | 0 | 0 | 0 | 310 |
+| Ukrainian | `uk` | 559/559 | 32830 | 0 | 0 | 0 | 310 |
+| Japanese | `ja` | 559/559 | 32830 | 0 | 0 | 0 | 310 |
+| French | `fr` | 559/559 | 32830 | 0 | 0 | 0 | 310 |
+| Italian | `it` | 559/559 | 32830 | 0 | 0 | 0 | 310 |
+| Portuguese | `pt` | 559/559 | 32830 | 0 | 0 | 0 | 310 |
+| Tagalog | `tl` | 559/559 | 32830 | 0 | 0 | 0 | 310 |
+| Arabic | `ar` | 559/559 | 32830 | 0 | 0 | 0 | 310 |
+| Hebrew | `he` | 559/559 | 32830 | 0 | 0 | 0 | 310 |
+| Malay | `ms` | 559/559 | 32830 | 0 | 0 | 0 | 310 |
+| Indonesian | `id` | 559/559 | 32830 | 0 | 0 | 0 | 310 |
+| Thai | `th` | 559/559 | 32830 | 0 | 0 | 0 | 310 |
+| Korean | `ko` | 559/559 | 32830 | 0 | 0 | 0 | 310 |
+| Polish | `pl` | 559/559 | 32830 | 0 | 0 | 0 | 310 |
+| Romanian | `ro` | 559/559 | 32830 | 0 | 0 | 0 | 310 |
+| Czech | `cs` | 559/559 | 32830 | 0 | 0 | 0 | 310 |
 
 ## Per-Locale Detail
 
@@ -41,202 +41,168 @@ deep-review verdict in their PO header (`CONTRIBUTING-REVIEWS.md`).
 
 | Section | Pages | Entries | Fuzzy | Untranslated | Reviewed pages |
 |---------|------:|--------:|------:|-------------:|---------------:|
-| Tutorials | 67/67 | 5656 | 0 | 0 | 46 |
-| Guides | 201/201 | 8547 | 0 | 0 | 110 |
-| Courses | 167/167 | 12143 | 0 | 0 | 156 |
+| Tutorials | 67/67 | 5656 | 0 | 0 | 26 |
+| Guides | 201/201 | 8547 | 0 | 0 | 107 |
+| Courses | 167/167 | 12143 | 0 | 0 | 153 |
 | Modules | 16/16 | 2463 | 0 | 0 | 15 |
-| Other | 21/12 | 1289 | 0 | 0 | 21 |
-
-- 9 PO(s) for pages no longer in English
+| Other | 108/108 | 4021 | 0 | 0 | 9 |
 
 ### Spanish (`es`)
 
 | Section | Pages | Entries | Fuzzy | Untranslated | Reviewed pages |
 |---------|------:|--------:|------:|-------------:|---------------:|
-| Tutorials | 67/67 | 5656 | 0 | 0 | 46 |
-| Guides | 201/201 | 8547 | 0 | 0 | 110 |
-| Courses | 167/167 | 12143 | 0 | 0 | 156 |
+| Tutorials | 67/67 | 5656 | 0 | 0 | 26 |
+| Guides | 201/201 | 8547 | 0 | 0 | 107 |
+| Courses | 167/167 | 12143 | 0 | 0 | 153 |
 | Modules | 16/16 | 2463 | 0 | 0 | 15 |
-| Other | 21/12 | 1289 | 0 | 0 | 21 |
-
-- 9 PO(s) for pages no longer in English
+| Other | 108/108 | 4021 | 0 | 0 | 9 |
 
 ### Ukrainian (`uk`)
 
 | Section | Pages | Entries | Fuzzy | Untranslated | Reviewed pages |
 |---------|------:|--------:|------:|-------------:|---------------:|
-| Tutorials | 67/67 | 5656 | 0 | 0 | 46 |
-| Guides | 201/201 | 8547 | 0 | 0 | 110 |
-| Courses | 167/167 | 12143 | 0 | 0 | 156 |
+| Tutorials | 67/67 | 5656 | 0 | 0 | 26 |
+| Guides | 201/201 | 8547 | 0 | 0 | 107 |
+| Courses | 167/167 | 12143 | 0 | 0 | 153 |
 | Modules | 16/16 | 2463 | 0 | 0 | 15 |
-| Other | 21/12 | 1289 | 0 | 0 | 21 |
-
-- 9 PO(s) for pages no longer in English
+| Other | 108/108 | 4021 | 0 | 0 | 9 |
 
 ### Japanese (`ja`)
 
 | Section | Pages | Entries | Fuzzy | Untranslated | Reviewed pages |
 |---------|------:|--------:|------:|-------------:|---------------:|
-| Tutorials | 67/67 | 5656 | 0 | 0 | 46 |
-| Guides | 201/201 | 8547 | 0 | 0 | 110 |
-| Courses | 167/167 | 12143 | 0 | 0 | 156 |
+| Tutorials | 67/67 | 5656 | 0 | 0 | 26 |
+| Guides | 201/201 | 8547 | 0 | 0 | 107 |
+| Courses | 167/167 | 12143 | 0 | 0 | 153 |
 | Modules | 16/16 | 2463 | 0 | 0 | 15 |
-| Other | 21/12 | 1289 | 0 | 0 | 21 |
-
-- 9 PO(s) for pages no longer in English
+| Other | 108/108 | 4021 | 0 | 0 | 9 |
 
 ### French (`fr`)
 
 | Section | Pages | Entries | Fuzzy | Untranslated | Reviewed pages |
 |---------|------:|--------:|------:|-------------:|---------------:|
-| Tutorials | 67/67 | 5656 | 0 | 0 | 46 |
-| Guides | 201/201 | 8547 | 0 | 0 | 110 |
-| Courses | 167/167 | 12143 | 0 | 0 | 156 |
+| Tutorials | 67/67 | 5656 | 0 | 0 | 26 |
+| Guides | 201/201 | 8547 | 0 | 0 | 107 |
+| Courses | 167/167 | 12143 | 0 | 0 | 153 |
 | Modules | 16/16 | 2463 | 0 | 0 | 15 |
-| Other | 21/12 | 1289 | 0 | 0 | 21 |
-
-- 9 PO(s) for pages no longer in English
+| Other | 108/108 | 4021 | 0 | 0 | 9 |
 
 ### Italian (`it`)
 
 | Section | Pages | Entries | Fuzzy | Untranslated | Reviewed pages |
 |---------|------:|--------:|------:|-------------:|---------------:|
-| Tutorials | 67/67 | 5656 | 0 | 0 | 46 |
-| Guides | 201/201 | 8547 | 0 | 0 | 110 |
-| Courses | 167/167 | 12143 | 0 | 0 | 156 |
+| Tutorials | 67/67 | 5656 | 0 | 0 | 26 |
+| Guides | 201/201 | 8547 | 0 | 0 | 107 |
+| Courses | 167/167 | 12143 | 0 | 0 | 153 |
 | Modules | 16/16 | 2463 | 0 | 0 | 15 |
-| Other | 21/12 | 1289 | 0 | 0 | 21 |
-
-- 9 PO(s) for pages no longer in English
+| Other | 108/108 | 4021 | 0 | 0 | 9 |
 
 ### Portuguese (`pt`)
 
 | Section | Pages | Entries | Fuzzy | Untranslated | Reviewed pages |
 |---------|------:|--------:|------:|-------------:|---------------:|
-| Tutorials | 67/67 | 5656 | 0 | 0 | 46 |
-| Guides | 201/201 | 8547 | 0 | 0 | 110 |
-| Courses | 167/167 | 12143 | 0 | 0 | 156 |
+| Tutorials | 67/67 | 5656 | 0 | 0 | 26 |
+| Guides | 201/201 | 8547 | 0 | 0 | 107 |
+| Courses | 167/167 | 12143 | 0 | 0 | 153 |
 | Modules | 16/16 | 2463 | 0 | 0 | 15 |
-| Other | 21/12 | 1289 | 0 | 0 | 21 |
-
-- 9 PO(s) for pages no longer in English
+| Other | 108/108 | 4021 | 0 | 0 | 9 |
 
 ### Tagalog (`tl`)
 
 | Section | Pages | Entries | Fuzzy | Untranslated | Reviewed pages |
 |---------|------:|--------:|------:|-------------:|---------------:|
-| Tutorials | 67/67 | 5656 | 0 | 0 | 46 |
-| Guides | 201/201 | 8547 | 0 | 0 | 110 |
-| Courses | 167/167 | 12143 | 0 | 0 | 156 |
+| Tutorials | 67/67 | 5656 | 0 | 0 | 26 |
+| Guides | 201/201 | 8547 | 0 | 0 | 107 |
+| Courses | 167/167 | 12143 | 0 | 0 | 153 |
 | Modules | 16/16 | 2463 | 0 | 0 | 15 |
-| Other | 21/12 | 1289 | 0 | 0 | 21 |
-
-- 9 PO(s) for pages no longer in English
+| Other | 108/108 | 4021 | 0 | 0 | 9 |
 
 ### Arabic (`ar`)
 
 | Section | Pages | Entries | Fuzzy | Untranslated | Reviewed pages |
 |---------|------:|--------:|------:|-------------:|---------------:|
-| Tutorials | 67/67 | 5656 | 0 | 0 | 46 |
-| Guides | 201/201 | 8547 | 0 | 0 | 110 |
-| Courses | 167/167 | 12143 | 0 | 0 | 156 |
+| Tutorials | 67/67 | 5656 | 0 | 0 | 26 |
+| Guides | 201/201 | 8547 | 0 | 0 | 107 |
+| Courses | 167/167 | 12143 | 0 | 0 | 153 |
 | Modules | 16/16 | 2463 | 0 | 0 | 15 |
-| Other | 21/12 | 1289 | 0 | 0 | 21 |
-
-- 9 PO(s) for pages no longer in English
+| Other | 108/108 | 4021 | 0 | 0 | 9 |
 
 ### Hebrew (`he`)
 
 | Section | Pages | Entries | Fuzzy | Untranslated | Reviewed pages |
 |---------|------:|--------:|------:|-------------:|---------------:|
-| Tutorials | 67/67 | 5656 | 0 | 0 | 46 |
-| Guides | 201/201 | 8547 | 0 | 0 | 110 |
-| Courses | 167/167 | 12143 | 0 | 0 | 156 |
+| Tutorials | 67/67 | 5656 | 0 | 0 | 26 |
+| Guides | 201/201 | 8547 | 0 | 0 | 107 |
+| Courses | 167/167 | 12143 | 0 | 0 | 153 |
 | Modules | 16/16 | 2463 | 0 | 0 | 15 |
-| Other | 21/12 | 1289 | 0 | 0 | 21 |
-
-- 9 PO(s) for pages no longer in English
+| Other | 108/108 | 4021 | 0 | 0 | 9 |
 
 ### Malay (`ms`)
 
 | Section | Pages | Entries | Fuzzy | Untranslated | Reviewed pages |
 |---------|------:|--------:|------:|-------------:|---------------:|
-| Tutorials | 67/67 | 5656 | 0 | 0 | 46 |
-| Guides | 201/201 | 8547 | 0 | 0 | 110 |
-| Courses | 167/167 | 12143 | 0 | 0 | 156 |
+| Tutorials | 67/67 | 5656 | 0 | 0 | 26 |
+| Guides | 201/201 | 8547 | 0 | 0 | 107 |
+| Courses | 167/167 | 12143 | 0 | 0 | 153 |
 | Modules | 16/16 | 2463 | 0 | 0 | 15 |
-| Other | 21/12 | 1289 | 0 | 0 | 21 |
-
-- 9 PO(s) for pages no longer in English
+| Other | 108/108 | 4021 | 0 | 0 | 9 |
 
 ### Indonesian (`id`)
 
 | Section | Pages | Entries | Fuzzy | Untranslated | Reviewed pages |
 |---------|------:|--------:|------:|-------------:|---------------:|
-| Tutorials | 67/67 | 5656 | 0 | 0 | 46 |
-| Guides | 201/201 | 8547 | 0 | 0 | 110 |
-| Courses | 167/167 | 12143 | 0 | 0 | 156 |
+| Tutorials | 67/67 | 5656 | 0 | 0 | 26 |
+| Guides | 201/201 | 8547 | 0 | 0 | 107 |
+| Courses | 167/167 | 12143 | 0 | 0 | 153 |
 | Modules | 16/16 | 2463 | 0 | 0 | 15 |
-| Other | 21/12 | 1289 | 0 | 0 | 21 |
-
-- 9 PO(s) for pages no longer in English
+| Other | 108/108 | 4021 | 0 | 0 | 9 |
 
 ### Thai (`th`)
 
 | Section | Pages | Entries | Fuzzy | Untranslated | Reviewed pages |
 |---------|------:|--------:|------:|-------------:|---------------:|
-| Tutorials | 67/67 | 5656 | 0 | 0 | 46 |
-| Guides | 201/201 | 8547 | 0 | 0 | 110 |
-| Courses | 167/167 | 12143 | 0 | 0 | 156 |
+| Tutorials | 67/67 | 5656 | 0 | 0 | 26 |
+| Guides | 201/201 | 8547 | 0 | 0 | 107 |
+| Courses | 167/167 | 12143 | 0 | 0 | 153 |
 | Modules | 16/16 | 2463 | 0 | 0 | 15 |
-| Other | 21/12 | 1289 | 0 | 0 | 21 |
-
-- 9 PO(s) for pages no longer in English
+| Other | 108/108 | 4021 | 0 | 0 | 9 |
 
 ### Korean (`ko`)
 
 | Section | Pages | Entries | Fuzzy | Untranslated | Reviewed pages |
 |---------|------:|--------:|------:|-------------:|---------------:|
-| Tutorials | 67/67 | 5656 | 0 | 0 | 46 |
-| Guides | 201/201 | 8547 | 0 | 0 | 110 |
-| Courses | 167/167 | 12143 | 0 | 0 | 156 |
+| Tutorials | 67/67 | 5656 | 0 | 0 | 26 |
+| Guides | 201/201 | 8547 | 0 | 0 | 107 |
+| Courses | 167/167 | 12143 | 0 | 0 | 153 |
 | Modules | 16/16 | 2463 | 0 | 0 | 15 |
-| Other | 21/12 | 1289 | 0 | 0 | 21 |
-
-- 9 PO(s) for pages no longer in English
+| Other | 108/108 | 4021 | 0 | 0 | 9 |
 
 ### Polish (`pl`)
 
 | Section | Pages | Entries | Fuzzy | Untranslated | Reviewed pages |
 |---------|------:|--------:|------:|-------------:|---------------:|
-| Tutorials | 67/67 | 5656 | 0 | 0 | 46 |
-| Guides | 201/201 | 8547 | 0 | 0 | 110 |
-| Courses | 167/167 | 12143 | 0 | 0 | 156 |
+| Tutorials | 67/67 | 5656 | 0 | 0 | 26 |
+| Guides | 201/201 | 8547 | 0 | 0 | 107 |
+| Courses | 167/167 | 12143 | 0 | 0 | 153 |
 | Modules | 16/16 | 2463 | 0 | 0 | 15 |
-| Other | 21/12 | 1289 | 0 | 0 | 21 |
-
-- 9 PO(s) for pages no longer in English
+| Other | 108/108 | 4021 | 0 | 0 | 9 |
 
 ### Romanian (`ro`)
 
 | Section | Pages | Entries | Fuzzy | Untranslated | Reviewed pages |
 |---------|------:|--------:|------:|-------------:|---------------:|
-| Tutorials | 67/67 | 5656 | 0 | 0 | 46 |
-| Guides | 201/201 | 8547 | 0 | 0 | 110 |
-| Courses | 167/167 | 12143 | 0 | 0 | 156 |
+| Tutorials | 67/67 | 5656 | 0 | 0 | 26 |
+| Guides | 201/201 | 8547 | 0 | 0 | 107 |
+| Courses | 167/167 | 12143 | 0 | 0 | 153 |
 | Modules | 16/16 | 2463 | 0 | 0 | 15 |
-| Other | 21/12 | 1289 | 0 | 0 | 21 |
-
-- 9 PO(s) for pages no longer in English
+| Other | 108/108 | 4021 | 0 | 0 | 9 |
 
 ### Czech (`cs`)
 
 | Section | Pages | Entries | Fuzzy | Untranslated | Reviewed pages |
 |---------|------:|--------:|------:|-------------:|---------------:|
-| Tutorials | 67/67 | 5656 | 0 | 0 | 46 |
-| Guides | 201/201 | 8547 | 0 | 0 | 110 |
-| Courses | 167/167 | 12143 | 0 | 0 | 156 |
+| Tutorials | 67/67 | 5656 | 0 | 0 | 26 |
+| Guides | 201/201 | 8547 | 0 | 0 | 107 |
+| Courses | 167/167 | 12143 | 0 | 0 | 153 |
 | Modules | 16/16 | 2463 | 0 | 0 | 15 |
-| Other | 21/12 | 1289 | 0 | 0 | 21 |
-
-- 9 PO(s) for pages no longer in English
+| Other | 108/108 | 4021 | 0 | 0 | 9 |
