@@ -14,6 +14,13 @@ import pytest
     ("Title {#custom-anchor}", "title"),        # existing anchor stripped
     ("**Bold** heading", "bold-heading"),       # markdown bold stripped
     ("Already-lower", "already-lower"),
+    # github-slugger, as Docusaurus: '_' stays, punctuation goes, each space → '-'
+    ("Report progress with update_status()", "report-progress-with-update_status"),
+    ("`atol_eigenvalue`", "atol_eigenvalue"),
+    ("Notebook copies (Open in Colab / Binder / Code Engine)",
+     "notebook-copies-open-in-colab--binder--code-engine"),
+    ("Schrödinger's cat", "schrödingers-cat"),
+    ("See [the guide](/guides/x) here", "see-the-guide-here"),
 ])
 def test_slugify(validate, text, expected):
     assert validate.slugify(text) == expected

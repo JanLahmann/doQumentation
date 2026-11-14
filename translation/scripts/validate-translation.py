@@ -16,6 +16,7 @@ Usage:
 
 import argparse
 import hashlib
+import html
 import json
 import re
 import sys
@@ -27,6 +28,9 @@ from pathlib import Path
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import _github_slugger  # noqa: E402
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 DOCS_DIR = REPO_ROOT / "docs"
@@ -140,22 +144,34 @@ MAX_LATEX_INLINE_DELTA = 35
 # ---------------------------------------------------------------------------
 
 def slugify(text: str) -> str:
-    """Convert heading text to Docusaurus-style anchor slug."""
-    s = EXISTING_ANCHOR_RE.sub('', text)
-    s = s.replace('`', '')
+    """Heading text → the id Docusaurus gives it (github-slugger 1.5.0).
+
+    Markdown is reduced to the heading's plain text first (code, emphasis,
+    link text, inline HTML), then github-slugger's rule applies: lowercase,
+    drop every character its regex drops (punctuation and symbols; letters
+    with diacritics, digits, '_' and '-' stay), and each space becomes '-'.
+    Until 2026-11 this mapped '_' to '-' and stripped diacritics, so a link
+    to #update_status worked in English and broke on every translated page.
+    """
+    s = EXISTING_ANCHOR_RE.sub('', text).strip()
+    s = re.sub(r'!?\[((?:[^\[\]]|\[[^\]]*\])*)\]\([^)]*\)', r'\1', s)  # link/image → its text
+    # Code and math spans are text as written: set them aside so the HTML,
+    # entity and emphasis steps below cannot touch them.
+    kept: list[str] = []
+
+    def _keep(m: re.Match) -> str:
+        kept.append(m.group(1))
+        return f'\x00{len(kept) - 1}\x00'
+    s = re.sub(r'`+([^`]*?)`+', _keep, s)
+    s = re.sub(r'\$+([^$]*?)\$+', _keep, s)
     s = re.sub(r'<[^>]+>', '', s)
-    s = re.sub(r'<\w+[^>]*/>', '', s)
-    s = s.replace('$', '')
-    s = re.sub(r'&\w+;', ' ', s)
+    s = re.sub(r'&(#\d+|#x[0-9a-fA-F]+|\w+);', lambda m: html.unescape(m.group(0)), s)
     s = s.replace('**', '').replace('*', '')
-    s = unicodedata.normalize('NFD', s)
-    s = ''.join(c for c in s if unicodedata.category(c) != 'Mn')
+    s = re.sub(r'(?<![\w\\])__?(?=\S)(.+?)(?<=\S)__?(?![\w])', r'\1', s)  # _x_ / __x__ emphasis
+    s = re.sub(r'\x00(\d+)\x00', lambda m: kept[int(m.group(1))], s)
     s = s.lower()
-    s = re.sub(r'[\s_]+', '-', s)
-    s = re.sub(r'[^a-z0-9-]', '', s)
-    s = re.sub(r'-{2,}', '-', s)
-    s = s.strip('-')
-    return s
+    s = _github_slugger.REMOVE_RE.sub('', s)
+    return s.replace(' ', '-')
 
 # ---------------------------------------------------------------------------
 # Data classes
