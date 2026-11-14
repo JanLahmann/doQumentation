@@ -6,6 +6,7 @@
  * Registered in docusaurus.config.ts as a clientModule.
  */
 
+import {translate} from '@docusaurus/Translate';
 import {
   isOnboardingCompleted,
   completeOnboarding,
@@ -27,11 +28,15 @@ function createTip(message: string): void {
   tip.className = 'dq-onboarding-tip';
   tip.innerHTML = `
     <span>${message}</span>
-    <button class="dq-onboarding-tip__dismiss" title="Dismiss" aria-label="Dismiss tip">&times;</button>
+    <button class="dq-onboarding-tip__dismiss">&times;</button>
   `;
 
   const dismissBtn = tip.querySelector('.dq-onboarding-tip__dismiss');
   if (dismissBtn) {
+    // Set as properties, not in the HTML string, so a quote in a translation
+    // cannot break the attribute.
+    dismissBtn.setAttribute('title', translate({id: 'onboarding.dismiss', message: 'Dismiss', description: 'Tooltip of the button that closes the onboarding tip'}));
+    dismissBtn.setAttribute('aria-label', translate({id: 'onboarding.dismissAria', message: 'Dismiss tip', description: 'Screen-reader label of the button that closes the onboarding tip'}));
     dismissBtn.addEventListener('click', () => {
       completeOnboarding();
       removeTip();
@@ -71,8 +76,16 @@ export function onRouteDidUpdate({ location }: { location: Location }): void {
     // Choose tip based on page content
     const hasCode = document.querySelector('.executable-code');
     const message = hasCode
-      ? 'Click <strong>Run</strong> on any code block to execute it live \u2014 no setup needed.'
-      : 'Your progress is tracked automatically \u2014 visited pages show \u2713 in the sidebar.';
+      ? translate({
+          id: 'onboarding.tip.run',
+          message: 'Click <strong>Run</strong> on any code block to execute it live \u2014 no setup needed.',
+          description: 'Onboarding tip on pages with runnable code; keep the <strong> tags and the word Run as the button shows it',
+        })
+      : translate({
+          id: 'onboarding.tip.progress',
+          message: 'Your progress is tracked automatically \u2014 visited pages show \u2713 in the sidebar.',
+          description: 'Onboarding tip on pages without code',
+        });
 
     createTip(message);
   }, 300);

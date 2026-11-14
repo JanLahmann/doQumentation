@@ -619,7 +619,7 @@ function settleCellFeedback(cell: Element): void {
   cell.querySelectorAll('.jp-OutputArea img, .thebelab-output img, .output_area img').forEach((img) => {
     const htmlImg = img as HTMLImageElement;
     if (!htmlImg.alt || htmlImg.alt === 'output') {
-      htmlImg.alt = 'Code execution output';
+      htmlImg.alt = translate({id: 'executable.outputImageAlt', message: 'Code execution output', description: 'Alt text of an image produced by running a code cell'});
     }
   });
 }
