@@ -52,7 +52,7 @@ LOCAL_CONTENT_DIR = PROJECT_ROOT / "local-content"
 # 404 page (MANUAL in scripts/generate-retired-pages.py).
 ADDON_SOURCES = {
     "Circuit Cutting":    {"repo": "qiskit-addon-cutting",    "path": "docs/tutorials", "pip": "qiskit-addon-cutting",
-                           "docs": "https://qiskit.github.io/qiskit-addon-cutting",
+                           "docs": "https://github.com/Qiskit/qiskit-cutting",  # qiskit.github.io site retired
                            "skip": ["02_gate_cutting_to_reduce_circuit_depth.ipynb",   # tutorials/depth-reduction-with-circuit-cutting
                                     "03_wire_cutting_via_move_instruction.ipynb"]},    # tutorials/wire-cutting
 }
@@ -411,6 +411,52 @@ def _addon_link(m: "re.Match") -> str:
     return f"{prefix}/addons/{addon}{rest}"
 
 
+def _mirrored_addons() -> set[str]:
+    return {a["folder"] for a in addon_docs()}
+
+
+def _github_io_addon_link(m: "re.Match") -> str:
+    """https://qiskit.github.io/<addon>/... → our mirror or the addon's repo.
+
+    IBM took the per-addon sites on qiskit.github.io down (they 404) and moved
+    the docs into docs/addons/. An addon we mirror goes to /addons/<addon>, to
+    the matching guide when one exists (how_tos/choose_subspace_dimension.html
+    → guides/choose-subspace-dimension), else to the addon's home page. An
+    addon we do not mirror goes to its GitHub repository (Qiskit/qiskit-<name>,
+    where the repos now live; fulqrum → Qiskit/qiskit-fulqrum).
+    """
+    prefix, repo, path = m.group(1), m.group(2), m.group(3) or ""
+    if repo not in RETIRED_GITHUB_IO_ADDONS:
+        return m.group(0)
+    if repo in _mirrored_addons():
+        stem = re.sub(r"\.html$", "", path.rstrip("/").rsplit("/", 1)[-1]).replace("_", "-")
+        guides = UPSTREAM_DIR / ADDON_DOCS_DIR / repo / "guides"
+        if stem and stem != "index" and any((guides / f"{stem}{ext}").is_file()
+                                            for ext in (".mdx", ".md", ".ipynb")):
+            return f"{prefix}/addons/{repo}/guides/{stem}"
+        return f"{prefix}/addons/{repo}"
+    return f"{prefix}https://github.com/Qiskit/{RETIRED_GITHUB_IO_ADDONS[repo]}"
+
+
+# qiskit.github.io/<addon> sites that IBM took down (404 on 2026-11-13), with
+# the GitHub repository each one moved to. Sites still up (e.g.
+# qiskit-addon-utils) are left alone. A mirrored addon's links go to /addons/.
+RETIRED_GITHUB_IO_ADDONS = {
+    "qiskit-addon-aqc-tensor": "qiskit-aqc-tensor",
+    "qiskit-addon-cutting": "qiskit-cutting",
+    "qiskit-addon-dice-solver": "qiskit-dice-solver",
+    "qiskit-addon-mpf": "qiskit-mpf",
+    "qiskit-addon-mthree": "qiskit-mthree",
+    "qiskit-addon-obp": "qiskit-obp",
+    "qiskit-addon-opt-mapper": "qiskit-opt-mapper",
+    "qiskit-addon-pna": "qiskit-pna",
+    "qiskit-addon-slc": "qiskit-slc",
+    "qiskit-addon-sqd": "qiskit-sqd",
+    "qiskit-addon-sqd-hpc": "qiskit-sqd-hpc",
+    "fulqrum": "qiskit-fulqrum",
+}
+
+
 def rewrite_subsite_links(content: str) -> str:
     """/docs/<subsite>/x → /guides/x, and /docs/<subsite> → its overview page;
     /docs/functions/<name> → /guides/<name> (see FUNCTIONS_DIR);
@@ -421,6 +467,8 @@ def rewrite_subsite_links(content: str) -> str:
     """
     content = re.sub(r'(\(|href=")/docs/addons/([\w-]+)((?:/[\w./-]*)?)(?=[)"#?])',
                      _addon_link, content)
+    content = re.sub(r'(\(|href=")https?://qiskit\.github\.io/(qiskit-addon-[\w-]+|fulqrum)'
+                     r'((?:/[\w./-]*)?)(#[\w-]*)?(?=[)"])', _github_io_addon_link, content)
     content = re.sub(r'(\(|href=")/docs/functions/([\w-]+)(?=[)"#?])', r'\1/guides/\2', content)
     for s in guide_subsites():
         folder = re.escape(s["folder"])
