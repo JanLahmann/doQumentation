@@ -1,0 +1,1443 @@
+---
+title: "Hard-core bosons on a square lattice"
+sidebar_label: "Hard-core bosons on a square lattice"
+description: "Build a bosonic Trotter circuit for hard-core bosons with qiskit-bosons and transpile it for a Nighthawk chip."
+notebook_path: "tutorials/hard-core-bosons-dynamics.ipynb"
+---
+
+import TutorialFeedback from '@site/src/components/TutorialFeedback';
+
+<OpenInLabBanner notebookPath="tutorials/hard-core-bosons-dynamics.ipynb" />
+
+
+
+{/* cspell:ignore Néel loglog xytext textcoords edgecolor facecolor frameon sublattice bcirc qcirc unprojected Trotterize unrouted annihilations infty */}
+
+*Usage estimate: about 2 minutes of classical compute and no QPU time, because the chip is a fake backend (Note: This is an estimate only. Your runtime might vary.)*
+
+This tutorial introduces [`qiskit-bosons`](/addons/qiskit-bosons), a framework to explore bosonic physics on quantum computers. You
+describe a bosonic model once as a `BosonOperator` and a `BosonicCircuit`, and the package takes care of the rest: a transpiler
+preset lowers the circuit to qubits for the mode truncation and the level encoding you choose. The tutorial uses **hard-core bosons**
+on a square lattice as the example model. Their physics is simple enough to check against an exact reference, so you can focus on
+the framework itself: you build the circuit from the lattice size alone, lower it to qubits, measure its Trotter error and
+cost, and place it on the square lattice of a Nighthawk chip. The real exploration starts where this model ends, and the last
+section shows the first step beyond it.
+## Learning outcomes
+After completing this tutorial, you can expect to understand the following information:
+- How `qiskit-bosons` is organized: a bosonic model and its circuit are written once, independent of the mode truncation $d$ and
+  of the level encoding, and a transpiler preset lowers them to qubits. This tutorial uses it for the simplest case, $d = 2$.
+- Why hard-core bosons are the $d = 2$ case, how they relate to the Bose-Hubbard model and to free fermions, and why
+  the 1D chain is classically easy while the 2D lattice is not.
+- How to build the hopping Hamiltonian on a square lattice as a `BosonOperator` grouped by edge color, and the time-evolution circuit
+  of a Trotter step as a `BosonicCircuit` that is independent of the lattice size.
+- How the `qiskit-bosons` transpiler preset lowers that circuit to qubits for the four level encodings, and why the compact codes are
+  an order of magnitude cheaper than the unary ones at $d = 2$.
+- How to check the circuit against an exact reference, and how its Trotter error falls with the number of steps for first and
+  second order.
+- Why the natural embedding of the lattice into the square lattice of a Nighthawk chip needs no routing at any size that fits on the chip.
+- What changes when you leave the hard-core limit: the same framework describes soft-core bosons, but the cost grows quickly.
+
+**Outline of this tutorial**
+
+1. The model and the physics
+2. Build the `BosonicCircuit`
+3. Compute a Néel quench
+4. Quantify the Trotter error
+5. Scale with system size
+6. Transpile for Nighthawk
+7. Beyond hard-core bosons: higher mode truncation
+8. Takeaways and next steps
+
+Sizes: the largest exact simulations are $4\times4$ lattices (16 qubits); the scaling studies go up to $10\times12$ (120
+qubits, the whole Nighthawk chip).
+## Requirements
+Before starting this tutorial, be sure you have the following installed (the versions are the ones this tutorial was run with):
+
+- Qiskit SDK v2.6.2, with [visualization](https://docs.quantum.ibm.com/api/qiskit/visualization) support
+- `qiskit-bosons` v0.1.0a1 (`pip install qiskit-bosons`)
+- `qiskit-fermions` v0.4.1 (`pip install qiskit-fermions`), used only for the free-fermion comparison of section 1
+- Qiskit Runtime v0.51.0 (`pip install qiskit-ibm-runtime`), used only for the fake backend `FakeNighthawk`; no IBM Quantum&reg; account is needed
+- `numpy` v2.5.4, `scipy` v1.18.1 and `matplotlib` v3.11.2 (with `pylatexenc`, which Qiskit needs to draw circuits). All other
+  reference values are computed with plain numpy and scipy.
+## 0. Imports and code helpers
+
+```python
+# Added by doQumentation — installs the packages this notebook needs if they are missing
+import importlib.util
+
+_needed = {"matplotlib": "matplotlib", "numpy": "numpy", "qiskit": "qiskit", "qiskit_bosons": "qiskit-bosons", "qiskit_fermions": "qiskit-fermions", "qiskit_ibm_runtime": "qiskit-ibm-runtime", "scipy": "scipy"}
+_missing = [pip for module, pip in _needed.items()
+            if importlib.util.find_spec(module) is None]
+# One at a time, so a package that fails to install does not block the others
+for _pip in _missing:
+    %pip install -q {_pip}
+if not _missing:
+    print("\u2713 All required packages are installed")
+```
+
+```python
+from importlib.metadata import version
+
+import matplotlib.pyplot as plt
+import numpy as np
+import scipy.sparse as sp
+from matplotlib.colors import to_rgb
+from matplotlib.lines import Line2D
+from qiskit import QuantumCircuit
+from qiskit.circuit.library import PauliEvolutionGate
+from qiskit.quantum_info import SparsePauliOp, Statevector
+from qiskit.synthesis import SuzukiTrotter
+from qiskit.transpiler import PassManager
+from qiskit.transpiler.preset_passmanagers import generate_preset_pass_manager
+from qiskit_ibm_runtime.fake_provider import FakeNighthawk
+from scipy.sparse.linalg import expm_multiply
+
+from qiskit_bosons.circuit import BosonicCircuit
+from qiskit_bosons.circuit.library import Evolution, InitializeModes
+from qiskit_bosons.circuit.library.synthesis import (
+    BosonicLieTrotter,
+    BosonicSuzukiTrotter,
+)
+from qiskit_bosons.mappers import LevelEncoding, LevelSpec
+from qiskit_bosons.operators import BosonOperator, ann, cre
+from qiskit_bosons.operators.terms import groups_are_hermitian
+from qiskit_bosons.transpiler.presets import (
+    generate_preset_occupation_pass_manager,
+)
+from qiskit_fermions.mappers.library import jordan_wigner
+from qiskit_fermions.operators import FermionOperator
+from qiskit_fermions.operators import ann as f_ann
+from qiskit_fermions.operators import cre as f_cre
+```
+
+```python
+for package in (
+    "qiskit",
+    "qiskit-bosons",
+    "qiskit-fermions",
+    "qiskit-ibm-runtime",
+):
+    print(f"{package:20s} {version(package)}")
+```
+
+```text
+qiskit               2.6.2
+qiskit-bosons        0.1.0a1
+qiskit-fermions      0.4.1
+qiskit-ibm-runtime   0.51.0
+```
+
+### Constants
+
+```python
+LX, LY = 4, 4  # the lattice of every drawing and every exact simulation
+NS = LX * LY
+TOTAL_TIME = 0.4  # length of the Trotter step in the circuit drawings and the cost studies
+T_CURVES = 3.0  # how long the quench curves follow the dynamics
+DTS = (0.5, 0.25, 0.1)  # Trotter step lengths of the quench curves
+T_FINAL = 2.0  # the final time of the error budget
+STEP_COUNTS = (
+    1,
+    2,
+    4,
+    8,
+    16,
+    32,
+)  # numbers of Trotter steps of the error budget
+SIZES = (
+    (2, 2),
+    (3, 3),
+    (4, 4),
+    (5, 5),
+    (6, 6),
+    (7, 7),
+    (8, 8),
+    (9, 9),
+    (10, 10),
+    (10, 12),
+)  # sizes of the scaling studies; the last is the whole chip
+
+def two_qubit(instruction):
+    return len(instruction.qubits) == 2
+
+nighthawk = (
+    FakeNighthawk().coupling_map
+)  # a 12 x 10 square lattice, qubit index 10 * row + col
+ROWS, WIDTH = 12, 10
+```
+
+### Data plotting utilities
+
+```python
+def plain_log_ticks(axis, ticks, which="y"):
+    """Log axis with plain tick labels (10, 20, 50 ...) instead of powers of ten."""
+    formatter = plt.ScalarFormatter()
+    getattr(axis, f"{which}axis").set_major_formatter(formatter)
+    getattr(axis, f"set_{which}ticks")(ticks)
+    getattr(axis, f"{which}axis").set_minor_formatter(plt.NullFormatter())
+
+def plot_quench(times, panels, t_curves=T_CURVES):
+    """The exact curves (lines) and the Trotterized circuit for several step lengths (dots), one panel per observable.
+
+    `panels` maps a title to {"ylabel", "ylim", "exact": values at `times`, "circuit": {step length: values at its multiples}}.
+    Pure plotting: nothing is computed here."""
+    figure, axes = plt.subplots(
+        1, len(panels), figsize=(14, 4), layout="constrained"
+    )
+    colors = dict(
+        zip(
+            sorted(next(iter(panels.values()))["circuit"], reverse=True),
+            ("tab:red", "tab:orange", "tab:green"),
+        )
+    )
+    for ax, (title, panel) in zip(axes, panels.items()):
+        ax.plot(
+            times,
+            panel["exact"],
+            "-",
+            color="k",
+            lw=2,
+            label="exact (plain numpy)",
+        )
+        for dt, values in panel["circuit"].items():
+            ax.plot(
+                np.arange(len(values)) * dt,
+                values,
+                "o",
+                ms=4,
+                color=colors[dt],
+                label=f"circuit, $dt = {dt}$ ({int(round(t_curves / dt))} steps)",
+            )
+        ax.set(
+            xlabel="$t$ (units of $1/t_{hop}$)",
+            ylabel=panel["ylabel"],
+            title=title,
+            ylim=panel["ylim"],
+        )
+        ax.grid(axis="y")
+    axes[-1].legend(fontsize=8)
+    plt.close(
+        figure
+    )  # drawn once, by being the cell's value; otherwise the inline backend shows it a second time
+    return figure
+
+def fitted_slope(rows, last=3):
+    """Slope of log(max density error) against log(steps) over the last `last` points."""
+    return float(
+        np.polyfit(np.log(rows[-last:, 0]), np.log(rows[-last:, 1]), 1)[0]
+    )
+
+ORDER_COLORS = {
+    1: "tab:green",
+    2: "tab:blue",
+}  # the product-formula order, in every plot
+ORDERINGS = {  # how the Pauli terms are listed -> (marker, how much of the color is kept: 1 is full, 0 is white)
+    "sorted by color": ("x", 1.0),
+    "bond by bond": ("s", 0.65),
+    "preserve_order=False": ("^", 0.4),
+}
+
+def curve_style(order, ordering=None):
+    """(label, color, marker + line style).
+
+    The bosonic circuit is a solid line with circles in the color of its order. A single gate is dashed with one marker per
+    ordering of the Pauli terms, and the color of the order is tinted towards white for the later orderings."""
+    if ordering is None:
+        return f"bosonic, order {order}", ORDER_COLORS[order], "o-"
+    marker, keep = ORDERINGS[ordering]
+    color = tuple(1 - (1 - c) * keep for c in to_rgb(ORDER_COLORS[order]))
+    return f"qubit-based, order {order}, {ordering}", color, marker + "--"
+
+def plot_trotter_error(
+    trotter_rows, depths, qubit_rows=None, qubit_depths=None, t_final=T_FINAL
+):
+    """Left: error against the number of Trotter steps with the ideal slopes. Right: error against the two-qubit depth.
+
+    `trotter_rows` maps the order to rows (steps, max density error), `depths` maps it to the two-qubit depth of each row.
+    `qubit_rows` and `qubit_depths` do the same for the single-gate variants (key (order, ordering)), drawn on top if given."""
+    order_colors = ORDER_COLORS
+    figure, axes = plt.subplots(1, 2, figsize=(11, 4), layout="constrained")
+    steps = trotter_rows[1][:, 0]
+    for order in order_colors:  # legend order: the ideal slopes, the bosonic curves, then the qubit-based curves
+        r = trotter_rows[order]
+        axes[0].loglog(
+            steps,
+            r[-1, 1] * (steps / steps[-1]) ** -float(order),
+            ":" if order == 1 else "-.",
+            color="0.5",
+            lw=1,
+            label=f"ideal slope $-{order}$",
+        )
+    for order, color in order_colors.items():
+        r = trotter_rows[order]
+        axes[0].loglog(
+            r[:, 0],
+            r[:, 1],
+            "o-",
+            color=color,
+            label=f"bosonic, order {order} (fitted slope {fitted_slope(r):.2f})",
+        )
+    for (order, ordering), rows in (qubit_rows or {}).items():
+        label, color, style = curve_style(order, ordering)
+        axes[0].loglog(
+            rows[:, 0],
+            rows[:, 1],
+            style,
+            color=color,
+            lw=1,
+            mew=1.5,
+            label=label,
+        )
+    axes[0].set(
+        xlabel=f"Trotter steps up to $T = {t_final:g}$",
+        ylabel="error against the exact state",
+        title="Trotter error, $4\\times4$ Néel quench",
+    )
+    axes[0].grid(axis="y")
+    axes[0].legend(fontsize=7, loc="lower left")
+    plain_log_ticks(axes[0], [int(n) for n in steps], "x")
+    for order, color in order_colors.items():
+        axes[1].loglog(
+            depths[order],
+            trotter_rows[order][:, 1],
+            "o-",
+            color=color,
+            label=f"bosonic, order {order}",
+        )
+        for n, x, y in zip(steps, depths[order], trotter_rows[order][:, 1]):
+            axes[1].annotate(
+                f"{int(n)}",
+                (x, y),
+                fontsize=7,
+                color=color,
+                xytext=(4, 4),
+                textcoords="offset points",
+            )
+    for (order, ordering), rows in (qubit_rows or {}).items():
+        label, color, style = curve_style(order, ordering)
+        axes[1].loglog(
+            qubit_depths[order, ordering],
+            rows[:, 1],
+            style,
+            color=color,
+            lw=1,
+            mew=1.5,
+            label=label,
+        )
+    axes[1].set(
+        xlabel="two-qubit depth of the whole circuit (abstract register)",
+        ylabel="max density error",
+        title="error versus cost (labels: Trotter steps)",
+    )
+    axes[1].grid(axis="y")
+    axes[1].legend(fontsize=7)
+    plt.close(figure)
+    return figure
+
+def plot_scaling(abstract, others=None):
+    """Two-qubit depth (left) and gate count (right) of one Trotter step against the number of sites, one line per encoding.
+
+    `abstract` maps (encoding, (lx, ly)) to (qubits, two-qubit depth, two-qubit count). `others` maps (order, ordering) to
+    {(lx, ly): (two-qubit depth, two-qubit count)} for the single-gate variants (ordering a name) and the second-order bosonic
+    circuit (ordering None), drawn on top if given."""
+    figure, axes = plt.subplots(1, 2, figsize=(11, 4), layout="constrained")
+    for encoding, color, marker in (
+        (LevelEncoding.GRAY, "tab:green", "o"),
+        (LevelEncoding.UNARY_UNPROJECTED, "tab:orange", "s"),
+    ):
+        series = [
+            (lx * ly, v)
+            for (e, (lx, ly)), v in abstract.items()
+            if e is encoding
+        ]
+        label = f"bosonic, order 1, {encoding} ({encoding.num_qubits(2)} qubit(s)/mode)"
+        axes[0].plot(
+            [s for s, _ in series],
+            [v[1] for _, v in series],
+            marker + "-",
+            color=color,
+            label=label,
+        )
+        axes[1].plot(
+            [s for s, _ in series],
+            [v[2] for _, v in series],
+            marker + "-",
+            color=color,
+            label=label,
+        )
+    for (order, ordering), cost in (others or {}).items():
+        label, color, style = curve_style(order, ordering)
+        for axis, k in zip(axes, (0, 1)):
+            axis.plot(
+                [lx * ly for lx, ly in cost],
+                [v[k] for v in cost.values()],
+                style,
+                color=color,
+                lw=1,
+                mew=1.5,
+                label=label,
+            )
+    axes[0].set(
+        xlabel="sites",
+        ylabel="two-qubit depth",
+        yscale="log",
+        title="depth, abstract register (all-to-all)",
+    )
+    axes[0].grid(axis="y")
+    plain_log_ticks(axes[0], [5, 10, 20, 50, 100])
+    axes[1].set(
+        xlabel="sites",
+        ylabel="two-qubit gates",
+        yscale="log",
+        title="gate count",
+    )
+    axes[1].grid(axis="y")
+    axes[1].legend(fontsize=7)
+    plt.close(figure)
+    return figure
+```
+
+### Layout visualization utilities
+
+```python
+EDGE_COLORS = {
+    0: "tab:blue",
+    1: "tab:cyan",
+    2: "tab:orange",
+    3: "tab:red",
+}  # horizontal bonds: a blue pair, vertical bonds: an orange/red pair
+COLOR_NAMES = {
+    0: "color 0 (horizontal, even)",
+    1: "color 1 (horizontal, odd)",
+    2: "color 2 (vertical, even)",
+    3: "color 3 (vertical, odd)",
+}
+
+def neel_bits(lx, ly):
+    """Checkerboard occupation: site (x, y) holds one boson if x + y is even."""
+    return [
+        1 if (x + y) % 2 == 0 else 0 for y in range(ly) for x in range(lx)
+    ]
+
+def lattice_layout(lx, ly, width=WIDTH):
+    """Virtual qubit -> physical qubit: site s = lx*y + x goes to qubit 10*y + x of the chip (width 10)."""
+    return [width * y + x for y in range(ly) for x in range(lx)]
+
+def draw_lattice(shapes, state=False, on_chip=False, title=""):
+    """The one lattice drawing of this notebook: a figure with the legend, returned for display.
+
+    `shapes` is one `(lx, ly)` or a list of them, drawn side by side. Bonds carry their edge color (the group of the Trotter
+    step); each circle is a site with its number. With `state` the Néel state is shown as black filled (one boson) and hollow
+    (no boson) circles. With `on_chip` the sites sit where the natural embedding puts them on the whole Nighthawk coupling map,
+    drawn underneath in gray, unused qubits and couplers included."""
+    shapes = [shapes] if isinstance(shapes[0], int) else list(shapes)
+    size = (
+        (len(shapes) * (0.5 * WIDTH + 0.6), 0.5 * ROWS + 1.6)
+        if on_chip
+        else (len(shapes) * 5.6, 5.2 + 0.2 * state)
+    )
+    figure, axes = plt.subplots(
+        1, len(shapes), figsize=size, layout="constrained"
+    )
+    for axis, (lx, ly) in zip(np.atleast_1d(axes), shapes):
+        width = (
+            WIDTH if on_chip else lx
+        )  # without a chip, the grid is the lattice itself
+        place = lattice_layout(lx, ly, width)
+
+        def point(s):
+            return (place[s] % width, -(place[s] // width))
+
+        if on_chip:
+            for a, b in nighthawk.get_edges():
+                axis.plot(
+                    [a % width, b % width],
+                    [-(a // width), -(b // width)],
+                    color="0.85",
+                    lw=1,
+                    zorder=1,
+                )
+            axis.scatter(
+                [q % width for q in range(nighthawk.size())],
+                [-(q // width) for q in range(nighthawk.size())],
+                s=60,
+                color="0.9",
+                edgecolor="0.7",
+                linewidth=0.6,
+                zorder=2,
+            )
+            axis.set_xlim(
+                -0.7, width - 0.3
+            )  # room for the circles at the edge of the chip
+            axis.set_ylim(-(nighthawk.size() // width - 1) - 0.7, 0.7)
+        else:
+            axis.set_xlim(-0.6, lx - 0.4)
+            axis.set_ylim(-(ly - 1) - 0.6, 0.6)
+        for (i, j), color in hardcore(lx, ly)[1].items():
+            (xi, yi), (xj, yj) = point(i), point(j)
+            axis.plot(
+                [xi, xj],
+                [yi, yj],
+                color=EDGE_COLORS[color],
+                lw=2 if on_chip else 3,
+                zorder=3,
+            )
+        bits = neel_bits(lx, ly) if state else [0] * (lx * ly)
+        for site in range(lx * ly):
+            x, y = point(site)
+            axis.scatter(
+                x,
+                y,
+                s=330 if on_chip else 700,
+                facecolor="black" if bits[site] else "white",
+                edgecolor="black",
+                linewidth=1.5,
+                zorder=4,
+            )
+            axis.annotate(
+                str(site),
+                (x, y),
+                ha="center",
+                va="center",
+                fontsize=7 if on_chip else 9,
+                color="white" if bits[site] else "black",
+                zorder=5,
+            )
+        axis.set_aspect("equal")
+        axis.set_title(
+            title
+            or (
+                f"{lx}x{ly} lattice on Nighthawk, $(x, y) \\mapsto 10y + x$"
+                if on_chip
+                else f"{lx}x{ly} lattice"
+            ),
+            fontsize=9,
+        )
+        axis.axis("off")
+    handles = [
+        Line2D([], [], color=EDGE_COLORS[c], lw=3, label=COLOR_NAMES[c])
+        for c in range(4)
+    ]
+    if state:
+        handles += [
+            Line2D(
+                [],
+                [],
+                marker="o",
+                ls="",
+                ms=9,
+                mfc=face,
+                mec="black",
+                label=label,
+            )
+            for face, label in (("black", "one boson"), ("white", "no boson"))
+        ]
+    figure.legend(
+        handles=handles,
+        loc="outside lower center",
+        ncol=3 if on_chip else 2,
+        fontsize=8,
+        frameon=False,
+    )
+    plt.close(figure)  # shown once, as the cell's value
+    return figure
+```
+
+## 1. The model and the physics
+
+$$H = -t \sum_{\langle ij\rangle} \left(b_i^\dagger b_j + b_j^\dagger b_i\right), \qquad (b_i^\dagger)^2 = 0 .$$
+
+In this model, bosons hop between neighboring sites $\langle ij\rangle$ of a square lattice. In principle, a site can hold any number of bosons; however,
+**hard-core** bosons are forbidden to share a site. Thus, every site holds either zero or one boson. In `qiskit-bosons`, that is handled through the
+truncation $d = 2$ (`max_occupation = 1`) during the boson-to-qubit mapping. Each site is then mapped as a two-level system and the model is the spin-1/2 XY model,
+$b_i^\dagger b_j + \mathrm{h.c.} = \tfrac12(X_iX_j + Y_iY_j)$.
+
+**How this relates to the Bose-Hubbard model.** Bose-Hubbard adds an on-site repulsion $\tfrac U2 n_i(n_i-1)$ to the hopping
+term, which penalizes two bosons on one site. Hard-core is the limit $U \to \infty$, where double occupation is forbidden
+outright. In the truncated space $n_i \in \{0, 1\}$, $n_i(n_i-1) = 0$, so the on-site term vanishes whatever $U$ is
+and the Hamiltonian has no interaction parameter at all. Note that this is the opposite of $U = 0$, which is the free
+boson, where a site can hold many bosons.
+
+**Why 1D is classically easy and 2D is not.** On an open chain, hard-core bosons are exactly free fermions: the Jordan-Wigner
+transformation turns the spin chain into a quadratic fermion Hamiltonian with no string left over, because particles
+cannot hop past each other. On a grid, a hop around a plaquette exchanges particles, and the sign that the fermions would pick up
+is not matched by the bosons. The cells below check this with `qiskit-fermions`: they build free fermions that hop on the same
+bonds, map them with `jordan_wigner` (qubit $j$ is mode $j$, sites numbered row by row) and compare the spectra with
+the hard-core Hamiltonian in every particle-number sector. The hard-core matrix itself is built with plain numpy, because
+it is a boson model.
+
+```python
+def square_bonds(lx, ly):
+    """Nearest-neighbor bonds (i, j) of an open lx x ly lattice, site s = lx * y + x."""
+    bonds = []
+    for y in range(ly):
+        for x in range(lx):
+            s = lx * y + x
+            if x + 1 < lx:
+                bonds.append((s, s + 1))
+            if y + 1 < ly:
+                bonds.append((s, s + lx))
+    return bonds
+
+def hardcore_dense(num_sites, bonds, tunneling=1.0):
+    """Hard-core hopping as a matrix on bit strings: a boson hops when exactly one of the two sites is occupied."""
+    dim = 2**num_sites
+    h = np.zeros((dim, dim))
+    for state in range(dim):
+        for i, j in bonds:
+            if ((state >> i) & 1) != ((state >> j) & 1):
+                h[state ^ (1 << i) ^ (1 << j), state] += -tunneling
+    return h
+
+def free_fermion_matrix(num_sites, bonds, tunneling=1.0):
+    """Free fermions on the same bonds, as a qubit matrix from qiskit-fermions' Jordan-Wigner mapper."""
+    terms = {}
+    for i, j in bonds:
+        terms[(f_cre(i), f_ann(j))] = -tunneling
+        terms[(f_cre(j), f_ann(i))] = -tunneling
+    return (
+        jordan_wigner(FermionOperator.from_dict(terms), num_sites)
+        .simplify()
+        .to_matrix()
+    )
+
+def spectrum_gap(num_sites, bonds):
+    """Largest difference between the hard-core and the free-fermion eigenvalues over all particle-number sectors."""
+    boson, fermion = (
+        hardcore_dense(num_sites, bonds),
+        free_fermion_matrix(num_sites, bonds),
+    )
+    popcount = np.array([bin(s).count("1") for s in range(2**num_sites)])
+    gap = 0.0
+    for n in range(1, num_sites):
+        keep = popcount == n
+        gap = max(
+            gap,
+            np.abs(
+                np.linalg.eigvalsh(boson[np.ix_(keep, keep)])
+                - np.linalg.eigvalsh(fermion[np.ix_(keep, keep)])
+            ).max(),
+        )
+    return gap, bool(np.allclose(boson, fermion))
+```
+
+```python
+COMPARED = {
+    "open chain, 8 sites": (8, [(i, i + 1) for i in range(7)]),
+    "closed ring, 6 sites": (6, [(i, (i + 1) % 6) for i in range(6)]),
+    "2 x 3 grid": (6, square_bonds(3, 2)),
+    "2 x 4 grid": (8, square_bonds(4, 2)),
+    "3 x 3 grid": (9, square_bonds(3, 3)),
+}
+gaps = {
+    name: spectrum_gap(num_sites, bonds)
+    for name, (num_sites, bonds) in COMPARED.items()
+}
+print(
+    f"{'hopping graph':22s} {'max |E_boson - E_fermion|':>26s} {'same matrix':>12s}"
+)
+for name, (gap, same) in gaps.items():
+    print(f"{name:22s} {gap:26.1e} {str(same):>12s}")
+```
+
+```text
+hopping graph           max |E_boson - E_fermion|  same matrix
+open chain, 8 sites                       2.2e-14         True
+closed ring, 6 sites                      1.3e+00        False
+2 x 3 grid                                7.1e-01        False
+2 x 4 grid                                1.0e+00        False
+3 x 3 grid                                1.5e+00        False
+```
+
+On the open chain, the two Hamiltonians are the same matrix and the spectra agree to rounding in every sector. On the grids,
+they differ at order one, and the ring with an even particle number fails too, because particles can circle around it. So the
+1D case is classically easy (free fermions are a polynomial problem) and the 2D case is the interesting one.
+## 2. Build the `BosonicCircuit`
+
+A hopping term is Hermitian only together with its conjugate pair, so both stay in one group. Bonds that share no site commute, so an
+**edge coloring** of the square lattice gives groups that commute internally at the bosonic level:
+
+* color 0 / 1: horizontal bonds starting at an even / odd column (blue pair)
+* color 2 / 3: vertical bonds starting at an even / odd row (orange and red)
+
+Two bonds of the same color never share a site, because the bonds along a line alternate colors. The construction below takes
+only the lattice size $(L_x, L_y)$ as input, and everything after it (circuit, encoding, transpilation) is identical for every
+size. The drawing shows the site numbering ($s = L_x y + x$) and the colors for a $4\times4$ lattice.
+
+```python
+def hardcore(lx, ly, tunneling=1.0):
+    """Hard-core hopping on an open lx x ly lattice, grouped by edge color. Returns (operator, {bond: color})."""
+    color_of = {
+        (i, j): (i % lx) % 2 if j == i + 1 else 2 + (i // lx) % 2
+        for i, j in square_bonds(lx, ly)
+    }
+    # group ids must be compact (a gap such as {0, 2} crashes the bosonic transpiler), so renumber the colors that occur
+    remap = {c: k for k, c in enumerate(sorted(set(color_of.values())))}
+    terms = []
+    for (i, j), color in color_of.items():
+        terms.append(([cre(i), ann(j)], -tunneling, remap[color]))
+        terms.append(([cre(j), ann(i)], -tunneling, remap[color]))
+    return BosonOperator.from_terms_with_groups(terms), color_of
+```
+
+```python
+draw_lattice(
+    (LX, LY), title="$4\\times4$ lattice: site numbers and edge colors"
+)
+```
+
+![Output of the previous code cell](/docs/images/tutorials/hard-core-bosons-dynamics/extracted-outputs/57d33dfd-0.avif)
+
+Run some simple checks of the construction on a few lattices: every color group is Hermitian, and the bonds of a color are site-disjoint (so each group commutes internally).
+
+```python
+print(
+    f"{'lattice':9s} {'bonds':>6s} {'terms':>5s} {'groups':>6s} {'Hermitian':>10s} {'site-disjoint':>14s}"
+)
+for lx, ly in ((2, 2), (3, 3), (4, 4), (10, 12)):
+    operator, color_of = hardcore(lx, ly)
+    hermitian = all(bool(f) for f in groups_are_hermitian(operator))
+    disjoint = all(
+        len({s for b, c in color_of.items() if c == color for s in b})
+        == 2 * sum(c == color for c in color_of.values())
+        for color in set(color_of.values())
+    )
+    assert hermitian and disjoint and operator.max_occupation() == 1
+    print(
+        f"{lx:>3d} x {ly:<4d} {len(color_of):5d} {len(operator):5d} {operator.num_groups():6d} {str(hermitian):>10s} {str(disjoint):>14s}"
+    )
+```
+
+```text
+lattice    bonds terms groups  Hermitian  site-disjoint
+  2 x 2        4     8      2       True           True
+  3 x 3       12    24      4       True           True
+  4 x 4       24    48      4       True           True
+ 10 x 12     218   436      4       True           True
+```
+
+Now construct the circuit. The whole Trotter step is **one** `Evolution` gate over all modes. `BosonicLieTrotter` decides how it splits,
+and one `decompose()` shows the split: one `Evolution` per color and per Trotter step. The circuit mentions neither the
+truncation nor the encoding; those come in when the transpiler preset lowers it to qubits.
+
+```python
+def bosonic_circuit(operator, time_=TOTAL_TIME, synthesis=None):
+    """The whole Trotter step as ONE `Evolution` gate over all modes."""
+    num_modes = operator.min_num_modes()
+    circuit = BosonicCircuit(num_modes)
+    circuit.append(
+        Evolution(
+            num_modes,
+            operator,
+            time=time_,
+            synthesis=synthesis or BosonicLieTrotter(reps=1),
+        ),
+        circuit.modes,
+    )
+    return circuit
+
+HARDCORE = hardcore(LX, LY)[
+    0
+]  # the 4x4 lattice that every drawing and every exact simulation uses
+bcirc = bosonic_circuit(HARDCORE)
+```
+
+```python
+bcirc.draw("mpl", fold=-1, scale=0.5)
+```
+
+![Output of the previous code cell](/docs/images/tutorials/hard-core-bosons-dynamics/extracted-outputs/7b527e69-0.avif)
+
+```python
+bcirc.decompose().draw("mpl", fold=-1, scale=0.5)
+```
+
+![Output of the previous code cell](/docs/images/tutorials/hard-core-bosons-dynamics/extracted-outputs/c41ffd44-0.avif)
+
+Next, construct the transpiler pipeline to lower the `BosonicCircuit` to a `QuantumCircuit`.
+To do so, you need:
+
+* `ENCODINGS`: the four `LevelEncoding`s that map a boson mode with $d$ levels to qubits. At $d = 2$, the
+  standard-binary and Gray codes are the same code with one qubit per mode (qubit $= $ occupation), while the two unary codes use one qubit per level (two qubits per mode) and differ only in whether they project onto the valid unary states.
+* `BASIS`: the hardware gate set used for counting (`cz`, `rz`, `sx`, `x`).
+* `to_qubits`: runs the `qiskit-bosons` preset pass manager on a bosonic circuit, with the qubit-side optimization stage switched off so that the circuit stays as synthesized.
+* `transpile_to_basis`: transpiles a qubit circuit to `BASIS` for counting, onto a chip if a coupling map and a layout are given.
+  It calls `decompose(reps=6)` first, because the exact `PauliEvolutionGate` otherwise hides the real gate count.
+
+```python
+ENCODINGS = (
+    LevelEncoding.UNARY_PROJECTED,
+    LevelEncoding.UNARY_UNPROJECTED,
+    LevelEncoding.STANDARD_BINARY,
+    LevelEncoding.GRAY,
+)
+BASIS = ["cz", "rz", "sx", "x"]
+
+def to_qubits(circuit, max_occupation=1, encoding=LevelEncoding.GRAY):
+    """The bosonic circuit lowered to qubits by the preset pipeline (no qubit-side optimization stage)."""
+    pass_manager = generate_preset_occupation_pass_manager(
+        LevelSpec(max_occupation, encoding)
+    )
+    pass_manager.qubit = PassManager()  # keep the circuit as synthesized
+    return pass_manager.run(circuit.decompose())
+
+def transpile_to_basis(circuit, coupling_map=None, layout=None):
+    """Transpile to BASIS (onto a chip, if given). Evaluate only after decompose(reps=6), otherwise the exact PauliEvolutionGate hides gate counts."""
+    pass_manager = generate_preset_pass_manager(
+        basis_gates=BASIS,
+        optimization_level=3,
+        seed_transpiler=0,
+        coupling_map=coupling_map,
+        initial_layout=layout,
+    )
+    return pass_manager.run(circuit.decompose(reps=6))
+```
+
+The qubit circuit of one Trotter step on the $4\times4$ lattice (Gray code, one qubit per site). Each bond is one exact
+XX+YY rotation, and the bonds of a color sit side by side.
+
+```python
+to_qubits(bcirc).decompose().draw("mpl", fold=-1)
+```
+
+![Output of the previous code cell](/docs/images/tutorials/hard-core-bosons-dynamics/extracted-outputs/f880c728-0.avif)
+
+## 3. Compute a Néel quench
+
+You can now watch the bosons move under a quench. The dynamics start from a **Néel pattern**: the sites of a checkerboard are alternately
+filled with one boson (black circles in the drawing below) and empty (white circles), so half of the sites are occupied. At
+time zero, the state is a single bit string, which is easy to prepare (one `X` gate per occupied site). It is not an eigenstate of
+the hopping Hamiltonian: every bond of the lattice joins an occupied and an empty site, so every bond can move a boson,
+and the state starts to change right away. Preparing a simple state and then letting it evolve under a Hamiltonian that it
+is not an eigenstate of is called a **quench**.
+
+```python
+draw_lattice(
+    (LX, LY), state=True, title="Néel state on the $4\\times4$ lattice"
+)
+```
+
+![Output of the previous code cell](/docs/images/tutorials/hard-core-bosons-dynamics/extracted-outputs/d8ccb302-0.avif)
+
+Because the lattice is bipartite, a hop always moves a boson to the other sublattice of the checkerboard. This suggests the
+observable to follow, the **staggered density imbalance**
+
+$$\mathcal I(t) = \frac1N \sum_i (-1)^{x_i+y_i}\,\bigl(2\langle n_i\rangle(t) - 1\bigr) = \frac{2}{N}\bigl(N_A(t) - N_B(t)\bigr),$$
+
+where $N_A$ and $N_B$ are the numbers of bosons on the two sublattices. It measures how many bosons are still on the
+sublattice they started on. It starts at $\mathcal I = 1$ and, as the bosons spread over the lattice, falls and then
+fluctuates around zero, where neither sublattice is preferred. On hardware, it is cheap to measure, because it only needs
+the occupation of each site, that is, single-qubit $Z$ measurements.
+
+The later plots of the observable behavior also show the density of individual sites.
+In one dimension, this quench is a free-fermion problem, but on a square lattice it is not (as discussed in section 1), so the exact evolution of the $4\times4$ lattice below is the reference. The hard-core Hilbert space is the set of bit strings, and $b_i^\dagger b_j$ moves a bit. Build $H$ as a sparse matrix with plain numpy and evolve with `expm_multiply`.
+
+```python
+def exact_hamiltonian(num_sites, bonds, tunneling=1.0):
+    states = np.arange(2**num_sites, dtype=np.int64)
+    rows, cols = [], []
+    for i, j in bonds:
+        differs = ((states >> i) & 1) != ((states >> j) & 1)
+        source = states[differs]
+        rows.append(source ^ ((1 << i) | (1 << j)))
+        cols.append(source)
+    rows, cols = np.concatenate(rows), np.concatenate(cols)
+    return sp.csr_matrix(
+        (np.full(len(rows), -tunneling), (rows, cols)),
+        shape=(len(states),) * 2,
+    )
+
+def basis_state(bits):
+    vector = np.zeros(2 ** len(bits), dtype=complex)
+    vector[sum(b << i for i, b in enumerate(bits))] = 1.0
+    return vector
+
+def site_densities(state, num_sites):
+    probabilities = np.abs(state) ** 2
+    states = np.arange(len(state))
+    return np.array(
+        [
+            probabilities[(states >> i) & 1 == 1].sum()
+            for i in range(num_sites)
+        ]
+    )
+
+def imbalance(density, lx, ly):
+    sign = np.array([(-1) ** (x + y) for y in range(ly) for x in range(lx)])
+    return float(np.mean(sign * (2 * density - 1)))
+```
+
+First, compute the exact reference.
+
+```python
+H_exact = exact_hamiltonian(NS, list(hardcore(LX, LY)[1]))
+initial = basis_state(neel_bits(LX, LY))
+times = np.linspace(0, T_CURVES, 61)
+exact_states = [initial] + [
+    expm_multiply(-1j * t * H_exact, initial) for t in times[1:]
+]
+exact_density = np.array([site_densities(s, NS) for s in exact_states])
+```
+
+Next, check the `InitializeModes` gate, which also confirms that the mode-to-qubit encoding is correct.
+
+```python
+init_only = BosonicCircuit(NS)
+init_only.append(InitializeModes(neel_bits(LX, LY)), init_only.modes)
+prepared = Statevector(to_qubits(init_only).decompose(reps=6)).data
+assert np.allclose(
+    prepared, initial
+), "InitializeModes must prepare the Néel bit string"
+```
+
+Now compute the Trotterized curves. A circuit is one first-order Trotter step of length $dt$ (all four colors once), applied
+$T/dt$ times; `trotter_series` returns the site densities at every multiple of $dt$. The cell after it turns the densities of
+the exact and of the Trotterized evolution into the three observables to plot.
+
+```python
+def trotter_series(dt, final_time, order=1, encoding=LevelEncoding.GRAY):
+    """Apply one bosonic Trotter step of length dt repeatedly; return the site densities at every multiple of dt."""
+    step = to_qubits(
+        bosonic_circuit(
+            HARDCORE, dt, BosonicSuzukiTrotter(order=order, reps=1)
+        ),
+        encoding=encoding,
+    ).decompose(reps=6)
+    state = Statevector(initial)
+    densities = [site_densities(np.asarray(state.data), NS)]
+    for _ in range(int(round(final_time / dt))):
+        state = state.evolve(step)
+        densities.append(site_densities(np.asarray(state.data), NS))
+    return np.array(densities)
+```
+
+```python
+curves = {dt: trotter_series(dt, T_CURVES) for dt in DTS}
+center, corner = (LY // 2) * LX + LX // 2, 0  # a bulk site and a corner site
+observables = {  # panel title -> (y label, y limits, observable of a vector of site densities)
+    "Néel imbalance": (
+        "staggered imbalance $\\mathcal{I}(t)$",
+        (-1.05, 1.05),
+        lambda d: imbalance(d, LX, LY),
+    ),
+    f"site {corner} (corner)": (
+        f"$\\langle n_{{{corner}}}\\rangle$",
+        (0, 1.05),
+        lambda d: d[corner],
+    ),
+    f"site {center} (bulk)": (
+        f"$\\langle n_{{{center}}}\\rangle$",
+        (0, 1.05),
+        lambda d: d[center],
+    ),
+}
+QUENCH = {
+    title: {
+        "ylabel": ylabel,
+        "ylim": ylim,
+        "exact": np.array([observable(d) for d in exact_density]),
+        "circuit": {
+            dt: np.array([observable(d) for d in curves[dt]]) for dt in DTS
+        },
+    }
+    for title, (ylabel, ylim, observable) in observables.items()
+}
+```
+
+```python
+plot_quench(times, QUENCH)
+```
+
+![Output of the previous code cell](/docs/images/tutorials/hard-core-bosons-dynamics/extracted-outputs/dd335add-0.avif)
+
+Here $dt = T/\text{steps}$ is the length of one Trotter step, so the legend gives both. All three panels show all three step
+sizes. The smaller the step, the closer the circuit follows the exact curve. The coarsest step, $dt = 0.5$, visibly misses it in places, and even $dt = 0.1$ shows a small wobble on the corner site near $t \approx 1$.
+## 4. Quantify the Trotter error
+
+The only numerical error of the circuit is the **Trotter error between the colors** at the bosonic level. The other two
+places where an error could creep in are exact by construction:
+
+* **The qubit side.** The Pauli terms of one color commute, because the bonds of a color share no site. Synthesizing a color
+  therefore needs no further approximation, and the circuit is the ordered product of the exact color exponentials.
+* **The encoding.** At $d = 2$, the four `LevelEncoding`s are different representations of the same two-level system, so they
+  give the same circuit up to cost (section 5).
+
+There is no "truncation" error either: the cutoff $d = 2$ *defines* this model (section 1). It is not a numerical
+approximation of something larger.
+
+This section explores `BosonicSuzukiTrotter`. It measures the Trotter error against the exact reference of section 3 at one final time, $T = 2$, versus
+the number of steps, for first and for second order. It uses $T = 2$, not the end of the curves above, on purpose: by
+$t = 3$, the signal has decayed close to its long-time value, so the error there is small and scatters from one step count to
+the next. At $T = 2$, the dynamics are still pronounced.
+
+```python
+def circuit_final_state(order, n, encoding=LevelEncoding.GRAY):
+    bcirc = bosonic_circuit(
+        HARDCORE, T_FINAL, BosonicSuzukiTrotter(order=order, reps=n)
+    )
+    qcirc = to_qubits(bcirc, encoding=encoding).decompose(reps=6)
+    return np.asarray(Statevector(initial).evolve(qcirc).data)
+
+def density_error(state, exact_density_final):
+    """Largest site-density error against the exact densities at T_FINAL."""
+    return float(
+        np.abs(site_densities(state, NS) - exact_density_final).max()
+    )
+```
+
+```python
+exact_final_density = site_densities(
+    expm_multiply(-1j * T_FINAL * H_exact, initial), NS
+)
+trotter_rows = {  # order -> array with columns (steps, max density error)
+    order: np.array(
+        [
+            (
+                n,
+                density_error(
+                    circuit_final_state(order, n), exact_final_density
+                ),
+            )
+            for n in STEP_COUNTS
+        ]
+    )
+    for order in (1, 2)
+}
+trotter_depths = {  # order -> two-qubit depth of the whole circuit for each step count, on an abstract register
+    order: [
+        transpile_to_basis(
+            to_qubits(
+                bosonic_circuit(
+                    HARDCORE,
+                    T_FINAL,
+                    BosonicSuzukiTrotter(order=order, reps=n),
+                )
+            )
+        ).depth(two_qubit)
+        for n in STEP_COUNTS
+    ]
+    for order in (1, 2)
+}
+print(
+    f"max site-density error at T = {T_FINAL:g} (4x4 Néel quench)\n{'steps':>5s} {'order 1':>10s} {'order 2':>10s}"
+)
+for k, n in enumerate(STEP_COUNTS):
+    print(
+        f"{n:5d} {trotter_rows[1][k, 1]:10.2e} {trotter_rows[2][k, 1]:10.2e}"
+    )
+```
+
+```text
+max site-density error at T = 2 (4x4 Néel quench)
+steps    order 1    order 2
+    1   2.89e-01   2.16e-01
+    2   1.67e-01   1.42e-01
+    4   1.02e-01   3.17e-02
+    8   3.23e-02   6.03e-03
+   16   1.18e-02   1.40e-03
+   32   5.54e-03   3.43e-04
+```
+
+**Is the bosonic level needed for this error?** For hard-core bosons, the qubit operator is only $-\tfrac12(XX + YY)$ per bond,
+so you can also hand it to Qiskit as **one** `PauliEvolutionGate`, without any groups, and let Qiskit's `SuzukiTrotter` product formula split it. A product formula applies the terms in the order it is
+given, so the order decides which terms are exponentiated together. Try three: the terms sorted by edge color (the grouping
+that the bosonic circuit knows), the terms bond by bond, and `preserve_order=False`, which lets Qiskit reorder the terms
+itself.
+
+```python
+def xx_yy_operator(lx, ly, by_color=True):
+    """The qubit operator of the hard-core lattice, as plain Pauli terms: -1/2 (XX + YY) per bond, sorted by edge color or not."""
+    color_of = hardcore(lx, ly)[1]
+    bonds = (
+        sorted(color_of, key=lambda bond: (color_of[bond], bond))
+        if by_color
+        else list(color_of)
+    )
+    terms = [
+        (pauli, [i, j], -0.5) for i, j in bonds for pauli in ("XX", "YY")
+    ]
+    return SparsePauliOp.from_sparse_list(terms, num_qubits=lx * ly)
+
+def single_gate(operator, order, time_=T_FINAL, steps=1, **formula):
+    """ONE `PauliEvolutionGate` over the whole operator, synthesized with a product formula of the given order."""
+    synthesis = SuzukiTrotter(order=order, reps=steps, **formula)
+    circuit = QuantumCircuit(operator.num_qubits)
+    circuit.append(
+        PauliEvolutionGate(operator, time=time_, synthesis=synthesis),
+        circuit.qubits,
+    )
+    return circuit
+
+TERM_ORDERINGS = {  # name -> (operator of a lattice, options of the product formula)
+    "sorted by color": (xx_yy_operator, {}),
+    "bond by bond": (
+        lambda lx, ly: xx_yy_operator(lx, ly, by_color=False),
+        {},
+    ),
+    "preserve_order=False": (
+        lambda lx, ly: xx_yy_operator(lx, ly, by_color=False),
+        {"preserve_order": False},
+    ),
+}
+qubit_rows, qubit_depths = (
+    {},
+    {},
+)  # (order, ordering) -> rows (steps, max density error), -> two-qubit depth of each row
+for order in (1, 2):
+    for ordering, (operator, formula) in TERM_ORDERINGS.items():
+        circuits = {
+            n: single_gate(operator(LX, LY), order, steps=n, **formula)
+            for n in STEP_COUNTS
+        }
+        qubit_rows[order, ordering] = np.array(
+            [
+                (
+                    n,
+                    density_error(
+                        np.asarray(
+                            Statevector(initial)
+                            .evolve(c.decompose(reps=2))
+                            .data
+                        ),
+                        exact_final_density,
+                    ),
+                )
+                for n, c in circuits.items()
+            ]
+        )
+        qubit_depths[order, ordering] = [
+            transpile_to_basis(c).depth(two_qubit) for c in circuits.values()
+        ]
+```
+
+```python
+plot_trotter_error(trotter_rows, trotter_depths, qubit_rows, qubit_depths)
+```
+
+![Output of the previous code cell](/docs/images/tutorials/hard-core-bosons-dynamics/extracted-outputs/11884bb1-0.avif)
+
+**Left:** the dotted gray lines are the ideal slopes $-1$ and $-2$, and the fitted slope over the last three points of each
+curve is in the legend. The slopes approach the ideal values only once the step is small enough; with few steps, the error is
+outside the asymptotic regime.
+
+**Right:** the same errors against the two-qubit depth of the whole circuit, for the same step
+counts. A second-order step has more blocks (14 against 8 layers for one step), but adjacent identical blocks of neighboring
+repetitions merge. For large errors (one or two steps), first order is the cheaper way to reach a given error. Below an error of about $10^{-1}$, second order is cheaper.
+
+**Single gates.** The dashed curves are the single `PauliEvolutionGate` with `SuzukiTrotter` of order 1 (green) and 2 (blue). Each
+ordering of the Pauli terms has its own marker and a lighter tint of the color. With the terms sorted by color (crosses), the
+single gate lies exactly on the bosonic curve of the same order: it is the same product formula. In the other two orderings,
+it is a different formula with a different error, which can be several times larger or (at one or two steps) smaller. But the
+**order of magnitude and the scaling match** the bosonic circuit: the first-order curves fall with the ideal slope $-1$ and the
+second-order curves with $-2$, and at 32 steps all three orderings are within a factor of about three of each other. So the Trotter
+error does not decide between the approaches. What differs is the cost (right panel, and the next section): at equal error,
+the squares (medium tint) need a much larger depth, and the triangles (lightest tint) roughly twice the depth of the crosses. At the bosonic level, the
+grouping is part of the operator, so there is no ordering to choose by hand, which makes for a much more ergonomic workflow.
+## 5. Scale with system size
+
+This section investigates how cost scales with the lattice size. Since one Trotter step is one $XX+YY$ layer per color, whatever the
+number of sites, the two-qubit **depth should be flat** in the lattice size while the **gate count grows** with the number of
+bonds. The sizes go up to $10\times12$, the whole Nighthawk chip in the compact codes. The unary codes need two qubits
+per mode, so they stop at the sizes that fit in 120 qubits.
+
+```python
+ABSTRACT = {}  # (encoding, (lx, ly)) -> (qubits, two-qubit depth, two-qubit count)
+for encoding in (LevelEncoding.GRAY, LevelEncoding.UNARY_UNPROJECTED):
+    for lx, ly in SIZES:
+        if lx * ly * encoding.num_qubits(2) <= 120:
+            qubits = to_qubits(
+                bosonic_circuit(hardcore(lx, ly)[0]), encoding=encoding
+            )
+            lowered = transpile_to_basis(qubits)
+            ABSTRACT[encoding, (lx, ly)] = (
+                qubits.num_qubits,
+                lowered.depth(two_qubit),
+                lowered.num_nonlocal_gates(),
+            )
+
+# the second-order bosonic step, and the same steps as ONE PauliEvolutionGate over the qubit operator (section 4)
+OTHERS = {
+    (2, None): {}
+}  # (order, ordering) -> {(lx, ly): (two-qubit depth, two-qubit count)}
+OTHERS.update(
+    {(order, ordering): {} for order in (1, 2) for ordering in TERM_ORDERINGS}
+)
+for lx, ly in SIZES:
+    second = to_qubits(
+        bosonic_circuit(
+            hardcore(lx, ly)[0],
+            synthesis=BosonicSuzukiTrotter(order=2, reps=1),
+        )
+    )
+    circuits = {(2, None): second}
+    for order in (1, 2):
+        for ordering, (operator, formula) in TERM_ORDERINGS.items():
+            circuits[order, ordering] = single_gate(
+                operator(lx, ly), order, time_=TOTAL_TIME, **formula
+            )
+    for key, circuit in circuits.items():
+        lowered = transpile_to_basis(circuit)
+        OTHERS[key][lx, ly] = (
+            lowered.depth(two_qubit),
+            lowered.num_nonlocal_gates(),
+        )
+```
+
+```python
+plot_scaling(ABSTRACT, OTHERS)
+```
+
+![Output of the previous code cell](/docs/images/tutorials/hard-core-bosons-dynamics/extracted-outputs/d4dbf1ea-0.avif)
+
+The compact code has a flat depth from $3\times3$ on (every color is a layer of side-by-side $XX+YY$ rotations; the $2\times2$
+lattice has only two colors, so its depth is half) and a gate count that grows with the number of bonds.
+The unary codes are an order of magnitude more expensive in both. The reason is simple: in the compact codes, a bond maps to one $XX$ and
+one $YY$ term on the two qubits of the bond with equal coefficients, that is, an $XX+YY$ rotation (two `cz`). In the unary codes, each
+mode has two qubits (one per level), and the hop expands into several weight-4 Pauli strings on the four qubits of both
+modes. They all commute, so nothing is saved by commutation. The ratio is a property of the encoding at $d = 2$, and it does
+not change with the lattice size. At $d = 2$, the standard-binary and Gray codes are the same code, and the projected and
+unprojected unary codes emit the same operator, so the compact curve stands for both pairs.
+**Why Trotterize at the bosonic level?** The dashed curves are the same Trotter steps as one `PauliEvolutionGate` over the qubit
+operator (section 4), in green for first order and blue for second order. The solid blue curve is the second-order bosonic circuit,
+the solid green curve the first-order one from above. The single gate with the terms sorted by color (crosses) lies exactly on the
+bosonic curve of its order: a flat depth (8 for first order, 14 for second order) and the minimal gate count (as in the previous section). Qiskit does not find
+that grouping by itself. If the terms are listed bond by bond (squares), the gate count is the same, but the layers are not packed
+and the depth grows with the lattice (at $10\times12$ it is 84 against 8 for first order and 166 against 14 for second order).
+With `preserve_order=False` (triangles), Qiskit does find commuting terms and the depth stays flat, but it treats the XX and the YY
+term of a bond as separate rotations, so it needs about a third more two-qubit gates and twice the depth. So the bosonic level is
+not magic: it carries the edge coloring in the operator itself, and what you would otherwise have to arrange by hand in the Pauli
+terms (and keep arranged for every lattice) comes with the construction.
+## 6. Transpile for Nighthawk
+
+`FakeNighthawk` is a $12\times10$ square lattice with qubit index $10\,\text{row} + \text{col}$. A hard-core lattice is a square
+lattice too, so it sits on the chip as it is: site $(x, y)$ goes to qubit $10y + x$, which embeds an $L_x\times L_y$ lattice
+natively for $L_x \le 10$, $L_y \le 12$ as shown below.
+
+```python
+draw_lattice([(LX, LY), (10, 12)], state=True, on_chip=True)
+```
+
+![Output of the previous code cell](/docs/images/tutorials/hard-core-bosons-dynamics/extracted-outputs/3508477b-0.avif)
+
+First, check the native embedding on the **unrouted** circuits. After lowering on the abstract register, every two-qubit gate must sit on a coupled pair under the layout.
+
+```python
+def uncoupled_gates(lowered, layout, coupling_map):
+    """Number of two-qubit gates of a lowered circuit that are not on a coupler of the chip under `layout`."""
+    edges = {frozenset(edge) for edge in coupling_map.get_edges()}
+    bad = 0
+    for instruction in lowered.data:
+        if len(instruction.qubits) == 2:
+            a, b = (lowered.find_bit(q).index for q in instruction.qubits)
+            bad += frozenset((layout[a], layout[b])) not in edges
+    return bad
+
+total = 0
+for lx, ly in SIZES:
+    lowered = transpile_to_basis(
+        to_qubits(bosonic_circuit(hardcore(lx, ly)[0]))
+    )
+    assert uncoupled_gates(lowered, lattice_layout(lx, ly), nighthawk) == 0
+    total += lowered.num_nonlocal_gates()
+print(
+    f"all {total} two-qubit gates of the {len(SIZES)} lattices sit on a Nighthawk coupler"
+)
+```
+
+```text
+all 1756 two-qubit gates of the 10 lattices sit on a Nighthawk coupler
+```
+
+Now route onto the chip. Every two-qubit gate is already on a coupler, so the transpiler has no swaps to insert and nothing to
+choose: the routed circuit has the same two-qubit depth and the same two-qubit gate count as the circuit on the abstract
+register, at every size. The cell below transpiles each lattice of the scaling study onto Nighthawk and asserts exactly that.
+The drawing shows the routed circuit for the $4\times4$ lattice. Each wire is labeled `q_i ↦ p`: virtual qubit `i` of the
+encoded circuit (the lattice site `i`) sits on physical qubit `p` of the device at the start. Only the qubits the circuit acts
+on are drawn.
+
+```python
+for lx, ly in SIZES:
+    routed = transpile_to_basis(
+        to_qubits(bosonic_circuit(hardcore(lx, ly)[0])),
+        nighthawk,
+        lattice_layout(lx, ly),
+    )
+    _, abstract_depth, abstract_count = ABSTRACT[LevelEncoding.GRAY, (lx, ly)]
+    assert (routed.depth(two_qubit), routed.num_nonlocal_gates()) == (
+        abstract_depth,
+        abstract_count,
+    ), (lx, ly)
+print(
+    f"routed onto Nighthawk: same two-qubit depth and gate count as the abstract register, all {len(SIZES)} lattices"
+)
+```
+
+```text
+routed onto Nighthawk: same two-qubit depth and gate count as the abstract register, all 10 lattices
+```
+
+```python
+transpile_to_basis(to_qubits(bcirc), nighthawk, lattice_layout(LX, LY)).draw(
+    "mpl", fold=-1, idle_wires=False, scale=0.5
+)
+```
+
+![Output of the previous code cell](/docs/images/tutorials/hard-core-bosons-dynamics/extracted-outputs/507bdd21-0.avif)
+
+## 7. Beyond hard-core bosons: higher mode truncation
+
+Everything so far only considered hard-core bosons, so the on-site term could not act. With $d = 3$, a site can
+hold two bosons, $\tfrac U2 n(n-1)$ appears as a third group (diagonal), and the hopping matrix elements acquire $\sqrt2$ factors.
+The next cell builds the Bose-Hubbard step on a 4-site chain and measures its cost the same way, for all four encodings, next to the hard-core chain of the same length.
+
+```python
+def bose_hubbard(num_sites, tunneling=1.0, interaction=2.0):
+    """Grouped Bose-Hubbard Hamiltonian on an open chain: group 0 = even bonds, 1 = odd bonds, 2 = on-site."""
+    edges = [(i, i + 1) for i in range(num_sites - 1)]
+    terms = {}
+    for i, j in edges:
+        terms[(cre(i), ann(j))] = -tunneling
+        terms[(cre(j), ann(i))] = -tunneling
+    for i in range(num_sites):
+        terms[(cre(i), cre(i), ann(i), ann(i))] = 0.5 * interaction
+    operator = BosonOperator.from_dict(terms)
+
+    def group_of(actions):
+        creations = sorted(m for a, m in actions if a)
+        annihilations = sorted(m for a, m in actions if not a)
+        if creations == annihilations:
+            return 2
+        return (
+            edges.index(tuple(sorted(set(creations) | set(annihilations))))
+            % 2
+        )
+
+    raw = [group_of(actions) for actions, _ in operator.iter_terms()]
+    remap = {g: i for i, g in enumerate(sorted(set(raw)))}
+    operator.groups = [remap[g] for g in raw]
+    return operator
+```
+
+```python
+contrast = {}
+print(
+    f"{'4-site chain, one Trotter step':40s} {'qubits':>6s} {'2q depth':>9s} {'2q count':>9s}"
+)
+for encoding in ENCODINGS:
+    qubits = to_qubits(
+        bosonic_circuit(bose_hubbard(4)), max_occupation=2, encoding=encoding
+    )
+    lowered = transpile_to_basis(qubits)
+    contrast[encoding] = (
+        qubits.num_qubits,
+        lowered.depth(two_qubit),
+        lowered.num_nonlocal_gates(),
+    )
+    print(
+        f"Bose-Hubbard d=3, {encoding!s:17s}      {contrast[encoding][0]:6d} {contrast[encoding][1]:9d} {contrast[encoding][2]:9d}"
+    )
+chain = to_qubits(bosonic_circuit(hardcore(4, 1)[0]))
+lowered = transpile_to_basis(chain)
+hc_chain = (
+    chain.num_qubits,
+    lowered.depth(two_qubit),
+    lowered.num_nonlocal_gates(),
+)
+print(
+    f"{'hard-core d=2, gray':40s} {hc_chain[0]:6d} {hc_chain[1]:9d} {hc_chain[2]:9d}"
+)
+```
+
+```text
+4-site chain, one Trotter step           qubits  2q depth  2q count
+Bose-Hubbard d=3, unary_projected            12       645       984
+Bose-Hubbard d=3, unary_unprojected          12       367       552
+Bose-Hubbard d=3, standard_binary             8       212       323
+Bose-Hubbard d=3, gray                        8        95       152
+hard-core d=2, gray                           4         4         6
+```
+
+The physics becomes significantly more complicated and the favorable scaling disappears.
+
+This tutorial used hard-core bosons because they make for simple analyses while emphasizing the benefits of the `qiskit-bosons` package and architecture of its transpiler framework. It is set up to investigate real bosonic physics beyond such simple truncation limits, but exploring these circuits and researching their application is now up to you.
+## 8. Takeaways and next steps
+
+The output below recaps the circuit cost of a single Trotter step for the hard-core lattices, and the Trotter error of the small system.
+
+```python
+print(
+    f"{'one Trotter step, Gray code':28s} {'qubits':>6s} {'2q depth':>9s} {'2q gates':>9s}"
+)
+for size in SIZES:
+    qubits, depth, count = ABSTRACT[LevelEncoding.GRAY, size]
+    print(
+        f"{size[0]:2d} x {size[1]:<2d} (also on Nighthawk)    {qubits:6d} {depth:9d} {count:9d}"
+    )
+unary_ratio = tuple(
+    ABSTRACT[LevelEncoding.UNARY_UNPROJECTED, (4, 4)][k]
+    / ABSTRACT[LevelEncoding.GRAY, (4, 4)][k]
+    for k in (0, 1, 2)
+)
+print(
+    f"\nunary / Gray on 4x4: qubits {unary_ratio[0]:.0f}x, depth {unary_ratio[1]:.1f}x, gates {unary_ratio[2]:.1f}x"
+)
+print(
+    f"Trotter 4x4, T = {T_FINAL:g}, {STEP_COUNTS[-1]} steps, max density error: order 1 {trotter_rows[1][-1, 1]:.1e}, order 2 {trotter_rows[2][-1, 1]:.1e}"
+)
+```
+
+```text
+one Trotter step, Gray code  qubits  2q depth  2q gates
+ 2 x 2  (also on Nighthawk)         4         4         8
+ 3 x 3  (also on Nighthawk)         9         8        24
+ 4 x 4  (also on Nighthawk)        16         8        48
+ 5 x 5  (also on Nighthawk)        25         8        80
+ 6 x 6  (also on Nighthawk)        36         8       120
+ 7 x 7  (also on Nighthawk)        49         8       168
+ 8 x 8  (also on Nighthawk)        64         8       224
+ 9 x 9  (also on Nighthawk)        81         8       288
+10 x 10 (also on Nighthawk)       100         8       360
+10 x 12 (also on Nighthawk)       120         8       436
+
+unary / Gray on 4x4: qubits 2x, depth 22.8x, gates 23.0x
+Trotter 4x4, T = 2, 32 steps, max density error: order 1 5.5e-03, order 2 3.4e-04
+```
+
+From these numbers, you can draw some high-level takeaways. The first ones are about the framework, which is what you
+carry over to other bosonic models. The later ones are about what the results show for hard-core bosons, the simple test case.
+
+* **A framework for bosonic physics.** `qiskit-bosons` separates three things: the model (a `BosonOperator`, grouped here
+  by edge color), the circuit (one `Evolution` gate and a Trotter formula that splits it), and the lowering to qubits (the mode
+  truncation $d$ and the `LevelEncoding`, chosen when the transpiler preset runs). Changing one of them leaves the other two
+  untouched (sections 2 and 7).
+* **Why Trotterize at the bosonic level.** The grouping lives in the operator, so the Trotter circuit comes out with a flat depth
+  without any ordering by hand. One `PauliEvolutionGate` over the same qubit operator has the same Trotter error order and
+  scaling, and with the terms sorted by color it is the identical circuit. In another order, the depth grows with the lattice
+  (84 against 8 for one first-order step at $10\times12$) or the gate count is about a third higher (sections 4 and 5).
+* **Accuracy.** The only numerical error is the Trotter error between the colors, and it falls with the number of steps as
+  expected for first and second order (section 4). The qubit side and the encoding add nothing.
+* **The encoding is a cost choice.** At $d = 2$, all four encodings give the same physics. The compact codes need half the
+  qubits and are about 20 times cheaper in depth and gates than the unary ones (section 5).
+* **Hardware.** With the natural embedding of the lattice, every gate already sits on a Nighthawk coupler, so the chip runs the
+  circuit with no routing overhead at any size up to the whole chip (section 6).
+* **Hard-core bosons are the entry point, not the goal.** They are the $U\to\infty$ limit of Bose-Hubbard, with the XY model as
+  a spin-1/2 equivalent. They are exactly free fermions on an open chain but not on a square lattice, which makes 2D the
+  interesting case (section 1). Raising the truncation to $d = 3$ brings the on-site interaction back and the cost jumps (a
+  4-site chain goes from a two-qubit depth of 4 to 95 in the Gray code, section 7). That is where the exploration of bosonic
+  physics begins, and the same framework carries it.
+**Caveats.** All depths are for a noise-free fake backend (`FakeNighthawk`) and one fixed basis (`cz, rz, sx, x`, optimization
+level 3); they compare structure, not fidelity. The routed numbers equal the abstract ones only because the natural embedding
+puts every gate on a coupler. The Néel quench is one initial state; the Trotter error depends on the state and on $T$. Nothing
+here runs on real hardware.
+
+**Next steps.** Hard-core bosons are a simple, checkable model to learn the framework on. From here, the same building
+blocks apply to the models that are hard to treat classically:
+
+* Larger cutoffs $d$ (soft-core bosons, the full Bose-Hubbard model), where the choice of encoding and of Trotter formula
+  matters much more than here (section 7)
+* Other Hamiltonians, such as bosons with a different interaction or a different coupling to their environment
+* Other lattices, such as triangular or honeycomb, which need other edge colorings and other hardware embeddings
+* Correlation functions as observables, such as $\langle X_iX_j + Y_iY_j\rangle$ and density-density correlators
+* Mixed models (bosons coupled to fermions or to a bath)
+
+<TutorialFeedback />

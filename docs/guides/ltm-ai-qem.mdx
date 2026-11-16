@@ -1,0 +1,1142 @@
+---
+title: "AI-QEM by LTM"
+sidebar_label: "AI-QEM by LTM"
+description: "Mitigate quantum errors with LTM AI-QEM, a Function using GCN-Transformer models with no additional QPU runtime."
+notebook_path: "guides/ltm-ai-qem.ipynb"
+---
+
+
+<OpenInLabBanner notebookPath="guides/ltm-ai-qem.ipynb" />
+
+
+{/* cspell:ignore França, Hiroyasu, Khatri, Kristan, Nobuyuki, Quek, Ryuji, Sagawa, Sergey, Stilck, Tajima, Takagi, Takahiro, Tsubouchi, edgecolor, fontsize, markeredgecolor, untranspiled */}
+
+<Admonition type="note">
+  IBM Quantum&reg; Functions are a beta feature available only to IBM Quantum Premium Plan, Flex Plan, and On-Prem (through the IBM Quantum Platform API) Plan users. Beta features are subject to change.
+</Admonition>
+
+*See the [API reference](https://docs.quantum.ibm.com/functions/ltm-ai-qem/api-reference).*
+
+<Admonition type="note" title="Current limitations">
+  The current release of **AI-QEM** has the following limitations:
+
+- **Mitigation is limited to the [Heron processor](/guides/processor-types#heron) family.** LTM plans to support additional backends in future versions.
+- **Error mitigation is applied selectively.** Mitigation is performed only when the absolute expectation value satisfies **$|\langle O \rangle_{noisy}| \geq 0.1$**, so that mitigation is applied only where it is expected to provide meaningful benefit.
+
+These limitations reflect the current scope of AI-QEM. Future releases might relax them as LTM adds support for additional workflows, backends, and features.
+</Admonition>
+
+## Overview
+
+Quantum error mitigation (QEM) encompasses algorithmic protocols, such as zero-noise extrapolation (ZNE) [[2]](#references) and probabilistic error cancellation (PEC) [[3]](#references), that are designed to suppress noise-induced bias in expectation values on noisy intermediate-scale quantum (NISQ) hardware, without the large qubit overhead of full fault tolerance. These methods are critical for extracting reliable physical simulations and benchmark results from current processors. Although many QEM methods have been developed in recent years, almost all of them share a fundamental trade-off: they rely on significantly more QPU time to achieve accuracy. Their defining limitation is an exponential sampling overhead, because reconstructing an unbiased signal from noisy circuits greatly increases the statistical variance of the estimator. Consequently, overcoming higher noise levels requires orders of magnitude more measurement shots, which leads to significantly longer QPU runtimes and substantial hardware bottlenecks [[4, 5, 6]](#references).
+
+![Diagram of the AI-QEM workflow. A user-provided Estimator PUB and IBM backend coupling and calibration data feed into the AI-QEM circuit function, which decomposes observables into Pauli strings, measures noisy Pauli expectation values on IBM Quantum hardware, predicts correction factors with an LTM AI model, and applies the corrections to compute mitigated expectation values. A bar chart compares noisy, mitigated, and ideal values for five observables.](/docs/images/guides/ltm-ai-qem/workflow.svg "AI-QEM workflow")
+
+With AI-QEM, you can run quantum circuits on noisy QPUs and obtain improved expectation values compared to other AI-based error mitigation techniques, without any additional QPU runtime overhead. The approach uses a deep neural network with a graph convolutional network (GCN)-Transformer architecture. The network is trained on features that include circuit structure, backend topology, Pauli observables, and qubit calibrations, and it predicts a correction factor, denoted by $\zeta$. Dividing the noisy expectation value by $\zeta$ produces an improved expectation value. Experiments show that AI-QEM produces better results than other AI-based mitigation methods, particularly for circuits with large depth (gate layers) and width (number of qubits), which makes it well suited for utility-scale quantum experiments. The table in the [Benchmarks](#benchmarks) section shows that the GCN-Transformer-based model surpasses random forest (RF)-based models in the 80- to 150-qubit range, with a mean absolute error (MAE) of 0.343. The MAE is the average, over a large number of circuit and observable configurations, of the absolute difference between the ideal expectation value and the expectation value after the model mitigates the noisy hardware result. Furthermore, because the model is circuit-agnostic, you can apply it to a wide range of quantum circuits and applications without circuit-specific customization.
+
+For a full description of the underlying components and a utility-scale demonstration, refer to the AI-QEM paper [[1]](#references).
+
+## Description
+
+Use the LTM AI-QEM function to estimate the expectation values of observables for a given quantum circuit. To use LTM AI-QEM, provide a quantum circuit, a set of observables to measure, and a QPU. The function uses the same QPU time as the IBM Quantum Estimator primitive, and no additional QPU time.
+
+The usual way to compute the expectation value of an observable $O$ is to decompose the observable into a sum of Pauli operators, $O=\sum_i{c_i}{P_i}$, and calculate the expectation value of each Pauli operator, $\langle P_i \rangle$, individually. The expectation value of the observable, $\langle O \rangle$, is then the same linear combination of the Pauli expectation values: ${\langle O \rangle}=\sum_i{c_i}{\langle P_i \rangle}$. If a set of Pauli operators commute with each other, the measurements required to compute their expectation values can be done simultaneously. When you run a circuit with the LTM AI-QEM function, the function uses the Estimator primitive to run the circuit on hardware as usual. It follows the same procedure of decomposing the observable into Pauli operators and computing their expectation values individually. Then the GCN-Transformer, a deep learning architecture, predicts a correction factor $\zeta_i$ for each Pauli operator $P_i$. The function uses this correction factor to correct the noisy expectation value of each Pauli operator: ${\langle P_i \rangle}_{mitigated} = \frac{{\langle P_i \rangle}_{noisy}}{\zeta_i}$. The mitigated expectation value is therefore ${\langle O \rangle}_{mitigated} = \sum_i{c_i}{\langle {P_i} \rangle}_{mitigated} = \sum_i{c_i}{\frac{{\langle P_i \rangle}_{noisy}}{\zeta_i}}$.
+
+The workflow for using the LTM AI-QEM function is as follows:
+
+1. Define your circuits and observables.
+2. Run the LTM AI-QEM function by passing a circuit and observable pairs as primitive unified blocs (PUBs).
+3. Retrieve the results, which contain the expectation value of the observable with respect to the corresponding quantum circuit in each PUB.
+
+Many test examples empirically show that the LTM AI-QEM function improves the estimation of observables. The function has the following features:
+
+- **Utility-scale experiments:** Test examples show that AI-QEM performs better than other AI-based methods for circuits with large depth and large width. See the [Benchmarks](#benchmarks) section for results.
+- **Primitive:** The function supports the Estimator primitive, so you can use it to compute the expectation value of any observable with respect to any quantum circuit.
+- **Primitive unified bloc (PUB):** The LTM AI-QEM function supports all types of PUBs (that is, all circuit-observable configurations) that the Estimator primitive supports.
+
+The AI-QEM technique begins with dataset construction, in which random quantum circuits are generated with various parameter settings. For each circuit, both the ideal expectation values (obtained through simulation) and the noisy expectation values (obtained from hardware execution) are computed. These results, along with the corresponding quantum circuits and backend information, are stored in a dataset repository. The dataset is then used to train a machine-learning or deep-learning model that can mitigate noise in quantum computations, and the trained model is saved for future use. During inference, the trained model takes as input a quantum circuit, its noisy expectation value computed on hardware, the relevant observables, and backend information. The model then processes these inputs to produce a noise-mitigated expectation value.
+
+## Benchmarks
+
+The following table shows the performance of the LTM AI-QEM function for different types of circuits, circuit configurations, and observable configurations.
+
+| Circuit | Qubits | Processor | Description | Accuracy | Time (QPU / CPU) |
+| --- | --- | --- | --- | --- | --- |
+| Mirror circuit (RealAmplitudes) | 30 | Heron r2 | reps = 1, Two-qubit depth = 58, Observable Pauli weight = 1 | 96% | QPU: 14 s<br/>CPU: 4 s |
+| Mirror circuit (TwoLocal) | 35 | Heron r2 | reps = 1, Two-qubit depth = 68, Observable Pauli weight = 1 | 81% | QPU: 14 s<br/>CPU: 4 s |
+| Mirror circuit (EfficientSU2) | 40 | Heron r2 | reps = 1, Two-qubit depth = 78, Observable Pauli weight = 1 | 95% | QPU: 14 s<br/>CPU: 4 s |
+| Clifford circuit | 50 | Heron r2 | Two-qubit depth = 35, Observable Pauli weight = 10 | 95.53% | QPU: 23 s<br/>CPU: 30 s |
+| Clifford circuit | 50 | Heron r2 | Two-qubit depth = 40, Observable Pauli weight = 12 | 84% | QPU: 22 s<br/>CPU: 51 s |
+| Clifford circuit | 50 | Heron r2 | Two-qubit depth = 30, Observable Pauli weight = 15 | 94.44% | QPU: 22 s<br/>CPU: 54 s |
+| Clifford circuit | 100 | Heron r2 | Two-qubit depth = 45, Observable Pauli weight = 5 | 95.06% | QPU: 22 s<br/>CPU: 239 s |
+| Clifford circuit | 100 | Heron r2 | Two-qubit depth = 35, Observable Pauli weight = 11 | 94.82% | QPU: 22 s<br/>CPU: 245 s |
+| Ising (chaotic angles) | 28 | Heron r2 | Trotter steps = 5, Two-qubit depth = 84, Observable = Average magnetization | 87.29% | QPU: 23 s<br/>CPU: 25 s |
+| Ising (chaotic angles) | 36 | Heron r2 | Trotter steps = 6, Two-qubit depth = 228, Observable = Average magnetization | 90.51% | QPU: 23 s<br/>CPU: 31 s |
+| Ising (chaotic angles) | 96 | Heron r2 | Trotter steps = 8, Two-qubit depth = 496, Observable = Average magnetization | 90.29% | QPU: 23 s<br/>CPU: 220 s |
+| Ising (near-Clifford angles) | 56 | Heron r2 | Trotter steps = 7, Two-qubit depth = 322, Observable = Average magnetization | 89.51% | QPU: 23 s<br/>CPU: 53 s |
+| Ising (small angles) | 76 | Heron r2 | Trotter steps = 10, Two-qubit depth = 540, Observable = Average magnetization | 91.36% | QPU: 23 s<br/>CPU: 111 s |
+
+**Note:** CPU time is the post-processing time. The three mirror circuits were submitted together in one run, so the recorded QPU and CPU times are for all three circuits together. Each Clifford circuit run contained nine PUBs with different circuit depths, so the recorded times are for all nine PUBs together. Each Ising circuit run contained 10 PUBs with different numbers of Trotter steps, so the recorded times are for all 10 PUBs together.
+
+For the mirror circuits, the benchmarks use the RealAmplitudes, TwoLocal, and EfficientSU2 ansätze with 30, 35, and 40 qubits, respectively. The observables consist of a single Pauli-$Z$ operator on a randomly selected qubit, with an ideal expectation value of 1.
+
+For the Clifford circuits, the benchmarks use 50- and 100-qubit circuits with observables initialized as one or more randomly positioned Pauli-$Z$ operators. Operator evolution increases the Pauli weight of these observables, which provides more complex observables for benchmarking. The observables are constructed to have an ideal expectation value of 1, which is independently verified with stabilizer simulation.
+
+For the Trotterized 2D tilted-field Ising (TFI) Hamiltonian simulations, the benchmarks use three parameter regimes: small angle $(\theta_X,\theta_Z,\theta_{ZZ})=(0.1,0.1,0.1)$, near-Clifford $(0.1,0.05,1.5708)$, and chaotic $(0.53,0.1,1.0)$. The observable is the average magnetization,
+
+$$
+O_M = \frac{1}{M}\sum_i Z_i,
+$$
+
+where $M$ is the number of qubits in the simulation. Ideal expectation values are computed with sparse Pauli dynamics (SPD), a Pauli propagation method, and are validated against Qiskit statevector simulations for circuits with fewer than 29 qubits.
+
+For all benchmarks, mitigation accuracy is calculated as
+
+$$
+\mathrm{Accuracy}
+=
+\left(
+1-
+\frac{
+\left|\langle O\rangle_{\mathrm{ideal}}-\langle O\rangle_{\mathrm{mitigated}}\right|
+}{
+\langle O\rangle_{\mathrm{ideal}}
+}
+\right)\times100\%,
+$$
+
+where $\langle O\rangle_{\mathrm{ideal}}$ and $\langle O\rangle_{\mathrm{mitigated}}$ are the ideal and mitigated expectation values, respectively.
+## Get started
+
+Authenticate using your [IBM Quantum Platform API key](https://quantum.cloud.ibm.com/), and select the LTM AI-QEM function as follows. (This snippet assumes that you already [saved your account](/guides/functions-get-started#install-qiskit-functions-catalog-client) to your local environment.)
+
+```python
+# Added by doQumentation — installs the packages this notebook needs if they are missing
+import importlib.util
+
+_needed = {"matplotlib": "matplotlib", "numpy": "numpy", "qiskit": "qiskit", "qiskit_ibm_catalog": "qiskit-ibm-catalog", "qiskit_ibm_runtime": "qiskit-ibm-runtime"}
+_missing = [pip for module, pip in _needed.items()
+            if importlib.util.find_spec(module) is None]
+# One at a time, so a package that fails to install does not block the others
+for _pip in _missing:
+    %pip install -q {_pip}
+if not _missing:
+    print("\u2713 All required packages are installed")
+```
+
+```python
+from qiskit_ibm_catalog import FunctionsCatalog
+
+catalog = FunctionsCatalog(channel="ibm_quantum_platform")
+# Verify that you have access to the function.
+catalog.list()
+```
+
+```text
+[QiskitFunction(ltm/ai-qem)]
+```
+
+```python
+# Load the function.
+ltm_function = catalog.load("ltm/ai-qem")
+```
+
+## Examples
+### Example 1: GHZ circuit
+
+This example shows the basic workflow of the LTM AI-QEM function with a simple $n$-qubit GHZ circuit and the two-body tensor product observable $Z_iZ_j$, whose expectation value for the GHZ state is known to be 1.
+
+#### Construct the PUB
+
+Like the Estimator primitive, the LTM AI-QEM function accepts primitive unified blocs (PUBs) as input. A PUB is a tuple of the form `(circuit, observables, parameter_values, precision)`, where `parameter_values` is required for parametric circuits and `precision` is optional.
+
+##### Circuit
+
+The $n$-qubit Greenberger-Horne-Zeilinger (GHZ) state is given by:
+$$
+|GHZ\rangle_{n}
+= \frac{\vert{0}\rangle^{\otimes{n}} + \vert{1}\rangle^{\otimes{n}}}{\sqrt2}
+= \frac{\overbrace{\vert{00}\dots{0}\rangle}^{\text{$n$ qubits}} + \overbrace{\vert{11}\dots{1}\rangle}^{\text{$n$ qubits}}}{\sqrt2}.
+$$
+To construct the $n$-qubit GHZ state, initialize all qubits in the $|0\rangle$ state and apply a Hadamard gate to the first qubit to create an equal superposition. Then apply a sequence of CNOT gates across the entire register, with qubit $i$ as the control and qubit $i+1$ as the target. This staircase of entangling gates propagates the initial superposition to all qubits, which results in the entangled GHZ state.
+
+##### Observables
+
+Measuring the two-body tensor product $Z_i \otimes Z_j$ on a GHZ state evaluates the parity correlation between any two qubits in the register. Because the GHZ state is a superposition of the all-zeros and all-ones states, any two qubits are perfectly correlated. The eigenvalue is $(+1 \times +1) = 1$ for the $\vert00\dots0\rangle$ branch and $(-1 \times -1) = 1$ for the $\vert11\dots1\rangle$ branch. Because both branches return +1, the theoretical expectation value is 1. Construct the observable with the `SparsePauliOp` class.
+
+Because the circuit is not parametric, construct the PUB as `(circuit, observable)`.
+
+```python
+from qiskit import QuantumCircuit
+from qiskit.quantum_info import SparsePauliOp
+
+def construct_ghz_circuit(n: int):
+    """Constructs GHZ circuit with n qubits."""
+    circuit = QuantumCircuit(n)
+    circuit.h(0)
+    for i in range(n - 1):
+        circuit.cx(i, i + 1)
+    return circuit
+
+# Construct a GHZ circuit with the specified number of qubits
+num_qubits = 50
+ghz_circuit = construct_ghz_circuit(num_qubits)
+
+# Observables
+obs = SparsePauliOp.from_sparse_list(
+    [("ZZ", [0, 49], 1.0)], num_qubits=num_qubits
+)
+
+# PUB
+pub = (ghz_circuit, obs)
+
+print("Details:")
+print(f"\tNumber of Qubits: {num_qubits}")
+print(f"\tCircuit Depth: {ghz_circuit.depth()}")
+print(f"\tObservable: {obs}")
+
+ghz_circuit.draw("mpl", fold=-1, scale=0.5)
+```
+
+```text
+Details:
+	Number of Qubits: 50
+	Circuit Depth: 50
+	Observable: SparsePauliOp(['ZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZ'],
+              coeffs=[1.+0.j])
+```
+
+![Output of the previous code cell](/docs/images/guides/ltm-ai-qem/extracted-outputs/e4ac6fdf-1.avif)
+
+#### Run the LTM AI-QEM function
+
+Run `ltm_function` by passing `pub` to it. You can check the status of the job with `job.status()`, and get the job ID from the `job.job_id` attribute.
+
+```python
+# Construct arguments and submit for each PUB / combined at a time
+job = ltm_function.run(  # type: ignore
+    primitive="estimator",
+    backend_name="ibm_fez",
+    pubs=[pub],
+    options={
+        "transpilation_options": {
+            "seed_transpiler": 42,
+            "optimization_level": 3,
+        },
+    },
+)
+
+print(f"Job ID: {job.job_id}")
+```
+
+```text
+Job ID: 46d75684-8efb-4ece-896e-d63492a784ec
+```
+
+```python
+print(f"Job Status: {job.status()}")
+```
+
+```text
+Job Status: DONE
+```
+
+#### Extract and visualize the results
+
+Extract the result with the `result()` method of `job`. Because the input is a single PUB with a simple structure, extracting the unmitigated and mitigated results is straightforward. Use `results[0].data.noisy_evs` and `results[0].data.evs`, respectively, where `[0]` is the index of the only `PubResult` that `result()` returns.
+
+```python
+# Extract results
+results = job.result()
+```
+
+```python
+import numpy as np
+import matplotlib.pyplot as plt
+
+def plot_bar_graph(labels, values, errors, colors, ylabel, title):
+    """Draw one colored bar per result, with error bars and value labels."""
+    fig, ax = plt.subplots(figsize=(6, 3))
+
+    # Draw each bar with its own color, error bar, and legend entry
+    for label, value, error, color in zip(labels, values, errors, colors):
+        bars = ax.bar(
+            label,
+            value,
+            yerr=error,
+            color=color,
+            label=label.replace("\n", " "),  # legend text on a single line
+            capsize=5,
+            edgecolor="black",
+            alpha=0.8,
+        )
+        ax.bar_label(
+            bars, fmt="%.2f", padding=3, fontsize=10
+        )  # show value on top
+
+    # Titles and labels
+    ax.set_ylabel(ylabel, fontsize=12)
+    ax.set_title(title, pad=15)
+    ax.legend()
+
+    # Leave 15% headroom so the value labels are not cut off
+    y_min, y_max = ax.get_ylim()
+    ax.set_ylim(min(0, y_min), y_max * 1.15)
+
+    ax.grid(axis="y", linestyle="--", alpha=0.7)
+    plt.show()
+
+# Get the results from the experiment
+noisy_evs, noisy_stds = (
+    results[0].data["noisy_evs"],
+    results[0].data["noisy_stds"],
+)  # without error mitigation
+mitigated_evs, mitigated_stds = (
+    results[0].data["evs"],
+    results[0].data["stds"],
+)  # after AI-QEM
+
+# For a perfect GHZ state, <Z_i Z_j> = 1 with no uncertainty
+ideal_evs = np.ones_like(noisy_evs)
+ideal_stds = np.zeros_like(noisy_stds)
+
+# Plot the three results side by side
+plot_bar_graph(
+    labels=["Unmitigated", "Mitigated\nby AI-QEM", "Ideal"],
+    values=[noisy_evs, mitigated_evs, ideal_evs],
+    errors=[noisy_stds, mitigated_stds, ideal_stds],
+    colors=["#ff7f0e", "#1f77b4", "#2ca02c"],  # orange, blue, green
+    ylabel=r"$\langle Z_iZ_j\rangle$",
+    title="Expectation Values with Statistical Error",
+)
+```
+
+![Output of the previous code cell](/docs/images/guides/ltm-ai-qem/extracted-outputs/5fe49962-0.avif)
+
+### Example 2: Mirror circuit
+
+This example uses a mirror circuit to calculate expectation values of observables passed in PUBs of different shapes. It demonstrates the LTM AI-QEM function and its compatibility with different PUB shapes, and compares the mitigated results with the unmitigated results.
+
+A mirror circuit applies a randomly generated circuit and then its inverse. In an ideal, noiseless execution, the two halves cancel and return the qubits to their initial state. This makes the circuit useful for studying how hardware and runtime noise affect an otherwise predictable result.
+
+In this example, you construct multiple PUBs. Each PUB pairs the same mirror circuit with observables, made up of Pauli operators, that are given in different shapes.
+
+The LTM AI-QEM function evaluates these observables and returns both the expectation values from the noisy execution and the values after mitigation. This example has two goals: to verify that the function accepts the supported PUB formats, and to compare the mitigated expectation values with the noisy values to see how effectively the error mitigation workflow restores the expected behavior of the mirror circuit.
+
+#### Construct the PUBs
+
+Each PUB is a tuple of a circuit and a list of observables. The function computes the expectation values of the observables with respect to the circuit. In this example, the circuit is the same for all of the observable configurations. You pass the list of PUBs, `pubs`, to `ltm_function` to run.
+
+##### Circuit
+
+First, create a mirror circuit with five qubits. To do this, create a random circuit with the Qiskit `random_circuit` function. Specify the number of qubits (`n_qubits=5`), the circuit depth (`depth=5`), and a seed for reproducibility (`seed=42`). Then add a `barrier` at the end of the random circuit, and use `unitary_overlap` to create the mirror circuit. Because `unitary_overlap(U1, U2)` creates the circuit that corresponds to $U_{2}^{\dagger}U_{1}$, passing the same circuit as both arguments creates the mirror circuit. The `barrier` prevents the circuit from becoming the identity during transpilation. The code output shows the depth of the mirror circuit, which is expected to be about 10 for `depth=5`, plus the barrier layers.
+
+##### Observables
+
+Next, create the lists of observables whose expectation values you want to compute, in different formats. First, define the variables `ALL_X_PAULI = XXXXX`, `ALL_Y_PAULI = YYYYY`, and `ALL_Z_PAULI = ZZZZZ`, which represent the corresponding Pauli observables on all five qubits.
+
+Then define `obs_1` as a list of three observables. The first is a linear combination of two Pauli operators, $0.3\,ZZZZZ + 0.5\,XXXXX$, defined as a `SparsePauliOp`. The second is `SparsePauliOp([ALL_Z_PAULI])`, also a `SparsePauliOp`. The third is the Pauli string `ALL_X_PAULI`. The PUB with `obs_1` has an observable array of shape `(3,)`.
+
+Finally, define `obs_2` in a matrix layout, that is, as a list of lists, where each inner list contains observables of type `SparsePauliOp` or Pauli strings. The first row contains `ALL_X_PAULI` and $0.3\,ZZZZZ + 0.5\,YYYYY$. The second row contains $0.3\,XXXXX + 0.5\,ZZZZZ$ and $2.0\,ZZZZZ$. The PUB with `obs_2` has an observable array of shape `(2, 2)`.
+
+Collect the two PUBs as `pubs = [(mirror_circuit, obs_1), (mirror_circuit, obs_2)]`.
+
+```python
+import numpy as np
+from qiskit.circuit.library import unitary_overlap
+from qiskit.circuit.random import random_circuit
+from qiskit.quantum_info import SparsePauliOp
+
+def create_mirror_circuit(
+    n_qubits: int, depth: int, seed: int = 42
+) -> QuantumCircuit:
+    """Generates an n-qubit random circuit followed by its inverse (mirror) and measure all qubits."""  # noqa: E501
+    circuit = random_circuit(n_qubits, depth=depth, seed=seed)
+    circuit.barrier()
+    mirror_circuit = unitary_overlap(circuit, circuit)
+    return mirror_circuit
+
+NUM_QUBITS, DEPTH, SEED = 5, 5, 42
+
+# Construct circuit
+mirror_circuit = create_mirror_circuit(
+    n_qubits=NUM_QUBITS, depth=DEPTH, seed=SEED
+)
+
+# Observables
+ALL_X_PAULI, ALL_Y_PAULI, ALL_Z_PAULI = (
+    "X" * NUM_QUBITS,
+    "Y" * NUM_QUBITS,
+    "Z" * NUM_QUBITS,
+)
+
+obs_1 = [
+    SparsePauliOp([ALL_Z_PAULI, ALL_X_PAULI], np.array([0.3, 0.5])),
+    SparsePauliOp([ALL_Z_PAULI]),
+    ALL_X_PAULI,
+]
+
+obs_2 = [
+    [
+        ALL_X_PAULI,
+        SparsePauliOp([ALL_Z_PAULI, ALL_Y_PAULI], np.array([0.3, 0.5])),
+    ],
+    [
+        SparsePauliOp([ALL_X_PAULI, ALL_Z_PAULI], np.array([0.3, 0.5])),
+        SparsePauliOp([ALL_Z_PAULI], np.array(2.0)),
+    ],
+]
+
+# PUB Construction
+pubs = [(mirror_circuit, obs_1), (mirror_circuit, obs_2)]
+
+print("Details:")
+print(f"\t#PUBS: {len(pubs)}")
+print(f"\tNumber of Qubits: {NUM_QUBITS}")
+print(f"\tMirror Circuit Depth: {mirror_circuit.depth()}")
+
+mirror_circuit.draw("mpl", fold=-1)
+```
+
+```text
+Details:
+	#PUBS: 2
+	Number of Qubits: 5
+	Mirror Circuit Depth: 10
+```
+
+![Output of the previous code cell](/docs/images/guides/ltm-ai-qem/extracted-outputs/6fe3f1cb-1.avif)
+
+#### Run the LTM AI-QEM function
+
+Run `ltm_function` by passing `pubs` to it.
+
+```python
+# Construct arguments and submit for each PUB / combined at a time
+job = ltm_function.run(  # type: ignore
+    primitive="estimator",
+    backend_name="ibm_fez",
+    pubs=pubs,
+    options={
+        "transpilation_options": {
+            "seed_transpiler": 42,
+            "optimization_level": 3,
+        },
+    },
+)
+
+print(f"Job ID: {job.job_id}")
+```
+
+```text
+Job ID: 02562c68-2a16-425d-9258-de508f24aad6
+```
+
+Check your workload's [status](/guides/functions-get-started#check-job-status) or return [results](/guides/functions-get-started#retrieve-results) as follows:
+
+```python
+print(f"Job Status: {job.status()}")
+```
+
+```text
+Job Status: DONE
+```
+
+#### Extract and visualize the results
+
+```python
+results = job.result()
+```
+
+```python
+import numpy as np
+from qiskit.primitives.containers import EstimatorPub
+
+def _term_label(term):
+    """{'ZZZZZ': 0.3, 'XXXXX': 0.5} -> '0.3 ZZZZZ\n+\n0.5 XXXXX'"""
+    return "\n+\n".join(
+        p if c == 1 else f"{c:g} {p}" for p, c in term.items()
+    )
+
+def plot_pub(pubs, result, index, ideal=None, title="", ax=None):
+    pub = EstimatorPub.coerce(pubs[index])
+    data = result[index].data
+
+    series = [
+        ("Unmitigated", data.noisy_evs, data.noisy_stds, "#d62728"),
+        ("Mitigated", data.evs, data.stds, "#1f77b4"),
+    ]
+    if ideal is not None:
+        series.append(
+            (
+                "Ideal",
+                np.asarray(ideal, dtype=float),
+                np.zeros(np.shape(ideal)),
+                "#2ca02c",
+            )
+        )
+
+    obs = pub.observables
+    labels = np.empty(obs.shape, dtype=object)
+    for idx in np.ndindex(obs.shape):
+        labels[idx] = _term_label(obs[idx])
+    labels = np.broadcast_to(labels, np.shape(data.evs)).ravel()
+
+    x = np.arange(len(labels))
+    width = 0.8 / len(series)
+    offsets = (np.arange(len(series)) - (len(series) - 1) / 2) * width
+
+    standalone = ax is None
+    if standalone:
+        fig, ax = plt.subplots(figsize=(max(6, 1.8 * len(labels)), 5))
+
+    for off, (name, vals, errs, color) in zip(offsets, series):
+        bars = ax.bar(
+            x + off,
+            np.ravel(vals),
+            width,
+            yerr=np.ravel(errs),
+            color=color,
+            label=name,
+            capsize=3,
+            edgecolor="black",
+        )
+        ax.bar_label(bars, fmt="%.2f", padding=3, rotation=90, fontsize=9)
+
+    ax.set_xticks(x, labels, fontsize=9)
+    ax.set_xlabel("Observables")
+    ax.set_ylabel("Expectation Value")
+    ax.set_title(title or f"PUB {index}", pad=15, fontweight="bold")
+    ax.grid(axis="y", linestyle="--", alpha=0.6)
+
+    y_min, y_max = ax.get_ylim()
+    ax.set_ylim(min(0, y_min - 0.1), y_max * 1.3)
+
+    if standalone:
+        ax.legend(loc="upper left", bbox_to_anchor=(1, 1))
+        ax.figure.tight_layout()
+        plt.show()
+    return ax
+
+# Ideal values (pre-computed)
+ideal_values = [[0.3, 1.0, 0.0], [0.0, 0.3, 0.5, 2.0]]
+
+# Visualize
+n = len(pubs)
+fig, axes = plt.subplots(1, n, figsize=(6 * n, 5))
+axes = np.atleast_1d(axes)  # works even when n == 1
+
+for i, ax in enumerate(axes):
+    plot_pub(pubs, results, i, ax=ax, ideal=ideal_values[i])
+
+axes[-1].legend(loc="upper left", bbox_to_anchor=(1, 1))  # one shared legend
+fig.tight_layout()
+plt.show()
+```
+
+![Output of the previous code cell](/docs/images/guides/ltm-ai-qem/extracted-outputs/a62add97-0.avif)
+
+### Example 3: Verify zero QPU overhead with LTM AI-QEM
+
+This example shows that the LTM AI-QEM function doesn't use any extra QPU time. That is, LTM AI-QEM uses no more QPU time than the Estimator primitive. The example again uses the mirror circuit, this time with two types of PUBs. In the first type, called the commuting type, all of the Pauli observables commute with each other. In the second type, called the non-commuting type, none of the Pauli observables commute with each other.
+
+For each type, the observables are defined in two ways: as a list of Pauli operators (`list_of_commuting` and `list_of_non_commuting`), and as a single `SparsePauliOp` object that represents the sum of all the Pauli operators in the list (`sum_of_commuting` and `sum_of_non_commuting`).
+
+The commuting type takes less time than the non-commuting type, because Qiskit groups the commuting Pauli operators and measures them in the same measurement setting. The example shows that a run with the LTM AI-QEM function uses the same QPU time as a run with the IBM Quantum `EstimatorV2` primitive.
+
+#### Construct the circuit
+
+```python
+mirror_circuit = create_mirror_circuit(n_qubits=5, depth=5, seed=42)
+print(f"Circuit Depth:\n{mirror_circuit.depth()}")
+
+mirror_circuit.draw(output="mpl", fold=-1)
+```
+
+```text
+Circuit Depth:
+10
+```
+
+![Output of the previous code cell](/docs/images/guides/ltm-ai-qem/extracted-outputs/9f681601-1.avif)
+
+#### Define the observables
+
+```python
+from qiskit.quantum_info import SparsePauliOp, commutator
+
+# SET A: 10 Commuting Observables (All Z and I, grouped into 1 basis)
+commuting_paulis = [
+    "ZZZZZ",
+    "IZZZZ",
+    "ZIZZZ",
+    "ZZIZZ",
+    "ZZZIZ",
+    "ZZZZI",
+    "IIZZZ",
+    "IIIZZ",
+    "IIIIZ",
+    "ZIIII",
+]
+
+# SET B: 10 Mutually Anti-Commuting Observables (Forced into 10 bases)
+# If you check any pair here, they anti-commute on exactly 1 qubit.
+non_commuting_paulis = [
+    "XIIII",
+    "ZXIII",
+    "ZZXII",
+    "ZZZXI",
+    "ZZZZX",
+    "ZZZZY",
+    "ZZZYI",
+    "ZZYII",
+    "ZYIII",
+    "YIIII",
+]
+
+for idx_i, obs_i in enumerate(non_commuting_paulis):
+    for idx_j, obs_j in enumerate(non_commuting_paulis):
+        if idx_i < idx_j:
+            commuting = (
+                commutator(SparsePauliOp(obs_i), SparsePauliOp(obs_j))  # type: ignore
+                .simplify()
+                .coeffs[0]
+                == 0
+            )  # type: ignore
+            if commuting:
+                raise ValueError(
+                    f"Observables at indices {idx_i} and {idx_j} commute."
+                )
+print("All non-commuting observables verified.")
+
+# List of Individual Pauli Strings
+list_of_commuting = [SparsePauliOp(p) for p in commuting_paulis]
+list_of_non_commuting = [SparsePauliOp(p) for p in non_commuting_paulis]
+
+# Sum of Pauli Strings
+sum_of_commuting = SparsePauliOp(commuting_paulis)
+sum_of_non_commuting = SparsePauliOp(non_commuting_paulis)
+
+print("Observables defined for commuting and non-commuting sets.")
+```
+
+```text
+All non-commuting observables verified.
+Observables defined for commuting and non-commuting sets.
+```
+
+#### Construct the PUBs
+
+```python
+list_of_commuting_pub = (mirror_circuit, list_of_commuting)
+list_of_non_commuting_pub = (mirror_circuit, list_of_non_commuting)
+
+sum_of_commuting_pub = (mirror_circuit, sum_of_commuting)
+sum_of_non_commuting_pub = (mirror_circuit, sum_of_non_commuting)
+```
+
+#### Run with the LTM AI-QEM function
+
+This example uses `ibm_kingston` as the backend.
+
+```python
+backend_name = "ibm_kingston"
+```
+
+```python
+list_of_commuting_job = ltm_function.run(  # type: ignore
+    primitive="estimator",
+    backend_name=backend_name,
+    pubs=[list_of_commuting_pub],
+    options={
+        "transpilation_options": {
+            "seed_transpiler": 42,
+            "optimization_level": 3,
+        }
+    },
+)
+
+list_of_non_commuting_job = ltm_function.run(  # type: ignore
+    primitive="estimator",
+    backend_name=backend_name,
+    pubs=[list_of_non_commuting_pub],
+    options={
+        "transpilation_options": {
+            "seed_transpiler": 42,
+            "optimization_level": 3,
+        }
+    },
+)
+
+sum_of_commuting_job = ltm_function.run(  # type: ignore
+    primitive="estimator",
+    backend_name=backend_name,
+    pubs=[sum_of_commuting_pub],
+    options={
+        "transpilation_options": {
+            "seed_transpiler": 42,
+            "optimization_level": 3,
+        }
+    },
+)
+
+sum_of_non_commuting_job = ltm_function.run(  # type: ignore
+    primitive="estimator",
+    backend_name=backend_name,
+    pubs=[sum_of_non_commuting_pub],
+    options={
+        "transpilation_options": {
+            "seed_transpiler": 42,
+            "optimization_level": 3,
+        }
+    },
+)
+
+jobs = [
+    ("List of commuting paulis", list_of_commuting_job),
+    ("Sum of commuting paulis", sum_of_commuting_job),
+    ("List of non-commuting paulis", list_of_non_commuting_job),
+    ("Sum of non-commuting paulis", sum_of_non_commuting_job),
+]
+
+print(f"{'Job ID':<40} {'Description':<30} {'Status':<15}")
+print("-" * 85)
+
+for description, job in jobs:
+    print(f"{str(job.job_id):<40} {description:<30} {str(job.status()):<15}")
+```
+
+```text
+Job ID                                   Description                    Status         
+-------------------------------------------------------------------------------------
+957d5297-baa6-4966-a839-f472826e1fff     List of commuting paulis       QUEUED         
+18ab03c7-99ed-41f1-a342-94ee0bf5c08a     Sum of commuting paulis        QUEUED         
+5ddf9867-9020-459d-9eb7-c2fd724ed4c9     List of non-commuting paulis   QUEUED         
+7015aca1-920a-4517-b2a4-7495a81929b3     Sum of non-commuting paulis    QUEUED
+```
+
+```python
+def get_func_qpu_time(job):
+    result = job.result()
+    metadata = result.metadata
+    qpu_time = (
+        metadata.get("resource_usage", {})
+        .get("RUNNING: EXECUTING_QPU", {})
+        .get("QPU_TIME", "N/A")
+    )
+    return qpu_time
+
+print(
+    f"{'Job ID':<40} {'Description':<30} {'Status':<15} {'QPU time (s)':>10}"
+)
+print("-" * 102)
+
+for description, job in jobs:
+    qpu_time = get_func_qpu_time(job)
+    print(
+        f"{str(job.job_id):<40} {description:<30} {str(job.status()):<15} {str(qpu_time):>10}s"
+    )
+```
+
+```text
+Job ID                                   Description                    Status          QPU time (s)
+------------------------------------------------------------------------------------------------------
+957d5297-baa6-4966-a839-f472826e1fff     List of commuting paulis       DONE                  12.0s
+18ab03c7-99ed-41f1-a342-94ee0bf5c08a     Sum of commuting paulis        DONE                  12.0s
+5ddf9867-9020-459d-9eb7-c2fd724ed4c9     List of non-commuting paulis   DONE                  23.0s
+7015aca1-920a-4517-b2a4-7495a81929b3     Sum of non-commuting paulis    DONE                  23.0s
+```
+
+#### Run with EstimatorV2
+
+To run the jobs with `EstimatorV2`, get the backend and instantiate `EstimatorV2`. Then transpile the circuit, and apply the layout of the transpiled circuit to the corresponding observables whose expectation values you want to compute. Finally, create PUBs by pairing the transpiled circuit with the corresponding observables, and pass them to the `run` method of `EstimatorV2`.
+
+```python
+from qiskit.transpiler.preset_passmanagers import generate_preset_pass_manager
+from qiskit_ibm_runtime import EstimatorV2
+
+backend = catalog.backend(backend_name)
+
+# transpile circuit
+pass_manager = generate_preset_pass_manager(
+    backend=backend, optimization_level=3, seed_transpiler=42
+)
+isa_circuit = pass_manager.run(mirror_circuit)
+
+# transpile observables
+isa_list_of_commuting_obs = [
+    obs.apply_layout(isa_circuit.layout) for obs in list_of_commuting
+]
+isa_list_of_non_commuting_obs = [
+    obs.apply_layout(isa_circuit.layout) for obs in list_of_non_commuting
+]
+
+isa_sum_of_commuting_obs = sum_of_commuting.apply_layout(isa_circuit.layout)
+isa_sum_of_non_commuting_obs = sum_of_non_commuting.apply_layout(
+    isa_circuit.layout
+)
+
+# pubs
+isa_pub_for_list_of_commuting = (isa_circuit, isa_list_of_commuting_obs)
+isa_pub_for_list_of_non_commuting = (
+    isa_circuit,
+    isa_list_of_non_commuting_obs,
+)
+isa_pub_for_sum_of_commuting = (isa_circuit, isa_sum_of_commuting_obs)
+isa_pub_for_sum_of_non_commuting = (isa_circuit, isa_sum_of_non_commuting_obs)
+
+# Estimator
+estimator = EstimatorV2(mode=backend)
+
+# Jobs
+job_for_list_of_commuting = estimator.run(
+    pubs=[isa_pub_for_list_of_commuting]
+)
+job_for_sum_of_commuting = estimator.run(pubs=[isa_pub_for_sum_of_commuting])
+job_for_list_of_non_commuting = estimator.run(
+    pubs=[isa_pub_for_list_of_non_commuting]
+)
+job_for_sum_of_non_commuting = estimator.run(
+    pubs=[isa_pub_for_sum_of_non_commuting]
+)
+
+estimator_jobs = [
+    ("List of commuting paulis", job_for_list_of_commuting),
+    ("Sum of commuting paulis", job_for_sum_of_commuting),
+    ("List of non-commuting paulis", job_for_list_of_non_commuting),
+    ("Sum of non-commuting paulis", job_for_sum_of_non_commuting),
+]
+
+print(f"{'Job ID':<40} {'Description':<30} {'Status':<15}")
+print("-" * 85)
+
+for description, job in estimator_jobs:
+    print(
+        f"{str(job.job_id()):<40} {description:<30} {str(job.status()):<15}"
+    )
+```
+
+```text
+Job ID                                   Description                    Status         
+-------------------------------------------------------------------------------------
+dbcq5i424mrc73ck6cqg                     List of commuting paulis       RUNNING        
+dbcq5j424mrc73ck6csg                     Sum of commuting paulis        RUNNING        
+dbcq5k1gv2cc738gpu00                     List of non-commuting paulis   QUEUED         
+dbcq5koc77vs7386qj60                     Sum of non-commuting paulis    QUEUED
+```
+
+```python
+def get_estimator_qpu_time(job):
+    _ = job.result()  # wait until job is finished
+    qpu_time = job.usage()
+    return float(qpu_time)
+
+print(
+    f"{'Job ID':<40} {'Description':<30} {'Status':<15} {'QPU time (s)':>10}"
+)
+print("-" * 102)
+
+for description, job in estimator_jobs:
+    qpu_time = get_estimator_qpu_time(job)
+    print(
+        f"{str(job.job_id()):<40} {description:<30} {str(job.status()):<15} {str(qpu_time):>10}s"
+    )
+```
+
+```text
+Job ID                                   Description                    Status          QPU time (s)
+------------------------------------------------------------------------------------------------------
+dbcq5i424mrc73ck6cqg                     List of commuting paulis       DONE                  12.0s
+dbcq5j424mrc73ck6csg                     Sum of commuting paulis        DONE                  12.0s
+dbcq5k1gv2cc738gpu00                     List of non-commuting paulis   DONE                  23.0s
+dbcq5koc77vs7386qj60                     Sum of non-commuting paulis    DONE                  23.0s
+```
+
+The Estimator primitive and the LTM AI-QEM function use the same QPU time for each setting.
+### Example 4: Brickwork Clifford circuit
+
+This example simulates Clifford circuits. This family of circuits is useful because you can design the simulation to have a known expectation value. Specifically, you can design the circuit and the observable so that the expectation value is always 1, as follows:
+
+1. **The starting point (the stabilizer):** Start with the vacuum state $|0\rangle^{{\otimes}n}$. Applying the Pauli $Z$ or the identity operator to $|0\rangle$ leaves it unchanged: $Z|0\rangle = |0\rangle$ and $I |0\rangle = |0\rangle$. Therefore, any Pauli string $P$ that is a tensor product of only $Z$ and $I$ leaves the all-zero state $|0\rangle^{{\otimes}n}$ unchanged: $P |0\rangle^{{\otimes}n} = |0\rangle^{{\otimes}n}$.
+
+2. **The Clifford evolution:** Applying the unitary $U_L$ to the state gives $|\psi\rangle = U_L |0\rangle^{{\otimes}n}$. To find an observable whose expectation value for this new state is 1, apply the same unitary transformation to the operator: $O_L = U_L P U_L^{\dagger}$. This is the Heisenberg picture of quantum mechanics.
+
+3. **Why the observable stays a single Pauli string:** If $U_L$ contained non-Clifford gates (such as T gates or arbitrary rotations), $U_L P U_L^\dagger$ would expand into a sum of many different Pauli strings. You would have to measure many different observables and add them to get 1. However, because the circuit uses only Clifford gates, the Gottesman-Knill theorem guarantees that $U_L P U_L^\dagger$ maps to exactly one Pauli string (for example, $X Y -Z X$).
+
+4. **The mathematical guarantee:** Because of this construction, computing the expectation value is a simple algebraic substitution:
+
+$$
+\langle O_L \rangle = \langle \psi | O_L | \psi \rangle
+$$
+
+Substitute $|\psi \rangle$ and $O_L$:
+$$
+(\langle 0 |^{\otimes n} U_L^{\dagger})
+(U_L P U_L^{\dagger})
+(U_L | 0 \rangle ^{\otimes n})
+$$
+
+The adjacent $U_L^\dagger U_L$ terms cancel (they equal the identity $I$):
+$$
+= \langle 0 |^{\otimes n} P | 0 \rangle ^{\otimes n}
+$$
+
+Because $P$ is a tensor product of only $Z$ and $I$, $P| 0 \rangle ^{\otimes n} = | 0 \rangle ^{\otimes n}$, and therefore:
+$$
+= \langle 0 |^{\otimes n} | 0 \rangle ^{\otimes n} = 1
+$$
+First, design quantum circuits that contain only Clifford gates: the single-qubit gates $H$, $S$, $X$, $Y$, and $Z$, and the two-qubit gate $CZ$. The `create_brickwork_clifford` function takes the number of qubits (`num_qubits`) and `depth` as arguments, and returns a Clifford quantum circuit with the given number of qubits and depth.
+
+```python
+import random
+from qiskit import QuantumCircuit
+from qiskit.circuit.library import HGate, SGate, XGate, YGate, ZGate
+
+def create_brickwork_clifford(num_qubits: int, depth: int = 2):
+    def get_random_1q_gate():
+        gates = [HGate(), SGate(), XGate(), YGate(), ZGate()]
+        return random.choice(gates)
+
+    circuit = QuantumCircuit(num_qubits)
+    for layer_idx in range(depth):
+        for qubit in range(num_qubits):
+            circuit.append(get_random_1q_gate(), [qubit])
+
+        # Add CZ Gate in brickwork pattern
+        if layer_idx % 2 == 0:
+            for qubit in range(0, num_qubits - 1, 2):
+                circuit.cz(qubit, qubit + 1)
+        else:
+            for qubit in range(1, num_qubits - 1, 2):
+                circuit.cz(qubit, qubit + 1)
+    return circuit
+```
+
+The circuits in this example have 50 qubits (`num_qubits=50`) and varying depths: 30, 35, 40, 45, 50, 55, 60, 65, and 70. For the observables, start from a Pauli string $P$ with Pauli weight 2, that is, two Pauli $Z$ operators at random positions. Then use the `evolve` method to evolve $P$ into $U_{L_i} P U_{L_i}^{\dagger}$ for the circuit $U_{L_i}$ of each depth. Save the circuits and the corresponding observables in the lists `circuits_list` and `observables_list`, respectively.
+
+```python
+from qiskit.quantum_info import Pauli, Clifford, SparsePauliOp
+import numpy as np
+
+num_qubits = 50
+depth_list = list(range(30, 71, 5))
+pauli_weight = 2
+
+# Set random seed for reproducibility
+random.seed(42)
+np.random.seed(42)
+
+circuits_list = []
+observables_list = []
+
+# Choose two unique random positions for 'Z'
+z_positions = random.sample(range(num_qubits), pauli_weight)
+
+# Build the Pauli string
+pauli_str = ["I"] * num_qubits
+for pos in z_positions:
+    pauli_str[pos] = "Z"
+Z_n = Pauli("".join(pauli_str))
+
+for depth in depth_list:
+    # Generate the brickwork stabilizer circuit
+    circuit = create_brickwork_clifford(num_qubits, depth)
+    circuits_list.append(circuit)
+
+    # Get Clifford object for the circuit
+    cliff = Clifford(circuit)
+    # Evolve Z^n by the Clifford (Heisenberg picture, default)
+    conj_pauli = Z_n.evolve(cliff, frame="s")
+    # Convert to SparsePauliOp
+    transformed_operator = SparsePauliOp(conj_pauli)
+    observables_list.append(transformed_operator)
+```
+
+To get the ideal values, run a stabilizer simulation. Create a stabilizer state from each quantum circuit with the Qiskit `StabilizerState` class, which takes a `QuantumCircuit` as input and outputs the corresponding stabilizer state. Then use the `expectation_value` method to calculate the ideal expectation value, which by design is 1 for each circuit and observable pair.
+
+```python
+from qiskit.quantum_info import StabilizerState
+
+stabilizer_result_ideal_evs = []
+for index in range(len(depth_list)):
+    # Expectation value calculated using stabilizer group algebra, NOT matrix multiplication
+    circuit = circuits_list[index]
+    observable = observables_list[index]
+
+    stab_state = StabilizerState(circuit)
+    exp_val = stab_state.expectation_value(observable)
+    stabilizer_result_ideal_evs.append(int(exp_val.real))
+
+print(
+    f"Ideal Results from Stabilizer Simulation:{stabilizer_result_ideal_evs}"
+)
+```
+
+```text
+Ideal Results from Stabilizer Simulation:[1, 1, 1, 1, 1, 1, 1, 1, 1]
+```
+
+Next, create a list of PUBs named `clifford_pubs` and pass it to `ltm_function` to compute the expectation values on hardware and mitigate them with AI-QEM.
+
+```python
+# construct pubs
+clifford_pubs = []
+for index in range(len(depth_list)):
+    clifford_pub = (circuits_list[index], observables_list[index])
+    clifford_pubs.append(clifford_pub)
+
+# submit PUB
+clifford_job = ltm_function.run(  # type: ignore
+    primitive="estimator",
+    backend_name="ibm_kingston",
+    pubs=clifford_pubs,
+    options={
+        "transpilation_options": {
+            "seed_transpiler": 42,
+            "optimization_level": 3,
+        }
+    },
+)
+
+print(f"Job ID: {clifford_job.job_id}")
+```
+
+```text
+Job ID: efa04f78-f71a-4899-9dfc-08536b2792b3
+```
+
+```python
+print("Job status: {}".format(clifford_job.status()))
+```
+
+```text
+Job status: DONE
+```
+
+#### Extract and visualize the results
+
+After the job finishes, collect the expectation values and standard deviations from each PUB result. For every circuit depth, the results include the noisy (unmitigated) values, `noisy_evs` and `noisy_stds`, and the values after mitigation by AI-QEM, `mitigated_evs` and `mitigated_stds`.
+
+Then use the `plot_clifford_results` function to plot the expectation value against the circuit depth. The plot contains the following:
+
+- **Unmitigated:** The raw expectation values returned by the hardware, shown with error bars of size $\pm\sigma$.
+- **Mitigated (AI-QEM):** The expectation values after error mitigation, also shown with error bars.
+- **Ideal (stabilizer simulation):** The noiseless expectation value, $\langle O \rangle_{\text{ideal}} = 1$, for all depths.
+- **Threshold:** A gray band that covers $-0.1 \le \langle O \rangle \le 0.1$. Values inside this band have no useful signal to mitigate, so they are left unmitigated.
+
+```python
+# Extract results
+results = clifford_job.result()
+
+noisy_evs, noisy_stds = [], []
+mitigated_evs, mitigated_stds = [], []
+
+for pub_result in results:
+    data = pub_result.data
+    # Mitigated values
+    mitigated_evs.append(data.evs)
+    mitigated_stds.append(data.stds)
+    # Noisy values (raw values returned by the hardware)
+    noisy_evs.append(data.noisy_evs)
+    noisy_stds.append(data.noisy_stds)
+```
+
+```python
+import matplotlib.pyplot as plt
+import numpy as np
+
+def plot_clifford_results(
+    depth_list,
+    noisy_evs,
+    noisy_stds,
+    mitigated_evs,
+    mitigated_stds,
+    ideal_evs,
+):
+    """Plot unmitigated, mitigated and ideal expectation values vs circuit depth."""
+    style = dict(marker="*", markeredgecolor="black", markeredgewidth=0.5)
+
+    plt.figure(figsize=(12, 6))
+    plt.errorbar(
+        depth_list,
+        noisy_evs,
+        yerr=noisy_stds,
+        label="Unmitigated",
+        capsize=4,
+        **style,
+    )
+    plt.errorbar(
+        depth_list,
+        mitigated_evs,
+        yerr=mitigated_stds,
+        label="Mitigated (AI-QEM)",
+        capsize=4,
+        **style,
+    )
+    plt.plot(
+        depth_list, ideal_evs, label="Ideal (Stabilizer simulation)", **style
+    )
+    # Threshold: Gray-out y = -0.1 to 0.1
+    plt.axhspan(-0.1, 0.1, color="gray", alpha=0.3, label="Threshold")
+
+    plt.xticks(depth_list)
+    plt.xlabel("Circuit Depth")
+    plt.ylabel("Expectation Value")
+    plt.title("Clifford Circuit Simulation")
+    plt.grid(alpha=0.3)
+    plt.ylim(-0.2, 1.2)
+    plt.legend(loc="upper left", bbox_to_anchor=(1, 1))
+    plt.show()
+
+# Flatten
+clifford_results = {
+    "noisy_evs": np.asarray(noisy_evs),
+    "noisy_stds": np.asarray(noisy_stds),
+    "mitigated_evs": np.asarray(mitigated_evs),
+    "mitigated_stds": np.asarray(mitigated_stds),
+    "ideal_evs": np.ones_like(noisy_evs),
+}
+
+plot_clifford_results(np.asarray(depth_list), **clifford_results)
+```
+
+![Output of the previous code cell](/docs/images/guides/ltm-ai-qem/extracted-outputs/dafb2f2d-0.avif)
+
+## Get support
+
+The AI-QEM support team is here to help. If you encounter any issues, have questions about using the AI-QEM Function, or need help troubleshooting a job, contact the support team.
+
+Support: quantumfunction.support@ltm.com
+
+To help the support team investigate and resolve your issue as quickly as possible, include the following information in your support request:
+
+- Function job ID (for example, `job.job_id`)
+- A detailed description of the issue
+- Any relevant error messages, stack traces, or error codes
+- Expected behavior and actual behavior (if applicable)
+
+Complete information helps the support team diagnose issues more efficiently and resolve them faster.
+
+The AI-QEM support team also welcomes feedback and feature requests. If you have suggestions for improvements or capabilities that you want to see in future releases, send them to quantumfunction.support@ltm.com.
+## Next steps
+
+<Admonition type="tip" title="Recommendations">
+  - Visit the [API reference](https://docs.quantum.ibm.com/functions/ltm-ai-qem/api-reference) for this Function.
+  - Try the [Trotterized time evolution of the 2D tilted-field Ising model with LTM AI-QEM](/tutorials/trotterized-time-evolution-ltm) tutorial.
+  - Review the [functions overview](/guides/functions).
+  - Learn about [managed workflows](/guides/managed-workflows).
+  - Learn how to choose [problem sizes and compute profiles](/guides/managed-workflow-compute-profiles).
+</Admonition>
+## References
+
+[1] Utility Scale Quantum Error Mitigation using AI
+
+[2] [Kristan Temme, Sergey Bravyi, and Jay M. Gambetta, “Error mitigation for short-depth quantum circuits,” Physical Review Letters 119, 180509 (2017).](https://link.aps.org/doi/10.1103/PhysRevLett.119.180509)
+
+[3] [van den Berg, E., Minev, Z.K., Kandala, A. et al. Probabilistic error cancellation with sparse Pauli–Lindblad models on noisy quantum processors. Nat. Phys. 19, 1116–1121 (2023).](https://doi.org/10.1038/s41567-023-02042-2)
+
+[4] [Kento Tsubouchi, Takahiro Sagawa, and Nobuyuki Yoshioka, “Universal cost bound of quantum error mitigation based on quantum estimation theory,” Physical Review Letters 131, 210601 (2023).](https://link.aps.org/doi/10.1103/PhysRevLett.131.210601)
+
+[5] [Quek, Y., Stilck França, D., Khatri, S. et al. Exponentially tighter bounds on limitations of quantum error mitigation. Nat. Phys. 20, 1648–1658 (2024).](https://doi.org/10.1038/s41567-024-02536-7)
+
+[6] [Ryuji Takagi, Hiroyasu Tajima, and Mile Gu, “Universal sampling lower bounds for quantum error mitigation,” Physical Review Letters 131, 210602 (2023).](https://journals.aps.org/prl/pdf/10.1103/PhysRevLett.131.210602)

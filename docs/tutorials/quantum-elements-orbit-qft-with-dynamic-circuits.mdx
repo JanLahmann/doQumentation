@@ -1,6 +1,6 @@
 ---
-title: "Benchmark QFT process fidelity with Orbit, a Qiskit Function by Quantum Elements"
-sidebar_label: "Benchmark QFT process fidelity with Orbit, a Qiskit Function by Quantum Elements"
+title: "Benchmark QFT process fidelity with Orbit by Quantum Elements"
+sidebar_label: "Benchmark QFT process fidelity with Orbit by Quantum Elements"
 description: "Estimate QFT followed by measurement process fidelity across circuit sizes; compare raw unitary, raw dynamic, and Orbit-enhanced dynamic implementations"
 notebook_path: "tutorials/quantum-elements-orbit-qft-with-dynamic-circuits.ipynb"
 ---
@@ -73,7 +73,7 @@ pip install qiskit qiskit-ibm-runtime qiskit-ibm-catalog numpy matplotlib
 ```
 ## Setup
 
-Authenticate with [IBM Quantum&reg; Platform](https://quantum.cloud.ibm.com), load `ibm_aachen`, and load Quantum Elements Orbit from the [Qiskit Functions Catalog](https://quantum.cloud.ibm.com/functions).
+Authenticate with [IBM Quantum&reg; Platform](https://quantum.cloud.ibm.com), load `ibm_aachen`, and load Quantum Elements Orbit from the [Quantum Functions Catalog](https://quantum.cloud.ibm.com/functions).
 
 `N_VALUES` is the list of circuit sizes: each value is the number of logical qubits in one QFT circuit. `M` is the number of independently sampled basis labels $x$ evaluated for each size; in the fidelity estimator, this is the $m$ in the equation above. For every `(N, x)` pair, the notebook submits one PUB for each of the three strategies, so a fixed size contributes `3 * M` PUBs and `3 * M * SHOTS` circuit shots.
 
@@ -95,7 +95,7 @@ from qiskit import (
 )
 from qiskit.circuit import IfElseOp
 from qiskit.synthesis.qft import synth_qft_full
-from qiskit_ibm_catalog import QiskitFunctionsCatalog
+from qiskit_ibm_catalog import FunctionsCatalog
 from qiskit_ibm_runtime import QiskitRuntimeService
 
 IBM_BACKEND_NAME = "ibm_marrakesh"  # Change to your preferred backend
@@ -172,7 +172,7 @@ backend = service.backend(IBM_BACKEND_NAME)
 if "if_else" not in backend.target.operation_names:
     backend.target.add_instruction(IfElseOp, name="if_else")
 
-catalog = QiskitFunctionsCatalog(channel="ibm_quantum_platform")
+catalog = FunctionsCatalog(channel="ibm_quantum_platform")
 quantum_elements_orbit = catalog.load("quantum-elements/orbit")
 if quantum_elements_orbit is None:
     raise RuntimeError(
@@ -628,9 +628,228 @@ BATCH_MAX_PUBS_PER_JOB = max(
   44]}
 ```
 
+## Calculate the function size
+
+Every Orbit job runs at one size, `S`, `M`, or `L`, and the heaviest PUB decides it. The
+size calculator from the [Orbit guide](/guides/quantum-elements-orbit#function-sizes)
+maps each circuit onto the backend and counts its active qubits and two-qubit gate depth.
+The next cell defines it; it requires only Qiskit.
+
+The dynamic QFT circuits use one two-qubit layer at most, so on their own they would fit
+`S` at every size in `N_VALUES`. The `unitary/raw` baseline makes this job `L`:
+routing the unitary QFT on the heavy-hex coupling map gives two-qubit-gate depths in the
+hundreds from $N = 10$ upward.
+
+```python
+# Calculate the function size a circuit needs before submitting it.
+#
+# Call ``calculate_function_size(pubs, backend)``. It returns "S", "M", or "L" and submits
+# nothing. Pass the whole list of PUBs. A job runs at one size, and the heaviest PUB
+# determines the size. The circuit is measured after being mapped onto the ``backend``, since mapping
+# can add both qubits and depth.
+#
+# This is the calculation Orbit runs on every job. Each circuit is measured twice, as given
+# and as a copy with its delays removed, laid out with Sabre and routed, and is sized as
+# the smaller of the two. The copy keeps a scheduled circuit from being sized by the idle
+# qubits its delays cover, and a chain from picking up SWAPs a better layout avoids.
+
+from collections.abc import Iterable
+from typing import Any, Literal
+
+from qiskit import QuantumCircuit
+from qiskit.circuit import Barrier, Delay
+from qiskit.circuit.equivalence_library import SessionEquivalenceLibrary
+from qiskit.transpiler import PassManager, generate_preset_pass_manager
+from qiskit.transpiler.passes import (
+    ApplyLayout,
+    BarrierBeforeFinalMeasurements,
+    BasisTranslator,
+    EnlargeWithAncilla,
+    FilterOpNodes,
+    FullAncillaAllocation,
+    HighLevelSynthesis,
+    SabreSwap,
+    TrivialLayout,
+    UnitarySynthesis,
+)
+
+Size = Literal["S", "M", "L"]
+_ORDER = {"S": 0, "M": 1, "L": 2}
+
+# Limits are provided by IBM
+_SMALL_QUBITS, _SMALL_DEPTH_2Q = 40, 40
+_MEDIUM_QUBITS, _MEDIUM_DEPTH_2Q = 100, 100
+
+# Any fixed value works; what matters is that it does not change between calls.
+_SEED_TRANSPILER = 42
+
+# Added by BarrierBeforeFinalMeasurements so routing cannot move gates past a measurement,
+# then removed again once routing is done.
+_PROTECTION_BARRIER = "qiskit.transpiler.internal.routing.protection.barrier"
+
+def calculate_function_size(
+    circuit: QuantumCircuit | Iterable[Any], backend, **kwargs: Any
+) -> Size:
+    """Return the size ("S", "M" or "L") required to run the function."""
+    circuits = pub_circuits(circuit)
+    if not circuits:
+        raise ValueError(
+            "No circuit to size: pass a QuantumCircuit or a non-empty list of PUBs."
+        )
+    prepare = generate_preset_pass_manager(
+        optimization_level=0,
+        target=backend.target,
+        layout_method="sabre",
+        seed_transpiler=_SEED_TRANSPILER,
+    )
+    return max(
+        (_smaller_size(qc, backend, prepare, **kwargs) for qc in circuits),
+        key=_ORDER.__getitem__,
+    )
+
+def _smaller_size(
+    circuit: QuantumCircuit, backend, prepare: PassManager, **kwargs: Any
+) -> Size:
+    """Return the smaller size of ``circuit`` and of its copy without delays, laid out with Sabre.
+
+    Level 0 runs no optimization stage, so the copy keeps every gate of the circuit.
+    """
+    size = _calculate_circuit_size(circuit, backend, **kwargs)
+    if size == "S":
+        return size
+    prepared = prepare.run(without_delays(circuit))
+    return min(
+        size,
+        _calculate_circuit_size(prepared, backend, **kwargs),
+        key=_ORDER.__getitem__,
+    )
+
+def without_delays(circuit: QuantumCircuit) -> QuantumCircuit:
+    """Return a copy of ``circuit`` with every top-level ``delay`` removed."""
+    stripped = circuit.copy_empty_like()
+    for instruction in circuit.data:
+        if not isinstance(instruction.operation, Delay):
+            stripped.append(instruction)
+    return stripped
+
+def _calculate_circuit_size(
+    circuit: QuantumCircuit, backend, **kwargs: Any
+) -> Size:
+    """Return the size required to run a single circuit."""
+    metrics = _measure(circuit, backend, **kwargs)
+    if _is_small(metrics):
+        return "S"
+    if _is_medium(metrics):
+        return "M"
+    return "L"
+
+def pub_circuits(problem: Any) -> list[QuantumCircuit]:
+    """Return the circuits in ``problem``: one circuit, or one per PUB in a list."""
+    if isinstance(problem, QuantumCircuit):
+        return [problem]
+    circuits: list[QuantumCircuit] = []
+    for index, pub in enumerate(problem):
+        if isinstance(pub, QuantumCircuit):
+            circuit = pub
+        elif isinstance(getattr(pub, "circuit", None), QuantumCircuit):
+            circuit = pub.circuit
+        elif (
+            isinstance(pub, (tuple, list))
+            and pub
+            and isinstance(pub[0], QuantumCircuit)
+        ):
+            circuit = pub[0]
+        else:
+            raise ValueError(f"PUB #{index} has no QuantumCircuit to size.")
+        circuits.append(circuit)
+    return circuits
+
+def _pass_manager(target) -> PassManager:
+    """Return the pass manager used to map a circuit onto ``target``.
+
+    Fixed and seeded, so the same circuit always gives the same size.
+    """
+    basis = list(target.operation_names)
+    library = SessionEquivalenceLibrary
+    return PassManager(
+        [
+            UnitarySynthesis(
+                basis, approximation_degree=1.0, min_qubits=3, target=target
+            ),
+            HighLevelSynthesis(
+                target=target,
+                equivalence_library=library,
+                basis_gates=basis,
+                min_qubits=3,
+            ),
+            BasisTranslator(library, basis, target=target, min_qubits=3),
+            TrivialLayout(target),
+            FullAncillaAllocation(target),
+            EnlargeWithAncilla(),
+            ApplyLayout(),
+            BarrierBeforeFinalMeasurements(label=_PROTECTION_BARRIER),
+            SabreSwap(
+                target, heuristic="basic", seed=_SEED_TRANSPILER, trials=5
+            ),
+            FilterOpNodes(lambda node: node.label != _PROTECTION_BARRIER),
+            UnitarySynthesis(basis, approximation_degree=1.0, target=target),
+            HighLevelSynthesis(
+                target=target,
+                equivalence_library=library,
+                basis_gates=basis,
+                use_qubit_indices=True,
+            ),
+            BasisTranslator(library, basis, target=target),
+        ]
+    )
+
+def _count(isa: QuantumCircuit) -> dict:
+    """Return the active qubits and two-qubit gate depth of a mapped circuit."""
+    active = {
+        q
+        for instr in isa.data
+        if not isinstance(instr.operation, Barrier)
+        for q in instr.qubits
+    }
+    return {
+        "num_qubits": len(active),
+        "depth_2q": isa.depth(
+            filter_function=lambda instr: len(instr.qubits) == 2
+            and not isinstance(instr.operation, Barrier)
+        ),
+    }
+
+def _measure(circuit: QuantumCircuit, backend, **kwargs: Any) -> dict:
+    """Map ``circuit`` onto ``backend`` and return its metrics."""
+    return _count(_pass_manager(backend.target).run(circuit))
+
+def _is_small(metrics: dict) -> bool:
+    """Determine if the metrics fit T-size 'S'."""
+    return (
+        metrics["num_qubits"] <= _SMALL_QUBITS
+        and metrics["depth_2q"] <= _SMALL_DEPTH_2Q
+    )
+
+def _is_medium(metrics: dict) -> bool:
+    """Determine if the metrics fit T-size 'M'."""
+    return (
+        metrics["num_qubits"] <= _MEDIUM_QUBITS
+        and metrics["depth_2q"] <= _MEDIUM_DEPTH_2Q
+    )
+```
+
+```python
+size = calculate_function_size(pubs, backend)  # "S", "M" or "L"
+size
+```
+
+```text
+'L'
+```
+
 ## Run the benchmark
 
-Pass the JSON-serializable Batch configuration through `orbit.run(...)`. Orbit creates the authenticated Runtime Batch inside the Function, submits the ordered PUB partitions, closes the Batch after submission, and returns one merged result to the caller. A caller-created local `Batch` cannot control an asynchronous Qiskit Function job.
+Pass the JSON-serializable Batch configuration through `orbit.run(...)`. Orbit creates the authenticated Runtime Batch inside the Function, submits the ordered PUB partitions, closes the Batch after submission, and returns one merged result to the caller. A caller-created local `Batch` cannot control an asynchronous quantum function job.
 
 The ordered PUB list is partitioned by qubit-count groups so that all three strategies for a fixed $N$ can be compared fairly: all 60 PUBs for a fixed $N$ &mdash; 20 sampled inputs times the three strategies &mdash; execute in the same Runtime Batch child job. The default groups combine large and small circuits and contain 300 PUBs each, reducing the chance that one child job accumulates all of the largest dynamic programs while preserving within-job comparisons.
 
@@ -639,6 +858,7 @@ job = quantum_elements_orbit.run(
     primitive="sampler",
     pubs=pubs,
     backend_name=backend.name,
+    function_size=size,
     options={
         "pub_options": pub_options,
         "batch": {
@@ -1113,7 +1333,7 @@ plt.show()
 
 1. [E. Bäumer *et al.*, "Quantum Fourier Transform Using Dynamic Circuits," arXiv:2403.09514; *Physical Review Letters* **133**, 150602 (2024)](https://arxiv.org/abs/2403.09514)
 
-2. [Introduction to Qiskit Functions](/guides/functions)
+2. [Introduction to IBM Quantum Functions](https://quantum.cloud.ibm.com/functions)
 
 3. [Quantum Compute limitations for stretch variables](/guides/stretch#qiskit-runtime-limitations)
 
