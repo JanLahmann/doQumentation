@@ -1,0 +1,955 @@
+---
+title: "Tools to profile, customize, and inspect experiments"
+sidebar_label: "Tools to profile, customize, and inspect experiments"
+description: "Use Qiskit and IBM Quantum Compute Service developer tools to profile, customize, and inspect your experiment settings and runtime environment."
+notebook_path: "tutorials/profiling-tools.ipynb"
+---
+
+import TutorialFeedback from '@site/src/components/TutorialFeedback';
+
+<OpenInLabBanner notebookPath="tutorials/profiling-tools.ipynb" />
+
+
+
+*Usage estimate: 10 minutes on a Heron r2 processor (NOTE: This is an estimate only. Your runtime might vary.)*
+
+To get good results from a quantum computer, you need more than a well-designed circuit. The device's current condition, how your circuit is scheduled, the noise that the circuit experiences, and when and how your job runs on the quantum processing unit (QPU) all affect the quality of your results. Qiskit and IBM Quantum&reg; Compute Service offer a growing set of developer tools that expose this information. You can use these tools to act on that information before you commit QPU time to a full experiment, and to debug a finished experiment.
+
+This tutorial uses a single end-to-end experiment to show how to combine these tools at each stage of a typical development workflow. Not every tool is useful for every experiment, so choose the tools that address the questions that you have about your own workload.
+
+The workflow is as follows:
+
+1. Prepare a mirror circuit of a Trotterized time evolution of a linear transverse-field Ising model.
+2. Select a backend with an alternative calibration data set that is designed for error mitigation methods based on a noise model.
+3. Run device benchmarking experiments so that the transpiler uses up-to-date device properties when it selects a layout.
+4. Inspect the timing information of the scheduled circuit.
+5. Learn Pauli-Lindblad and readout noise models for the circuit.
+6. Run noiseless, unmitigated, and mitigated local simulations. The noisy simulations use the learned noise model to show how much improvement you might gain from the selected error mitigation methods. This tutorial uses probabilistic error cancellation (PEC) and Twirled Readout Error eXtinction (TREX).
+7. Get a usage estimate without running on a QPU, to check whether you need to adjust the experiment to fit your budget.
+8. Start a session and trigger calibration so that the experiment uses the most recent calibration data.
+9. Run the experiment on the QPU by using Estimator, and compare the hardware results with the simulated preview.
+10. Inspect the execution spans to see whether there are significant gaps between groups of executions (chunks).
+## Requirements
+
+Before starting this tutorial, ensure that you have the following installed:
+
+- Qiskit SDK v2.3 or later, with [visualization](https://docs.quantum.ibm.com/api/qiskit/visualization) support
+- `qiskit-ibm-runtime` v0.52.1 or later (`pip install qiskit-ibm-runtime`)
+- Qiskit Aer (`pip install qiskit-aer`)
+- Plotly (`pip install plotly`)
+- [Qiskit Device Benchmarking](https://github.com/qiskit-community/qiskit-device-benchmarking) (`pip install git+https://github.com/qiskit-community/qiskit-device-benchmarking.git`)
+
+<Admonition type="note" title="Plan requirements">
+Some steps in this tutorial are not available on every plan:
+
+- Dry-run jobs (Steps 2.4 and 3.5) are available only on the Flex, Premium, and On-Prem plans.
+- Sessions (Step 4.1) are not available on the Open Plan. To run in batch mode instead, set `run_calibration = False` in Step 4.1.
+</Admonition>
+## Summary of tools used
+
+| Tool | What it tells you or does | Step | Docs |
+|---|---|---|---|
+| Specially calibrated instructions | Non-standard calibrations that can benefit some experiments. | 2.1 | [Documentation](/guides/custom-calibration) |
+| Qubit quality benchmarking | Refreshes device properties data. | 2.2 | [Tutorial](/tutorials/refresh-backend-properties-with-real-time-benchmarking) |
+| Timing for scheduled circuits | Visualizes when each instruction runs, to help spot idle time and inefficient instruction alignment. | 2.4 | [Documentation](/guides/qiskit-runtime-circuit-timing) |
+| `select-error-mitigation` AI agent skill | Compares error mitigation methods for your workload and reports which ones to use and why. | 3.2 | [GitHub repository](https://github.com/Qiskit/skills) |
+| Client-side primitives | New implementations of the primitives that show more detail about pre- and post-processing, and give you more control over it. | 3.2 | [Documentation](/guides/migrate-to-client-side-primitives) |
+| `NoiseLearnerV3` | Performs noise learning by using both the Pauli-Lindblad and TREX protocols. | 3.3 | [Documentation](/guides/noise-learning) |
+| Local mode | Verifies syntactic correctness and compares the effects of different error mitigation methods. | 3.4 | [Documentation](/guides/local-testing-mode) |
+| Usage estimation | Provides an accurate usage estimate before hardware execution. | 3.5 | [Documentation](/guides/dry-run-jobs) |
+| Calibration in sessions | Triggers calibration to ensure that the experiment uses optimal readout parameters. | 4.1 | [Documentation](/guides/calibration-jobs) |
+| Execution spans | Shows when each circuit configuration ran on the QPU, and in which order. | 4.4 | [Documentation](/guides/sampler-input-output#view-execution-spans) |
+## Step 1: Specify a circuit and observable
+
+Prepare a mirror circuit of a Trotterized time evolution of a linear transverse-field Ising model. Mirror the circuit to cancel the circuit unitary and form an identity circuit. Because the ideal output is the all-zero state, the ideal expectation value of each single-qubit $Z$ observable is 1. Mirroring also doubles the circuit depth, which amplifies the effect of noise.
+
+```python
+# Added by doQumentation — installs the packages this notebook needs if they are missing
+import importlib.util
+
+_needed = {"matplotlib": "matplotlib", "numpy": "numpy", "qiskit": "qiskit", "qiskit_aer": "qiskit-aer", "qiskit_device_benchmarking": "git+https://github.com/qiskit-community/qiskit-device-benchmarking.git", "qiskit_ibm_runtime": "qiskit-ibm-runtime"}
+_missing = [pip for module, pip in _needed.items()
+            if importlib.util.find_spec(module) is None]
+# One at a time, so a package that fails to install does not block the others
+for _pip in _missing:
+    %pip install -q {_pip}
+if not _missing:
+    print("\u2713 All required packages are installed")
+```
+
+```python
+import numpy as np
+from qiskit.circuit import QuantumCircuit
+from qiskit.quantum_info import SparsePauliOp
+
+def construct_ising_circuit(
+    num_qubits: int,
+    num_trotter_steps: int,
+    rx_angle: float,
+    barrier: bool = True,
+) -> QuantumCircuit:
+    circuit = QuantumCircuit(num_qubits)
+
+    for _step in range(num_trotter_steps):
+        circuit.rx(rx_angle, range(num_qubits))
+        if barrier:
+            circuit.barrier()
+        for first_qubit in (1, 2):
+            for idx in range(first_qubit, num_qubits, 2):
+                # equivalent to Rzz(-pi/2):
+                circuit.sdg([idx - 1, idx])
+                circuit.cz(idx - 1, idx)
+        if barrier:
+            circuit.barrier()
+
+    return circuit
+
+def mirror_circuit(circuit: QuantumCircuit) -> QuantumCircuit:
+    mirror_circ = circuit.copy_empty_like()
+    mirror_circ.compose(circuit, inplace=True)
+    mirror_circ.barrier()
+    mirror_circ.compose(circuit.inverse(), inplace=True)
+    mirror_circ.measure_active()
+    return mirror_circ
+```
+
+```python
+num_qubits = 20
+observables = [
+    SparsePauliOp("I" * ((num_qubits - 1) - q) + "Z" + "I" * q)
+    for q in range(num_qubits)
+]
+
+# Free parameters of the demonstration circuit: the number of Trotter steps
+# sets the circuit depth, and rx_angle is the transverse-field rotation angle
+# applied in each step (pi/4 makes the dynamics non-Clifford)
+num_trotter_steps = 5
+rx_angle = np.pi / 4
+
+circuit = construct_ising_circuit(
+    num_qubits, num_trotter_steps, rx_angle, barrier=False
+)
+mirrored_circuit = mirror_circuit(circuit)
+```
+
+```python
+mirrored_circuit.draw(
+    "mpl", fold=-1, scale=0.3, idle_wires=False, measure_arrows=False
+)
+```
+
+![Output of the previous code cell](/docs/images/tutorials/profiling-tools/extracted-outputs/caa280da-0.avif)
+
+## Step 2: Optimize for quantum hardware execution
+### 2.1 Use alternative calibration if applicable
+IBM&reg; calibrates its QPUs periodically for good performance across general use cases. Some workloads, however, benefit from instructions whose parameters are tuned differently. For more information, refer to [Specially calibrated instructions](/guides/custom-calibration).
+
+This tutorial uses an alternative calibration data set called `slow_gates_ac`. This calibration contains a slower `cz` gate and modulates the two-level system (TLS) bias to stabilize device errors over time. These changes benefit error mitigation methods that rely on a learned noise model. The `slow_gates_ac` calibration is available only on Heron QPUs. If you run on a Nighthawk QPU, use `slow_gates` instead.
+
+```python
+from qiskit_ibm_runtime import QiskitRuntimeService
+
+service = QiskitRuntimeService()
+# Use slow_gates_ac because this tutorial uses a noise-learning-based mitigation method
+backend = service.backend("ibm_kingston", calibration_id="slow_gates_ac")
+```
+
+### 2.2 Run real-time device benchmarking
+One of the most critical stages of transpilation is layout selection, which maps virtual qubits in a circuit to physical qubits on the target device. A good layout minimizes the number of SWAP operations needed and places the circuit on the best-performing qubits, so the quality of the initial layout can significantly affect the quality of your results.
+
+Periodic benchmarking routines run on every IBM QPU to report the current performance of its qubits: relaxation times ($T_1$), coherence times ($T_2$), readout errors, and one- and two-qubit gate errors. The Qiskit transpiler uses these metrics during layout selection.
+
+The properties of superconducting qubits, however, can drift on shorter timescales, and transient defects, known as TLSs, can temporarily degrade a qubit that performed well at calibration time. If the transpiler uses outdated information, it cannot select the best layout. Therefore, it can be worthwhile to spend some QPU time to characterize the device before you select a layout.
+
+Refer to the [Refresh backend properties with real-time benchmarking](/tutorials/refresh-backend-properties-with-real-time-benchmarking) tutorial for a detailed walk-through.
+The characterization suite builds several experiments, submits multiple jobs, and fits the results. This process can take a few minutes in total. Enable INFO-level logging so that each stage prints its progress as it runs.
+
+```python
+import sys
+import logging
+
+logger = logging.getLogger("qiskit_device_benchmarking")
+logger.setLevel(logging.INFO)
+logger.addHandler(logging.StreamHandler(stream=sys.stdout))
+```
+
+`BackendCharacterization` is a convenience class that runs the characterization experiments of your choice, analyzes the results, and returns an updated `Backend` object that you can pass to the transpiler.
+
+You might see a warning that a backend was passed in as the mode while a batch is open. This warning is expected, and you can safely ignore it.
+
+```python
+from qiskit_ibm_runtime import Batch
+from qiskit_device_benchmarking.utilities.characterization_utils import (
+    BackendCharacterization,
+)
+
+# The full suite is ["readout", "rb_1q", "rb_2q", "t1", "t2"].
+# Run a subset of the experiments to save time.
+experiments = ["readout", "t1", "t2"]
+characterizer = BackendCharacterization(backend)
+with Batch(backend=backend):
+    jobs = characterizer.run_experiments(experiments=experiments)
+```
+
+```text
+base_primitive.get_mode_service_backend:WARNING:2026-11-06 17:02:58,380: A backend was passed in as the mode but a session context manager is open so this job will run inside this session/batch instead of in job mode.
+```
+
+```text
+Building readout experiments
+Building T1 experiments
+Building T2 experiments
+Readout job submitted: dbn4t55t7fqc73aiugag
+T1 experiment submitted: ['dbn4t5gqtr0c73accb9g']
+T2 (Hahn) experiment submitted: ['dbn4t6c4148s7390ardg']
+```
+
+```python
+# Retrieve all job results and update the backend data
+characterizer.analyze_results()
+backend_updated = characterizer.update_backend()
+```
+
+```text
+Updating readout error
+Updating T1
+Updating T2
+```
+
+### 2.3 Transpile to ISA
+Transform the circuit and observables to match the backend's instruction set architecture (ISA) by using the refreshed device properties.
+
+```python
+from qiskit.transpiler.preset_passmanagers import generate_preset_pass_manager
+
+pm = generate_preset_pass_manager(
+    backend=backend_updated, optimization_level=3
+)
+isa_circuit = pm.run(mirrored_circuit)
+isa_observables = [
+    observable.apply_layout(isa_circuit.layout) for observable in observables
+]
+```
+
+### 2.4 Visualize circuit timing
+In addition to the instructions in a circuit, you might want to visualize the circuit's schedule, to find idle time on qubits or inefficient instruction alignment. You can get the most detailed and accurate timing information from IBM Quantum Compute Service by using dry-run mode.
+
+The circuit in this tutorial is static, so its schedule is not very informative. You can get similar timing information locally from the circuit and the backend properties, for example by using the [timeline drawer](/guides/visualize-circuit-timing) built into Qiskit. This tutorial includes this step to show how to request and visualize the timing information. Timing information from the service is most useful for [dynamic circuits](/guides/classical-feedforward-and-control-flow). Dynamic circuits contain mid-circuit measurements, conditional operations, and feedforward, which add implicit operations such as broadcasting measurement results and determining branches. The timing of these operations cannot be determined from the circuit and backend properties alone.
+
+Refer to [Visualize circuit timing](/guides/qiskit-runtime-circuit-timing) for more information.
+Scheduled circuit timing is available only for Sampler and Executor jobs, so the following cell submits the circuit in dry-run mode by using Sampler. Jobs that you submit in dry-run mode do not run on real QPUs and are not charged.
+
+```python
+from qiskit_ibm_runtime.executor_sampler import Sampler
+
+sampler = Sampler(backend)
+# Request timing information in the result metadata
+sampler.options.experimental = {
+    "execution": {
+        "scheduler_timing": True,
+    },
+}
+
+# Specify dry_run=True to submit in dry-run mode
+sampler_job = sampler.run([isa_circuit], dry_run=True)
+```
+
+```python
+job_result = sampler_job.result()
+circuit_schedule = job_result[0].metadata["compilation"]["scheduler_timing"]
+circuit_schedule_timing = circuit_schedule["timing"]
+```
+
+```python
+from qiskit_ibm_runtime.visualization import draw_circuit_schedule_timing
+
+# Create a figure from the metadata
+fig = draw_circuit_schedule_timing(
+    circuit_schedule=circuit_schedule_timing,
+    included_channels=None,
+    filter_readout_channels=False,
+    filter_barriers=False,
+    width=1000,
+)
+
+# For large circuits, displaying the figure inline can make your Jupyter session stop responding.
+# Uncomment the following to save it to an HTML file instead.
+# fig.write_html("scheduler_timing.html")
+
+# For small circuits, uncomment the following line to display the figure inline.
+# fig.show(renderer="notebook")
+```
+
+This figure is too large to display in a notebook. The following screenshot shows a summarized view.
+
+<Accordion>
+<AccordionItem title="View a screenshot of the scheduled circuit timing">
+
+![Scheduled circuit timing for the mirror circuit, showing each qubit channel over time](/docs/images/tutorials/profiling-tools/scheduler-timing.avif)
+
+</AccordionItem>
+</Accordion>
+## Step 3: Apply error mitigation and test locally
+### 3.1 Cliffordize the circuit
+
+The cost of general noisy simulation grows exponentially with the number of qubits, and most laptops cannot simulate more than about 32 qubits. Therefore, first convert the circuit to a Clifford circuit, which a stabilizer simulator can handle far more efficiently. The conversion rounds each rotation angle to a Clifford angle, so the simulated circuit approximates the original circuit rather than reproducing it.
+
+```python
+from qiskit.transpiler import PassManager
+from qiskit_ibm_runtime.transpiler.passes import ConvertISAToClifford
+
+clifford_circuit = PassManager([ConvertISAToClifford()]).run(isa_circuit)
+clifford_pubs = [(clifford_circuit, isa_observables)]
+```
+
+### 3.2 Apply PEC with TREX
+It can be difficult to select error mitigation methods that balance cost and accuracy for your specific experiment. You can use the `select-error-mitigation` AI agent skill to analyze the available methods for your workload. The skill presents a summary report that explains whether each method was selected and why.
+
+Refer to the [Qiskit AI skills](https://github.com/Qiskit/skills) GitHub repository for more information.
+This tutorial uses PEC with TREX directly, so that you can complete it without an AI agent.
+
+PEC is a technique that mitigates quantum noise when you calculate the expectation values of observables. Under ideal conditions, PEC can produce an unbiased estimate of the expectation values. It learns the noise of each layer of two-qubit gates, then runs an ensemble of circuits that, on average, apply the inverse of that noise. PEC uses Pauli twirling to tailor the noise into a Pauli channel, which can be learned and inverted efficiently.
+
+In practice, PEC is only as accurate as the learned noise model. The sparse Pauli-Lindblad model includes only one- and two-qubit error terms on neighboring qubits, and it cannot fully capture effects such as crosstalk between distant qubits or time-correlated errors. The device noise can also drift between noise learning and execution. PEC does not cancel noise that the model misses, and it overcompensates for noise that the model overestimates. Therefore, mitigated results can still deviate from the ideal values in either direction.
+
+TREX is a technique that mitigates measurement errors, and is useful when you estimate the expectation values of Pauli observables. It relies on measurement twirling, which diagonalizes the readout-error transfer matrix and makes it easy to invert. TREX learns a rescaling term from the diagonal noise channel by measuring twirled calibration circuits that are initialized in the zero state.
+You can enable both PEC and TREX by setting Estimator options. This tutorial uses the client-side implementations of the Qiskit SamplerV2 and EstimatorV2 interfaces, which were introduced in `qiskit-ibm-runtime` v0.50.0. These client-side primitives perform most of the pre- and post-processing locally and delegate execution to the Executor primitive. When the primitives run on the client side, you get greater transparency, faster feedback when you debug, and finer control.
+
+The client-side primitives implement the same API as the legacy server-side primitives. Therefore, you can usually switch to the client-side primitives by changing only the import statement.
+Enable INFO-level logging to see the progress of client-side pre- and post-processing.
+
+```python
+import logging
+
+logger = logging.getLogger("qiskit_ibm_runtime")
+logger.setLevel(logging.INFO)
+```
+
+```python
+from qiskit_ibm_runtime.executor_estimator import Estimator
+
+estimator = Estimator(mode=backend)
+```
+
+```python
+# Enable TREX
+estimator.options.resilience.measure_mitigation = True
+# Enable PEC
+estimator.options.resilience.pec_mitigation = True
+```
+
+### 3.3 Learn noise models and run the Cliffordized circuit
+Both PEC and TREX require noise learning, which you can do with `NoiseLearnerV3`. The steps are as follows:
+
+1. Find the unique two-qubit gate layers and measurement layers in the circuit, for the Pauli-Lindblad and TREX protocols, respectively.
+2. Pass the layers to `NoiseLearnerV3` to learn the noise models.
+3. Convert the learned noise models to Pauli-Lindblad maps.
+
+Estimator does not use a pre-learned TREX noise model. Instead, it performs its own TREX learning. The following code learns both models anyway, because the noisy simulation uses the learned readout model.
+
+Refer to [Noise learning helper](/guides/noise-learning) for more information about `NoiseLearnerV3`.
+In addition to the noise-learning experiment, run the Cliffordized circuit on the QPU. This step is not always necessary, but it provides a comparison for the simulated results in Step 3.4.4. Run both in a batch to minimize how much the noise profile drifts between the two.
+
+```python
+pubs = [(isa_circuit, isa_observables)]
+# Specify types="all" to find layers for both Pauli-Lindblad and TREX learning
+layers = estimator.find_unique_layers(pubs, types="all")
+print(f"Number of unique layers found: {len(layers)}")
+```
+
+```text
+Number of unique layers found: 3
+```
+
+```python
+from qiskit_ibm_runtime import NoiseLearnerV3
+
+with Batch(backend) as batch:
+    learner = NoiseLearnerV3(batch)
+    learner.options.num_randomizations = 64
+    learner.options.shots_per_randomization = 128
+    learner.options.environment.job_tags = [
+        "noise-learning",
+        f"{len(layers)} layers",
+    ]
+    learner_job = learner.run(layers)
+    print(f"NoiseLearner job id: {learner_job.job_id()}")
+
+    clifford_estimator = Estimator(batch)
+    clifford_estimator.options.environment.job_tags = [
+        "cliffordized",
+        "unmitigated",
+    ]
+    clifford_estimator.options.resilience.measure_mitigation = False
+    clifford_estimator.options.twirling.enable_measure = True
+    clifford_estimator.options.twirling.enable_gates = True
+
+    clifford_job = clifford_estimator.run(clifford_pubs)
+    print(f"Clifford job id: {clifford_job.job_id()}")
+```
+
+```text
+runtime.program_run:INFO:2026-11-06 17:04:28,694: Posting the API request.
+runtime.program_run:INFO:2026-11-06 17:04:29,028: Payload size: 0 MB.
+estimator.run:INFO:2026-11-06 17:04:29,029: Starting pre-processing
+prepare._build_quantum_program:INFO:2026-11-06 17:04:29,032: Processing pub 1/1 with MitigationTask.
+estimator.run:INFO:2026-11-06 17:04:29,124: Submitting 1 pub to executor with 4096 total shots
+```
+
+```text
+NoiseLearner job id: dbn4tr44148s7390as4g
+```
+
+```text
+runtime.program_run:INFO:2026-11-06 17:04:29,377: Posting the API request.
+runtime.program_run:INFO:2026-11-06 17:04:29,897: Payload size: 0 MB.
+```
+
+```text
+Clifford job id: dbn4tr8ou4as73b3shng
+```
+
+```python
+learner_result = learner_job.result()
+pauli_lindblad_maps = learner_result.to_pauli_lindblad_maps()
+```
+
+```python
+clifford_result = clifford_job.result()
+print(">>> Expectation values from unmitigated Clifford circuit:")
+print(clifford_result[0].data.evs)
+```
+
+```text
+post_processor_v0_1.estimator_v2_post_processor_v0_1:INFO:2026-11-06 17:09:34,573: Post-processing pub 1/1 (MitigationTask).
+```
+
+```text
+>>> Expectation values from unmitigated Clifford circuit:
+[0.74121094 0.70117188 0.68945312 0.64648438 0.62646484 0.60498047
+ 0.63818359 0.61230469 0.65478516 0.65283203 0.65087891 0.62841797
+ 0.64404297 0.62109375 0.64550781 0.63720703 0.68212891 0.70654297
+ 0.75097656 0.77392578]
+```
+
+### 3.4 Perform local simulation
+With `qiskit-ibm-runtime` local mode, you can perform both noiseless and noisy simulations locally with minimal code changes. Use local mode to verify syntactic correctness, compare the effects of different mitigation methods, and check how well the learned noise model agrees with hardware results.
+
+Local mode uses largely the same interface as QPU execution. In most cases, you need to change only the backend that you pass when you initialize the primitive, and then rerun the same code. Each of the following subsections creates its own `Estimator` instance, so you can run them without changing a previous cell.
+
+Refer to [Local mode](/guides/local-testing-mode) for more information.
+#### 3.4.1 Run a noiseless simulation
+
+```python
+from qiskit_aer import AerSimulator
+
+sim_estimator = Estimator(AerSimulator(method="stabilizer"))
+sim_estimator.options.resilience_level = 0
+sim_estimator_job = sim_estimator.run(clifford_pubs)
+ideal_result = sim_estimator_job.result()
+print(">>> Ideal expectation values from simulation:")
+print(ideal_result[0].data.evs)
+```
+
+```text
+estimator.run:INFO:2026-11-06 17:09:34,595: Starting pre-processing
+prepare._build_quantum_program:INFO:2026-11-06 17:09:34,600: Processing pub 1/1 with MitigationTask.
+estimator.run:INFO:2026-11-06 17:09:34,670: Submitting 1 pub to executor with 4096 total shots
+post_processor_v0_1.estimator_v2_post_processor_v0_1:INFO:2026-11-06 17:09:36,491: Post-processing pub 1/1 (MitigationTask).
+```
+
+```text
+>>> Ideal expectation values from simulation:
+[1. 1. 1. 1. 1. 1. 1. 1. 1. 1. 1. 1. 1. 1. 1. 1. 1. 1. 1. 1.]
+```
+
+#### 3.4.2 Run a noisy simulation with the learned Pauli-Lindblad model
+<Admonition type="caution">
+Do not use a fake backend or a Qiskit Aer noise model if you plan to use the learned Pauli-Lindblad noise model in your local simulation. If you do, the simulation applies the noise twice.
+</Admonition>
+
+```python
+sim_estimator_noisy = Estimator(AerSimulator(method="stabilizer"))
+sim_estimator_noisy.options.resilience_level = 0
+# Twirling is required for find_unique_layers to work
+sim_estimator_noisy.options.twirling.enable_gates = True
+sim_estimator_noisy.options.twirling.enable_measure = True
+clifford_layers = sim_estimator_noisy.find_unique_layers(
+    clifford_pubs, types="all"
+)
+# Pass noise model for both 2Q and measurement layers for noisy simulation.
+sim_estimator_noisy.options.simulator.layer_noise_model = zip(
+    clifford_layers, pauli_lindblad_maps
+)
+```
+
+```python
+sim_estimator_noisy_job = sim_estimator_noisy.run(clifford_pubs)
+sim_noisy_result = sim_estimator_noisy_job.result()
+print(">>> Unmitigated expectation values from simulation:")
+print(sim_noisy_result[0].data.evs)
+```
+
+```text
+estimator.run:INFO:2026-11-06 17:09:36,541: Starting pre-processing
+prepare._build_quantum_program:INFO:2026-11-06 17:09:36,545: Processing pub 1/1 with MitigationTask.
+estimator.run:INFO:2026-11-06 17:09:36,640: Submitting 1 pub to executor with 4096 total shots
+post_processor_v0_1.estimator_v2_post_processor_v0_1:INFO:2026-11-06 17:09:38,405: Post-processing pub 1/1 (MitigationTask).
+```
+
+```text
+>>> Unmitigated expectation values from simulation:
+[0.72607422 0.71826172 0.68457031 0.70019531 0.703125   0.73242188
+ 0.69287109 0.66357422 0.64648438 0.65478516 0.63867188 0.69726562
+ 0.68994141 0.72802734 0.72314453 0.74609375 0.73974609 0.76123047
+ 0.77148438 0.78173828]
+```
+
+#### 3.4.3 Run a noisy simulation with PEC and TREX
+
+```python
+sim_estimator_mitigated = Estimator(AerSimulator(method="stabilizer"))
+
+# Twirling is required for find_unique_layers to work
+sim_estimator_mitigated.options.twirling.enable_gates = True
+sim_estimator_mitigated.options.twirling.enable_measure = True
+
+# Enable PEC & TREX
+sim_estimator_mitigated.options.resilience.pec_mitigation = True
+sim_estimator_mitigated.options.resilience.measure_mitigation = True
+
+clifford_layers = sim_estimator_mitigated.find_unique_layers(
+    clifford_pubs, types="all"
+)
+
+# This sets the noise model
+sim_estimator_mitigated.options.simulator.layer_noise_model = zip(
+    clifford_layers, pauli_lindblad_maps
+)
+# This tells PEC which noise to cancel
+sim_estimator_mitigated.options.resilience.layer_noise_model = zip(
+    clifford_layers, pauli_lindblad_maps
+)
+```
+
+```python
+sim_estimator_mitigated_job = sim_estimator_mitigated.run(clifford_pubs)
+sim_mitigated_result = sim_estimator_mitigated_job.result()
+print(">>> Mitigated expectation values from simulation:")
+print(sim_mitigated_result[0].data.evs)
+```
+
+```text
+estimator.run:INFO:2026-11-06 17:09:38,460: Starting pre-processing
+prepare._build_quantum_program:INFO:2026-11-06 17:09:38,463: Processing pub 1/1 with PEC.
+trex.apply_trex:INFO:2026-11-06 17:09:38,586: TREX calibration circuit added (64 randomizations).
+estimator.run:INFO:2026-11-06 17:09:38,586: Submitting 2 pubs to executor with 138176 total shots
+post_processor_v0_1.estimator_v2_post_processor_v0_1:INFO:2026-11-06 17:10:44,581: Post-processing pub 1/1 (PEC).
+```
+
+```text
+>>> Mitigated expectation values from simulation:
+[1.01157385 1.01426832 1.08479389 1.08083535 0.96896198 0.96465857
+ 0.97870353 0.95113655 1.03992974 1.01440225 0.94385996 1.01909196
+ 0.99009273 1.09171259 1.00659746 1.04646524 1.02475636 1.15051973
+ 1.03481948 1.0941715 ]
+```
+
+#### 3.4.4 Compare the simulation results
+
+{/* cspell:ignore frameon sharey */}
+
+Plot the expectation value of each single-qubit $Z$ observable from the three simulations, together with the unmitigated QPU result for the same Clifford circuit from Step 3.3. Because the circuit is a mirror circuit, every ideal value is 1. The error bars show the standard error that Estimator reports for each value.
+
+The closer the unmitigated simulation is to the unmitigated QPU result, the better the learned noise model describes the hardware. Use this comparison as a check before you spend QPU time on the mitigated experiment. If the two results disagree significantly, PEC is also unlikely to get close to the ideal values on hardware. In that case, consider relearning the noise model or selecting a different layout. You can also relearn the noise model with different `NoiseLearnerV3` options, such as more randomizations or additional layer-pair depths, and check whether the agreement improves. For example, in Step 3.3 this tutorial sets `num_randomizations` to 64 instead of the default value of 32, because the additional randomizations improved the agreement for this circuit.
+
+`NoiseLearnerV3` runs a standard learning protocol. For full control over the learning experiment, you can build your own with [Qiskit noise learning](/addons/qiskit-noise-learning/guides/workflow).
+
+```python
+import matplotlib.pyplot as plt
+
+qubit_indices = np.arange(num_qubits)
+results_to_plot = {
+    "Unmitigated QPU (Clifford circuit)": (clifford_result, "#4a3aa7", "^"),
+    "Unmitigated simulation (learned noise model)": (
+        sim_noisy_result,
+        "#2a78d6",
+        "o",
+    ),
+    "Mitigated simulation (PEC + TREX)": (
+        sim_mitigated_result,
+        "#eb6834",
+        "s",
+    ),
+}
+
+fig, ax = plt.subplots(figsize=(9, 4.5))
+ax.plot(
+    qubit_indices,
+    ideal_result[0].data.evs,
+    color="#52514e",
+    linestyle="--",
+    linewidth=1.5,
+    label="Ideal (noiseless simulation)",
+)
+for label, (result, color, marker) in results_to_plot.items():
+    ax.errorbar(
+        qubit_indices,
+        result[0].data.evs,
+        yerr=result[0].data.stds,
+        color=color,
+        marker=marker,
+        markersize=6,
+        linewidth=2,
+        capsize=3,
+        label=label,
+    )
+
+ax.set_xlabel("Qubit index of the $Z$ observable")
+ax.set_ylabel("Expectation value")
+ax.set_title("Local simulation compared with the QPU")
+ax.set_xticks(qubit_indices)
+ax.grid(axis="y", alpha=0.3)
+ax.spines[["top", "right"]].set_visible(False)
+# Place the legend below the plot so it doesn't cover any data
+ax.legend(
+    frameon=False, loc="upper center", bbox_to_anchor=(0.5, -0.15), ncol=2
+)
+plt.show()
+```
+
+![Output of the previous code cell](/docs/images/tutorials/profiling-tools/extracted-outputs/2e4cb660-0.avif)
+
+### 3.5 Estimate usage
+The main purpose of dry-run mode is to estimate usage. Unlike local mode, dry-run mode submits the job to IBM Quantum Compute Service, which returns an accurate usage estimate but **random result data**. Dry-run jobs do not run on real QPUs and do not consume any QPU time.
+
+Dry-run jobs are not available on the Open or Pay-As-You-Go plans.
+
+Refer to [Dry-run jobs](/guides/dry-run-jobs) for more information.
+
+```python
+import time
+
+dry_run_estimator = Estimator(mode=backend)
+dry_run_estimator.options.resilience.measure_mitigation = True
+dry_run_estimator.options.resilience.pec_mitigation = True
+dry_run_estimator.options.resilience.layer_noise_model = zip(
+    layers, pauli_lindblad_maps
+)
+
+dry_run_job = dry_run_estimator.run(
+    [(isa_circuit, isa_observables)], dry_run=True
+)
+# Wait for the job to finish to get an accurate estimate
+dry_run_job.result()
+# Sometimes it takes a second for usage to get updated
+time.sleep(1)
+print(f">>> Usage is {dry_run_job.usage()} seconds")
+```
+
+```text
+>>> Usage is 42 seconds
+```
+
+## Step 4: Run on hardware
+### 4.1 Initialize a session and run calibration
+QPU calibration optimizes many parameters that define the electrical signals that drive the quantum gates and operations. Calibration jobs run throughout the day between user jobs, but not during an active session. These parameters can drift within a short period of time. For the best possible results, consider triggering calibration at the start of a session, or periodically during a long-running session.
+
+Currently, only readout calibration is supported, and it takes approximately five minutes of wall-clock time.
+
+```python
+from qiskit_ibm_runtime import Session, Batch, Calibrator
+
+# Set to False to skip the session and calibration and run in batch mode instead
+run_calibration = False
+mode = Session(backend) if run_calibration else Batch(backend)
+
+if run_calibration:
+    calibrator = Calibrator(mode)
+    # Wait for calibration to finish before submitting the experiment.
+    calibrator.run().result()
+```
+
+### 4.2 Run on hardware with Estimator
+
+The following cells run three jobs in the batch or session:
+
+- A noise-learning experiment to refresh the noise model. This experiment is useful if you expect the noise model from Step 3.3 to be outdated when the Estimator job runs. In a batch, the Estimator jobs can run much later than the noise-learning job, because jobs from other users can run on the QPU between them. A session gives your workload exclusive access to the QPU, so the noise model is more likely to still be accurate when the experiment runs.
+- The experiment with mitigation.
+- The experiment without mitigation, for comparison.
+
+```python
+learner = NoiseLearnerV3(mode)
+learner.options.num_randomizations = 64
+learner.options.shots_per_randomization = 128
+learner_job = learner.run(layers)
+print(f"NoiseLearner job id: {learner_job.job_id()}")
+learner_result = learner_job.result()
+pauli_lindblad_maps = learner_result.to_pauli_lindblad_maps()
+```
+
+```text
+NoiseLearner job id: dbn50pgqtr0c73accf70
+```
+
+```python
+mitigated_estimator = Estimator(mode)
+mitigated_estimator.options.environment.job_tags = ["pec", "trex"]
+mitigated_estimator.options.resilience.measure_mitigation = True
+mitigated_estimator.options.resilience.pec_mitigation = True
+# Pass the learned noise model for PEC.
+# PEC does not apply mitigation to the measurement layer, so it ignores that layer.
+mitigated_estimator.options.resilience.layer_noise_model = zip(
+    layers, pauli_lindblad_maps
+)
+
+mitigated_job = mitigated_estimator.run([(isa_circuit, isa_observables)])
+print(f">>> Mitigated job id: {mitigated_job.job_id()}")
+
+unmitigated_estimator = Estimator(mode)
+unmitigated_estimator.options.resilience_level = 0
+unmitigated_estimator.options.twirling.enable_gates = True
+unmitigated_estimator.options.twirling.enable_measure = True
+unmitigated_estimator.options.environment.job_tags = ["unmitigated"]
+unmitigated_job = unmitigated_estimator.run([(isa_circuit, isa_observables)])
+print(f">>> Unmitigated job id: {unmitigated_job.job_id()}")
+
+# Close the session or batch if you are using one
+mode.close()
+```
+
+```text
+estimator.run:INFO:2026-11-06 17:26:17,386: Starting pre-processing
+prepare._build_quantum_program:INFO:2026-11-06 17:26:17,398: Processing pub 1/1 with PEC.
+trex.apply_trex:INFO:2026-11-06 17:26:17,534: TREX calibration circuit added (64 randomizations).
+estimator.run:INFO:2026-11-06 17:26:17,534: Submitting 2 pubs to executor with 133696 total shots
+runtime.program_run:INFO:2026-11-06 17:26:17,765: Posting the API request.
+runtime.program_run:INFO:2026-11-06 17:26:18,214: Payload size: 0 MB.
+estimator.run:INFO:2026-11-06 17:26:18,215: Starting pre-processing
+prepare._build_quantum_program:INFO:2026-11-06 17:26:18,219: Processing pub 1/1 with MitigationTask.
+estimator.run:INFO:2026-11-06 17:26:18,320: Submitting 1 pub to executor with 4096 total shots
+```
+
+```text
+>>> Mitigated job id: dbn582lt7fqc73aiv1t0
+```
+
+```text
+runtime.program_run:INFO:2026-11-06 17:26:18,549: Posting the API request.
+runtime.program_run:INFO:2026-11-06 17:26:18,882: Payload size: 0 MB.
+```
+
+```text
+>>> Unmitigated job id: dbn582gou4as73b3t2i0
+```
+
+```python
+mitigated_result = mitigated_job.result()
+print(">>> Expectation values from mitigated QPU run:")
+print(mitigated_result[0].data.evs)
+```
+
+```text
+post_processor_v0_1.estimator_v2_post_processor_v0_1:INFO:2026-11-06 17:27:05,288: Post-processing pub 1/1 (PEC).
+```
+
+```text
+>>> Expectation values from mitigated QPU run:
+[1.12575542 1.10585523 1.04760069 1.01521185 0.96232448 1.02410608
+ 1.05707854 0.95455801 0.92802096 0.95614542 0.99906656 1.0678834
+ 1.03981228 1.00530725 1.04935027 1.03028844 1.04582987 1.07583472
+ 1.03438868 1.07511027]
+```
+
+```python
+unmitigated_result = unmitigated_job.result()
+print(">>> Expectation values from unmitigated QPU run:")
+print(unmitigated_result[0].data.evs)
+```
+
+```text
+post_processor_v0_1.estimator_v2_post_processor_v0_1:INFO:2026-11-06 17:27:05,567: Post-processing pub 1/1 (MitigationTask).
+```
+
+```text
+>>> Expectation values from unmitigated QPU run:
+[0.88183594 0.80810547 0.77197266 0.74560547 0.74316406 0.76074219
+ 0.76123047 0.77685547 0.79736328 0.8046875  0.78564453 0.80761719
+ 0.83056641 0.77099609 0.79492188 0.77880859 0.80126953 0.81445312
+ 0.82226562 0.90576172]
+```
+
+Plot the mitigated and unmitigated hardware results together with the ideal values. Because the circuit is a mirror circuit, every ideal value is 1, so the distance between each point and the dashed line shows the remaining error. Any remaining deviation from the ideal value, whether above or below it, reflects the statistical uncertainty of PEC and the limits of the learned noise model described in Step 3.2.
+
+To further improve the results, you can try the following:
+
+- Increase the number of shots or randomizations to reduce the statistical uncertainty of the mitigated estimates. The cost grows with the PEC sampling overhead.
+- Relearn the noise model immediately before the experiment, in the same session, to reduce the effect of noise drift.
+- Learn the noise model more precisely by increasing the `num_randomizations`, `shots_per_randomization`, or `layer_pair_depths` options of `NoiseLearnerV3`. Errors in the learned rates bias the mitigated results, and additional PEC shots do not remove this bias.
+- Add [non-Markovian error checks](/addons/qiskit-mitigation/guides/postselection-with-non-markovian-error-checks) to detect shots that are likely corrupted by non-Markovian errors, which the learned noise model does not describe. Then discard those shots by postselection. Apply the same checks when you learn the noise model, by using the `bit_flip_checks` options of `NoiseLearnerV3`. Otherwise, the learned model includes errors that postselection removes from the experiment, and PEC overcompensates for them. Stricter postselection discards more shots, so balance the accuracy gain against the number of shots that you keep.
+
+```python
+import matplotlib.pyplot as plt
+
+qubit_indices = np.arange(num_qubits)
+# The mirror circuit is an identity circuit, so every ideal value is 1
+ideal_evs = np.ones(num_qubits)
+results_to_plot = {
+    "Unmitigated QPU": (unmitigated_result, "#4a3aa7", "^"),
+    "Mitigated QPU (PEC + TREX)": (mitigated_result, "#eb6834", "s"),
+}
+
+fig, ax = plt.subplots(figsize=(9, 4.5))
+ax.plot(
+    qubit_indices,
+    ideal_evs,
+    color="#52514e",
+    linestyle="--",
+    linewidth=1.5,
+    label="Ideal",
+)
+for label, (result, color, marker) in results_to_plot.items():
+    ax.errorbar(
+        qubit_indices,
+        result[0].data.evs,
+        yerr=result[0].data.stds,
+        color=color,
+        marker=marker,
+        markersize=6,
+        linewidth=2,
+        capsize=3,
+        label=label,
+    )
+
+ax.set_xlabel("Qubit index of the $Z$ observable")
+ax.set_ylabel("Expectation value")
+ax.set_title("Hardware results with and without error mitigation")
+ax.set_xticks(qubit_indices)
+ax.grid(axis="y", alpha=0.3)
+ax.spines[["top", "right"]].set_visible(False)
+# Place the legend below the plot so it doesn't cover any data
+ax.legend(
+    frameon=False, loc="upper center", bbox_to_anchor=(0.5, -0.15), ncol=3
+)
+plt.show()
+```
+
+![Output of the previous code cell](/docs/images/tutorials/profiling-tools/extracted-outputs/3cd8d65c-0.avif)
+
+### 4.3 Compare hardware and simulation results
+
+In Step 3.4, you used local simulation to preview how much PEC and TREX might improve the results. Compare that preview with the QPU results. If the simulated improvement and the hardware improvement are similar, local simulation is a useful way to evaluate mitigation settings for this workload before you spend QPU time on them.
+
+The comparison is approximate, for two reasons:
+
+- The simulations run the Cliffordized circuit from Step 3.1, while the hardware jobs run the original circuit.
+- The simulations use the noise model learned in Step 3.3, while the mitigated hardware job uses the noise model that was refreshed in Step 4.2.
+
+For a direct check of the noise model itself, use the comparison of the Clifford circuit results in Step 3.4.4.
+
+```python
+fig, axes = plt.subplots(1, 2, figsize=(12, 4.5), sharey=True)
+panels = {
+    "Local simulation (Clifford circuit)": {
+        "Unmitigated": (sim_noisy_result, "#2a78d6", "o"),
+        "Mitigated (PEC + TREX)": (sim_mitigated_result, "#eb6834", "s"),
+    },
+    "QPU (original circuit)": {
+        "Unmitigated": (unmitigated_result, "#4a3aa7", "^"),
+        "Mitigated (PEC + TREX)": (mitigated_result, "#eb6834", "s"),
+    },
+}
+
+for ax, (title, results_to_plot) in zip(axes, panels.items()):
+    ax.axhline(
+        1, color="#52514e", linestyle="--", linewidth=1.5, label="Ideal"
+    )
+    for label, (result, color, marker) in results_to_plot.items():
+        ax.errorbar(
+            qubit_indices,
+            result[0].data.evs,
+            yerr=result[0].data.stds,
+            color=color,
+            marker=marker,
+            markersize=5,
+            linewidth=2,
+            capsize=3,
+            label=label,
+        )
+    ax.set_title(title)
+    ax.set_xlabel("Qubit index of the $Z$ observable")
+    ax.set_xticks(qubit_indices[::2])
+    ax.grid(axis="y", alpha=0.3)
+    ax.spines[["top", "right"]].set_visible(False)
+    # Place the legend below the plot so it doesn't cover any data
+    ax.legend(
+        frameon=False, loc="upper center", bbox_to_anchor=(0.5, -0.15), ncol=3
+    )
+
+axes[0].set_ylabel("Expectation value")
+plt.tight_layout()
+plt.show()
+
+# Summarize each result by its mean absolute deviation from the ideal value of 1
+for title, results_to_plot in panels.items():
+    for label, (result, _, _) in results_to_plot.items():
+        error = np.mean(np.abs(result[0].data.evs - 1))
+        print(f"{title:<36} {label:<24} mean absolute deviation: {error:.3f}")
+```
+
+![Output of the previous code cell](/docs/images/tutorials/profiling-tools/extracted-outputs/3b67439e-0.avif)
+
+```text
+Local simulation (Clifford circuit)  Unmitigated              mean absolute deviation: 0.290
+Local simulation (Clifford circuit)  Mitigated (PEC + TREX)   mean absolute deviation: 0.046
+QPU (original circuit)               Unmitigated              mean absolute deviation: 0.202
+QPU (original circuit)               Mitigated (PEC + TREX)   mean absolute deviation: 0.050
+```
+
+In this run, mitigation reduced the mean absolute deviation from 0.290 to 0.046 in the simulation (about a factor of six) and from 0.202 to 0.050 on the QPU (about a factor of four). In both cases, the mitigated values scatter around 1, and most of them agree with 1 within their error bars.
+### 4.4 Inspect execution spans
+When you submit circuits with multiple configurations, such as with gate twirling, IBM Quantum Compute Service does not necessarily run all circuit configurations at the same time. Instead, it groups them into chunks and runs one chunk per shot loop. A shot loop is a single round of execution on the quantum hardware, in which every circuit in the chunk is run for the requested number of shots.
+
+All jobs that are submitted to a real QPU require some classical pre-processing, such as translation into pulses that can be sent to the hardware. Because this pre-processing can be done in parallel, the service dequeues and starts multiple jobs at a time. The QPU, however, can process only one unit of work at a time. Therefore, if your job generates multiple chunks, they might be interleaved with the chunks of other users' jobs, and each chunk might have to wait for its turn on the QPU.
+
+The job result metadata reports the QPU execution timing for each chunk. The following visualization shows whether there are significant gaps between the executions of the chunks in your job. If the gaps are wider than your experiment can tolerate, you might want to rerun the job, or use [session execution mode](/guides/execution-modes#session-mode), which gives your workload exclusive access to the QPU.
+
+Refer to [View execution spans](/guides/sampler-input-output#view-execution-spans) for more information.
+
+```python
+chunk_timing = mitigated_result.metadata["executor"].chunk_timing
+
+print(f"{len(chunk_timing)} chunks were executed.")
+chunk_1 = chunk_timing[0]
+print(f"The first chunk contains {len(chunk_1.parts)} parts.")
+for idx, part in enumerate(chunk_1.parts):
+    print(
+        f"    Part {idx} contains {part.size} configurations from circuit {part.idx_item}"
+    )
+```
+
+```text
+2 chunks were executed.
+The first chunk contains 2 parts.
+    Part 0 contains 881 configurations from circuit 0
+    Part 1 contains 30 configurations from circuit 1
+```
+
+```python
+from qiskit_ibm_runtime.visualization import draw_chunk_timings
+
+draw_chunk_timings(chunk_timing)
+```
+
+![Chunk execution timeline for the mitigated job, showing two chunks and the gap between them](/docs/images/tutorials/profiling-tools/chunk-timing.avif)
+## Next steps
+
+<Admonition type="tip" title="Recommendations">
+- Rerun the experiment with and without the `slow_gates_ac` calibration (Step 2.1), the refreshed device properties (Step 2.2), or session calibration (Step 4.1) to measure how much each tool improves the results for your workload.
+- Try a cheaper error mitigation method such as zero-noise extrapolation (ZNE), and use local simulation and dry-run usage estimates to compare its cost and accuracy with those of PEC. The [`select-error-mitigation`](https://github.com/Qiskit/skills) AI agent skill can help you make this choice.
+- Explore the full characterization suite, including randomized benchmarking, in the [Refresh backend properties with real-time benchmarking](/tutorials/refresh-backend-properties-with-real-time-benchmarking) tutorial.
+- Learn more about the client-side primitives and the Executor in [Migrate from server-side to client-side Sampler and Estimator](/guides/migrate-to-client-side-primitives).
+- Apply these tools to your own experiments. Start with the tools that address your largest source of uncertainty, such as device quality, noise, cost, or execution timing.
+</Admonition>
+
+<TutorialFeedback />
