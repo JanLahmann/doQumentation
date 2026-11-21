@@ -154,9 +154,10 @@ def ibm_url(route: str) -> str:
     return f"{IBM}{route}" if route.startswith("/learning/") else f"{IBM}/docs{route}"
 
 
-# IBM pages renamed upstream whose content we still serve under the old name:
-# IBM redirects /docs/guides/addons to its "Tools index" (same overview page).
-IBM_ALIASES = {"/guides/tools-index": "/guides/addons"}
+# IBM pages renamed upstream whose content we still serve under the old name
+# (route at IBM → our route). Empty since e5e229a40: upstream retired
+# guides/addons, and we now serve its successor /guides/tools-index ourselves.
+IBM_ALIASES: dict[str, str] = {}
 
 # IBM sends some retired notebooks to their last version on GitHub.
 ARCHIVE = "https://github.com/Qiskit/"
