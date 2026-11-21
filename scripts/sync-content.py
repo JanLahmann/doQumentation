@@ -46,7 +46,8 @@ LOCAL_CONTENT_DIR = PROJECT_ROOT / "local-content"
 # Each entry: display name → {submodule dir name, notebook path within repo, pip package}
 # Only addons IBM's documentation no longer covers: their tutorials carry a
 # notice saying so (see ADDON_ARCHIVE_NOTICE). `docs` is the addon's own
-# documentation site, where IBM's addons overview (guides/addons) points.
+# documentation site (IBM's addons overview, guides/addons, pointed there
+# until upstream retired it in e5e229a40).
 # `skip`: tutorials an IBM tutorial now covers (same technique and API; Jan,
 # 2026-11-12: "then we don't need them twice"); their routes redirect on the
 # 404 page (MANUAL in scripts/generate-retired-pages.py).
@@ -77,7 +78,7 @@ ADDONS_DOCUMENTED_BY_IBM = {
     "SLC": "qiskit-addon-slc",
 }
 ADDON_ARCHIVE_NOTICE = """<Admonition type="caution" title="Not part of IBM Quantum's documentation">
-IBM Quantum's documentation no longer has guides for {name}: its [addons overview](/guides/addons) links to the addon's own documentation at [{docs_label}]({docs}). This tutorial comes from the addon's GitHub repository ([Qiskit/{repo}](https://github.com/Qiskit/{repo})) and may be outdated.
+IBM Quantum's documentation no longer has guides for {name}. The addon's own documentation is at [{docs_label}]({docs}). This tutorial comes from the addon's GitHub repository ([Qiskit/{repo}](https://github.com/Qiskit/{repo})) and may be outdated.
 </Admonition>
 """
 
@@ -1530,8 +1531,8 @@ def generate_guides_sidebar():
         sidebars[sub["sidebar"]] = items
 
     # One sidebar per addon (ADDON_DOCS_DIR), built the same way. Its back
-    # link goes to the toc's parent, /docs/guides/addons, which we keep as
-    # /guides/addons.
+    # link goes to the toc's parent (IBM retired /docs/guides/addons in
+    # e5e229a40; its URL now redirects to the Tools index).
     for addon in addon_docs():
         toc = addon["toc"]
         if not (DOCS_OUTPUT / "addons" / addon["folder"] / "index.mdx").exists():
@@ -1540,7 +1541,7 @@ def generate_guides_sidebar():
         # IBM's entry labels ("Documentation home"): nothing to translate.
         ctx = {"sidebar": addon["sidebar"], "home": home, "overviews": overviews,
                "labels": True}
-        parent = toc.get('parentUrl', '/docs/guides/addons')
+        parent = toc.get('parentUrl', '/docs/guides/tools-index')
         parent = re.sub(r'^/docs/guides(?=/|$)', '/guides', parent)
         sidebars[addon["sidebar"]] = [
             {'type': 'link', 'href': parent, 'label': 'Guides',
@@ -3287,7 +3288,7 @@ IBM tutorials, mirrored on this site, now cover the other addon tutorials that u
 
 {at_ibm}
 
-IBM Quantum also documents these addons itself, mirrored here: {documented}. All addons: [Advanced techniques - Qiskit addons](/guides/addons).
+IBM Quantum also documents these addons itself, mirrored here: {documented}. All addons and other IBM tooling: [Tools index](/guides/tools-index).
 """
     index_path = addons_dst / "index.mdx"
     index_path.write_text(index_content)
