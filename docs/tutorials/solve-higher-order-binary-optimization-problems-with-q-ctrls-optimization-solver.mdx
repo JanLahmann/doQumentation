@@ -12,7 +12,7 @@ import TutorialFeedback from '@site/src/components/TutorialFeedback';
 
 
 
-{/* cspell:ignore nrows ncols lambdify ILOG histtype stepfilled */}
+{/* cspell:ignore nrows ncols lambdify ILOG histtype stepfilled sympify */}
 
 <Admonition type="note" title="Note">
 IBM Quantum&reg; Functions are a beta feature available only to IBM Quantum Premium Plan, Flex Plan, and On-Prem (through the IBM Quantum Platform API) Plan users. Beta features are subject to change.
@@ -46,7 +46,7 @@ First, import the required packages and tools.
 # Added by doQumentation — installs the packages this notebook needs if they are missing
 import importlib.util
 
-_needed = {"matplotlib": "matplotlib", "numpy": "numpy", "qiskit_ibm_catalog": "qiskit-ibm-catalog", "sympy": "sympy"}
+_needed = {"matplotlib": "matplotlib", "networkx": "networkx", "numpy": "numpy", "qiskit": "qiskit", "qiskit_addon_opt_mapper": "qiskit-addon-opt-mapper", "qiskit_ibm_catalog": "qiskit-ibm-catalog", "qiskit_serverless": "qiskit-serverless", "sympy": "sympy"}
 _missing = [pip for module, pip in _needed.items()
             if importlib.util.find_spec(module) is None]
 # One at a time, so a package that fails to install does not block the others
@@ -485,20 +485,358 @@ spin_glass_poly = Poly(
 
 ### Calculate the function size
 
-The function size depends on the number of binary decision variables and the interaction density. For the criteria of each size, see [Function sizes](/guides/q-ctrl-optimization-solver#function-sizes) in the Optimization Solver guide. Use the following helper to select `"S"`, `"M"`, or `"L"` without submitting a job. Count each distinct pair of variables that appears together in an objective term. A cubic term contributes three pairs, and pairs that appear in multiple terms are counted only once.
+The function size depends on the number of binary decision variables and the interaction density. For the criteria of each size, see [Function sizes](https://docs.quantum.ibm.com/functions/q-ctrl-optimization-solver/get-started#function-sizes) in the Optimization Solver guide. Use the following helper to select `"S"`, `"M"`, or `"L"` without submitting a job. Count each distinct pair of variables that appears together in an objective term. A cubic term contributes three pairs, and pairs that appear in multiple terms are counted only once.
 
 ```python
+# Size calculator example for an optimization function.
+#
+# Input:  the model in whatever format your entrypoint accepts, plus the other function
+#         inputs as ``**kwargs``.
+# Output: ``"S"``, ``"M"`` or ``"L"``, from the number of variables and the interaction
+#         density: the fraction of variable pairs that appear together in a term of the
+#         objective or of a constraint.
+#
+# ``to_optimization_problem`` is **the one function to implement**: it turns your input into
+# a :class:`~qiskit_addon_opt_mapper.problems.OptimizationProblem`, and the sizing logic
+# below it never changes. Once converted, ``get_num_vars()`` gives the variable count; the
+# class exposes no density, so it is derived from the objective and constraint expressions,
+# each of which reports its terms through ``to_dict()``.
+#
+# Constraints are sized as the penalties that replace them on hardware -- see
+# ``_interactions``. Slack variables for inequality penalties are not counted, so a heavily
+# inequality-constrained model is sized slightly low on the variable count.
+# https://qiskit.github.io/qiskit-opt-mapper/
+
+import re
+import sys
+from ast import literal_eval
+from collections.abc import Iterator
 from itertools import combinations
+from typing import Any, Literal
 
-def calculate_function_size(num_variables, num_interactions):
-    possible_pairs = num_variables * (num_variables - 1) // 2
-    density = num_interactions / possible_pairs if possible_pairs else 0
+import networkx as nx
+from qiskit.quantum_info import SparsePauliOp
+from qiskit_addon_opt_mapper.problems import OptimizationProblem
+from sympy import Poly, sympify
 
-    if num_variables <= 50 and density <= 0.10:
+from qiskit_serverless import (
+    ServerlessError,
+    get_function_size,
+    get_logger,
+    send_error,
+)
+
+Size = Literal["S", "M", "L"]
+_ORDER = {"S": 0, "M": 1, "L": 2}
+
+# Error codes assigned by IBM; see the IBM Quantum error registry.
+SIZE_TOO_SMALL_ERROR_CODE = "4600"
+SIZE_TOO_LARGE_ERROR_CODE = "4601"
+
+# Limits are provided by IBM
+_SMALL_NUMVARS, _SMALL_DENSITY = 50, 0.1
+_MEDIUM_NUMVARS, _MEDIUM_DENSITY = 100, 0.25
+
+def calculate_function_size(problem: Any, **kwargs: Any) -> Size:
+    """Return the size ("S", "M" or "L") needed to run ``problem``."""
+    metrics = _measure(problem, **kwargs)
+    if _is_small(metrics):
         return "S"
-    if num_variables <= 100 and density <= 0.25:
+    if _is_medium(metrics):
         return "M"
     return "L"
+
+def to_optimization_problem(
+    problem: Any,
+    *,
+    problem_type: str | None = None,
+    constraint: dict[str, int] | None = None,
+    **kwargs: Any,  # pylint: disable=unused-argument
+) -> OptimizationProblem:
+    """Convert the optimizer's inputs into an ``OptimizationProblem``.
+
+    Only the structure matters for sizing, so variables are binary and each term of the
+    cost function is kept by its support (the variables it couples).
+
+    - ``SparsePauliOp``: one variable per qubit, one term per Pauli string, supported on
+      its ``Z`` operators.
+    - Graph (adjacency data), with ``problem_type`` ``"maxcut"``: one variable per node,
+      one coupling per edge. ``"max-<k>-cut"``: ``k`` variables per node, as in
+      ``MaxKCutInstance``, with a one-hot constraint per node. User constraints are
+      ignored for ``k >= 3``, as the solver ignores them.
+    - Sympy expression (``srepr``): one variable per free symbol, one term per monomial.
+
+    ``constraint`` (Hamming weights keyed by variable index or name) becomes equality
+    constraints on the sum of the variables, which ``_interactions`` sizes as penalties.
+    """
+    if isinstance(problem, OptimizationProblem):
+        return problem
+
+    hamming = _deserialize_hamming_constraint(constraint)
+    decoded = (
+        problem
+        if isinstance(problem, SparsePauliOp)
+        else _decode_problem(problem)
+    )
+
+    names: dict[str, int] = {}
+    groups: list[tuple[tuple[int | str, ...], int]] = list(hamming.items())
+    if isinstance(decoded, SparsePauliOp):
+        num_vars, terms = decoded.num_qubits, _pauli_terms(decoded)
+    elif isinstance(decoded, nx.Graph):
+        k = _parse_max_k_cut_k_value(problem_type)
+        if problem_type == "maxcut" or k == 2:
+            num_vars, terms = (
+                decoded.number_of_nodes(),
+                _graph_terms(decoded, 1),
+            )
+        elif k is not None:
+            num_vars, terms = (
+                decoded.number_of_nodes() * k,
+                _graph_terms(decoded, k),
+            )
+            groups = [
+                (tuple(range(k * node, k * (node + 1))), 1)
+                for node in range(decoded.number_of_nodes())
+            ]
+        else:
+            raise ValueError(
+                f"cannot size a graph problem of type {problem_type!r}: expected "
+                "'maxcut' or 'max-<k>-cut'"
+            )
+    else:
+        poly = decoded if isinstance(decoded, Poly) else Poly(decoded)
+        symbols = sorted(
+            poly.as_expr().free_symbols, key=lambda symbol: symbol.name
+        )
+        names = {symbol.name: index for index, symbol in enumerate(symbols)}
+        num_vars, terms = len(symbols), _poly_terms(poly, names)
+
+    return _build_problem(num_vars, terms, groups, names)
+
+def _decode_problem(problem: Any) -> Any:
+    """Decode a graph (networkx adjacency data) or a sympy ``srepr`` string."""
+    try:
+        try:
+            return nx.readwrite.json_graph.adjacency_graph(problem)
+        except AttributeError:
+            return sympify(problem)
+    except RecursionError:
+        sys.setrecursionlimit(5000)
+        return _decode_problem(problem)
+
+def _parse_max_k_cut_k_value(problem_type: str | None) -> int | None:
+    """Return ``k`` for a ``max-<k>-cut`` problem type, else ``None``."""
+    match = re.fullmatch(r"max-(\d+)-cut", problem_type or "")
+    if match is None:
+        return None
+    k = int(match.group(1))
+    if k < 2:
+        raise ValueError(
+            f"k for a Max-k-Cut problem must be at least 2, got {k}."
+        )
+    return k
+
+def _deserialize_hamming_constraint(
+    constraint: dict[str, int] | None,
+) -> dict[tuple[int | str, ...], int]:
+    """Turn string keys such as ``"(0, 1)"`` into tuples of indices or names."""
+    deserialized: dict[tuple[int | str, ...], int] = {}
+    for key, weight in (constraint or {}).items():
+        try:
+            group = literal_eval(key)
+        except (ValueError, TypeError, SyntaxError):
+            group = None
+        if not isinstance(group, tuple) or not all(
+            isinstance(entry, (int, str)) for entry in group
+        ):
+            raise ValueError(
+                f"Constraint '{key}' is not a valid tuple of variable indexes or names."
+            )
+        deserialized[group] = weight
+    return deserialized
+
+def _pauli_terms(operator: SparsePauliOp) -> dict[tuple[int, ...], float]:
+    terms: dict[tuple[int, ...], float] = {}
+    for label, coefficient in zip(
+        operator.paulis.to_labels(), operator.coeffs
+    ):
+        # The rightmost character of a Pauli label is qubit 0.
+        support = tuple(
+            i for i, char in enumerate(reversed(label)) if char == "Z"
+        )
+        terms[support] = terms.get(support, 0.0) + float(coefficient.real)
+    return terms
+
+def _graph_terms(
+    graph: nx.Graph, colors: int
+) -> dict[tuple[int, ...], float]:
+    terms: dict[tuple[int, ...], float] = {}
+    for u, v, weight in graph.edges(data="weight", default=1.0):
+        for color in range(colors):
+            support = tuple(sorted({colors * u + color, colors * v + color}))
+            terms[support] = terms.get(support, 0.0) + weight
+    return terms
+
+def _poly_terms(
+    poly: Poly, names: dict[str, int]
+) -> dict[tuple[int, ...], float]:
+    terms: dict[tuple[int, ...], float] = {}
+    for exponents, coefficient in poly.terms():
+        support = tuple(
+            sorted(
+                names[generator.name]
+                for generator, exponent in zip(poly.gens, exponents)
+                if exponent > 0
+            )
+        )
+        terms[support] = terms.get(support, 0.0) + float(coefficient)
+    return terms
+
+def _build_problem(
+    num_vars: int,
+    terms: dict[tuple[int, ...], float],
+    groups: list[tuple[tuple[int | str, ...], int]],
+    names: dict[str, int],
+) -> OptimizationProblem:
+    """Build the problem; terms of order 3 and above go in ``higher_order``, by order."""
+    model = OptimizationProblem()
+    model.binary_var_list(num_vars, name="x")
+
+    linear: dict[int, float] = {}
+    quadratic: dict[tuple[int, int], float] = {}
+    higher_order: dict[int, dict[tuple[int, ...], float]] = {}
+    for support, coefficient in terms.items():
+        if len(support) == 1:
+            linear[support[0]] = coefficient
+        elif len(support) == 2:
+            quadratic[(support[0], support[1])] = coefficient
+        elif len(support) >= 3:
+            higher_order.setdefault(len(support), {})[support] = coefficient
+    model.minimize(
+        linear=linear, quadratic=quadratic, higher_order=higher_order or None
+    )
+
+    for group, weight in groups:
+        members = {names[m] if isinstance(m, str) else m: 1.0 for m in group}
+        model.linear_constraint(members, "==", weight)
+    return model
+
+def _measure(problem: Any, **kwargs: Any) -> dict[str, float]:
+    """Return the number of variables and the interaction density."""
+    model = to_optimization_problem(problem, **kwargs)
+    num_vars = model.get_num_vars()
+
+    pairs = set()
+    for term in _interactions(model):
+        pairs.update(frozenset(pair) for pair in combinations(set(term), 2))
+
+    max_pairs = num_vars * (num_vars - 1) // 2
+    return {
+        "num_vars": num_vars,
+        "density": len(pairs) / max_pairs if max_pairs else 0.0,
+    }
+
+def _interactions(problem: OptimizationProblem) -> Iterator[tuple[int, ...]]:
+    """Yield the variable tuple of every term that couples two or more variables.
+
+    Objective terms contribute their own variables; a linear objective term couples
+    nothing.
+
+    A constraint contributes the whole support of its left-hand side, because the
+    unconstrained form of the model replaces it with a penalty ``w * lhs**2``, and
+    squaring a sum couples every pair of variables in it -- a one-hot constraint over four
+    variables becomes a clique on those four. Neither the penalty weight nor the
+    right-hand side changes which pairs exist, so neither is needed here. This holds
+    whether or not your function handles constraints natively, because a size has to mean
+    the same thing across every optimization function.
+    """
+    objective = problem.objective
+    yield from objective.quadratic.to_dict()
+    for expression in objective.higher_order.values():
+        yield from expression.to_dict()
+
+    for constraint in problem.linear_constraints:
+        yield _constraint_support(constraint)
+    for constraint in problem.quadratic_constraints:
+        yield _constraint_support(constraint)
+    for constraint in problem.higher_order_constraints:
+        yield _constraint_support(constraint)
+
+def _constraint_support(constraint: Any) -> tuple[int, ...]:
+    """Return every variable appearing in a constraint's left-hand side."""
+    variables = set(constraint.linear.to_dict())
+    if hasattr(constraint, "quadratic"):
+        for term in constraint.quadratic.to_dict():
+            variables.update(term)
+    if hasattr(constraint, "higher_order"):
+        for expression in constraint.higher_order.values():
+            for term in expression.to_dict():
+                variables.update(term)
+    return tuple(variables)
+
+def _is_small(metrics: dict[str, float]) -> bool:
+    """Determine if the metrics fit T-size 'S'."""
+    return (
+        metrics["num_vars"] <= _SMALL_NUMVARS
+        and metrics["density"] <= _SMALL_DENSITY
+    )
+
+def _is_medium(metrics: dict[str, float]) -> bool:
+    """Determine if the metrics fit T-size 'M'."""
+    return (
+        metrics["num_vars"] <= _MEDIUM_NUMVARS
+        and metrics["density"] <= _MEDIUM_DENSITY
+    )
+
+def validate_size(problem: Any, **kwargs: Any) -> None:
+    """Call once at the start of your function. Compare the size the job was given with
+    the calculated size and log both. Raise if the given size is smaller than the calculation;
+    report a non-fatal event and continue if it is larger."""
+    logger = get_logger()
+    provided = get_function_size()
+    if not provided:
+        # Empty on non-Fleets (Ray) jobs, where sizes do not apply.
+        logger.warning(
+            "No function size was given to this job; skipping the size check."
+        )
+        return
+    provided = provided.upper()
+    expected = calculate_function_size(problem, **kwargs)
+    logger.info(
+        "Function size given: '%s'; calculated size: '%s'.",
+        provided,
+        expected,
+    )
+    if _ORDER[provided] < _ORDER[expected]:
+        logger.error(
+            "Size '%s' is too small; the calculated size is '%s'.",
+            provided,
+            expected,
+        )
+        raise ServerlessError(
+            code=SIZE_TOO_SMALL_ERROR_CODE,
+            message=f"Size '{provided}' is too small for this problem; expected '{expected}' or larger.",
+        )
+    if _ORDER[provided] > _ORDER[expected]:
+        logger.warning(
+            "Size '%s' is larger than this problem needs; the calculated size is '%s'.",
+            provided,
+            expected,
+        )
+        send_error(
+            code=SIZE_TOO_LARGE_ERROR_CODE,
+            message="The specified function size is larger than this job requires.",
+            exception="FunctionSizeTooLarge",
+            args={
+                "provided_size": provided,
+                "calculated_size": expected,
+                "solution": (
+                    "No action is required and the job completed normally. To reduce "
+                    "cost, use a smaller function size for jobs of this kind."
+                ),
+            },
+        )
 ```
 
 ## Step 2: Run the hybrid algorithm using the Fire Opal Optimization Solver
@@ -532,16 +870,9 @@ spin_glass_poly_as_str = srepr(spin_glass_poly)
 Calculate the function size from the polynomial's variables and distinct interacting pairs, then pass the returned value to `solver.run` through `function_size`.
 
 ```python
-# Count distinct interacting variable pairs
-interaction_pairs = set()
-for powers in spin_glass_poly.monoms():
-    variables_in_term = [i for i, power in enumerate(powers) if power]
-    interaction_pairs.update(combinations(variables_in_term, 2))
-
 # Calculate the workload size
 function_size = calculate_function_size(
-    num_variables=len(spin_glass_poly.gens),
-    num_interactions=len(interaction_pairs),
+    spin_glass_poly_as_str,
 )
 print(f"Workload size: {function_size}")
 ```
