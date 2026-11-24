@@ -47,7 +47,7 @@ First, authenticate using your [IBM Quantum API key](https://quantum.cloud.ibm.c
 # Added by doQumentation — installs the packages this notebook needs if they are missing
 import importlib.util
 
-_needed = {"matplotlib": "matplotlib", "numpy": "numpy", "qctrlvisualizer": "qctrlvisualizer", "qiskit_ibm_catalog": "qiskit-ibm-catalog", "qiskit_ibm_runtime": "qiskit-ibm-runtime", "scipy": "scipy"}
+_needed = {"matplotlib": "matplotlib", "numpy": "numpy", "qctrlvisualizer": "qctrlvisualizer", "qiskit_ibm_catalog": "qiskit-ibm-catalog", "qiskit_ibm_runtime": "qiskit-ibm-runtime", "qiskit_serverless": "qiskit-serverless", "scipy": "scipy"}
 _missing = [pip for module, pip in _needed.items()
             if importlib.util.find_spec(module) is None]
 # One at a time, so a package that fails to install does not block the others
@@ -273,7 +273,7 @@ The smallest signal that you need to resolve sets the shot count. The charge tra
 
 ```python
 service = QiskitRuntimeService()
-backend = service.backend("ibm_boston")
+backend = catalog.backend("ibm_boston")
 backend_name = backend.name
 shot_count = 20_000
 
@@ -286,15 +286,163 @@ ibm_boston, 20000 shots per circuit
 
 ### Calculate the function size
 
-The function size depends on the number of qubits, Trotter steps, and observables. For the criteria of each size, see [Function sizes](/guides/q-ctrl-dynamics-simulator#function-sizes) in the Dynamics Simulator guide. Use the following helper to select `"S"`, `"M"`, or `"L"` without submitting a job. Each lattice site requires two qubits. Each entry in `observables` counts as one observable, including entries that contain multiple operator terms.
+The function size depends on the number of qubits, Trotter steps, and observables. For the criteria of each size, see [Function sizes](https://docs.quantum.ibm.com/functions/q-ctrl-dynamics-simulator/get-started#function-sizes) in the Dynamics Simulator guide. Use the following helper to select `"S"`, `"M"`, or `"L"` without submitting a job. Each lattice site requires two qubits. Each entry in `observables` counts as one observable, including entries that contain multiple operator terms.
 
 ```python
-def calculate_function_size(num_qubits, num_steps, num_observables):
-    if num_qubits <= 20 and num_steps <= 10 and num_observables <= 20:
+# Size calculator for the dynamics simulator function.
+#
+# Input:  the function inputs ``simulation``, ``observables`` and ``initial_state``, as
+#         accepted by the function (JSON strings or decoded values). Other inputs, such as
+#         ``model``, do not affect the size and are ignored.
+#         This function has no single "problem" argument, so they may be passed either as
+#         keywords -- ``calculate_function_size(model=..., simulation=...)`` -- or as one dict in the
+#         ``problem`` position, which is what keeps the signature the same as every other
+#         vendor's: ``calculate_function_size({"model": ..., "simulation": ...})``.
+# Output: ``"S"``, ``"M"`` or ``"L"``, from the number of qubits (twice the number of
+#         lattice sites), the number of Trotter steps and the number of observables.
+#
+# The size is the largest size demanded by any single metric: a run is only ``"S"`` if
+# every metric fits ``"S"``, and only ``"M"`` if every metric fits ``"M"``.
+
+import json
+from collections.abc import Mapping
+from typing import Any, Literal
+
+from qiskit_serverless import (
+    ServerlessError,
+    get_function_size,
+    get_logger,
+    send_error,
+)
+
+Size = Literal["S", "M", "L"]
+_ORDER = {"S": 0, "M": 1, "L": 2}
+
+# Error codes assigned by IBM; see the IBM Quantum error registry.
+SIZE_TOO_SMALL_ERROR_CODE = "4600"
+SIZE_TOO_LARGE_ERROR_CODE = "4601"
+
+# Inclusive upper bounds for each size.
+_SMALL_QUBITS, _SMALL_STEPS, _SMALL_OBSERVABLES = 20, 10, 20
+_MEDIUM_QUBITS, _MEDIUM_STEPS, _MEDIUM_OBSERVABLES = 50, 20, 50
+
+# Each lattice site contributes a spin-up and a spin-down mode.
+_QUBITS_PER_SITE = 2
+
+def calculate_function_size(problem: Any = None, **kwargs: Any) -> Size:
+    """Return the size ("S", "M" or "L") needed to run the dynamics simulator."""
+    metrics = _measure(problem, **kwargs)
+    if _is_small(metrics):
         return "S"
-    if num_qubits <= 50 and num_steps <= 20 and num_observables <= 50:
+    if _is_medium(metrics):
         return "M"
     return "L"
+
+def _measure(problem: Any = None, **kwargs: Any) -> dict[str, int]:
+    """Return the number of qubits, Trotter steps and observables."""
+    arguments = (
+        {**problem, **kwargs} if isinstance(problem, Mapping) else kwargs
+    )
+    initial_state = arguments.get("initial_state")
+    simulation = _parse_json_argument(
+        arguments.get("simulation"), "simulation"
+    )
+    observables = _parse_json_argument(
+        arguments.get("observables"), "observables"
+    )
+
+    if not isinstance(initial_state, str) or not initial_state:
+        raise ValueError("initial_state must be a non-empty string.")
+    if not isinstance(simulation, Mapping) or not isinstance(
+        simulation.get("step_count"), int
+    ):
+        raise ValueError(
+            "simulation must be a mapping with an integer step_count."
+        )
+    if not isinstance(observables, list):
+        raise ValueError("observables must be a list.")
+
+    return {
+        "qubits": _QUBITS_PER_SITE * len(initial_state),
+        "steps": simulation["step_count"],
+        "observables": len(observables),
+    }
+
+def _parse_json_argument(value: Any, argument_name: str) -> Any:
+    """Decode ``value`` if it is a JSON string; return anything else unchanged."""
+    if not isinstance(value, str):
+        return value
+    try:
+        return json.loads(value)
+    except json.JSONDecodeError as error:
+        raise ValueError(
+            f"{argument_name} must contain valid JSON."
+        ) from error
+
+def _is_small(metrics: dict[str, int]) -> bool:
+    """Determine if the metrics fit T-size 'S'."""
+    return (
+        metrics["qubits"] <= _SMALL_QUBITS
+        and metrics["steps"] <= _SMALL_STEPS
+        and metrics["observables"] <= _SMALL_OBSERVABLES
+    )
+
+def _is_medium(metrics: dict[str, int]) -> bool:
+    """Determine if the metrics fit T-size 'M'."""
+    return (
+        metrics["qubits"] <= _MEDIUM_QUBITS
+        and metrics["steps"] <= _MEDIUM_STEPS
+        and metrics["observables"] <= _MEDIUM_OBSERVABLES
+    )
+
+def validate_size(problem: Any = None, **kwargs: Any) -> None:
+    """Call once at the start of your function. Compare the size the job was given with
+    the calculated size and log both. Raise if the given size is smaller than the calculation;
+    report a non-fatal event and continue if it is larger."""
+    logger = get_logger()
+    provided = get_function_size()
+    if not provided:
+        # Empty on non-Fleets (Ray) jobs, where sizes do not apply.
+        logger.warning(
+            "No function size was given to this job; skipping the size check."
+        )
+        return
+    provided = provided.upper()
+    expected = calculate_function_size(problem, **kwargs)
+    logger.info(
+        "Function size given: '%s'; calculated size: '%s'.",
+        provided,
+        expected,
+    )
+    if _ORDER[provided] < _ORDER[expected]:
+        logger.error(
+            "Size '%s' is too small; the calculated size is '%s'.",
+            provided,
+            expected,
+        )
+        raise ServerlessError(
+            code=SIZE_TOO_SMALL_ERROR_CODE,
+            message=f"Size '{provided}' is too small for this problem; expected '{expected}' or larger.",
+        )
+    if _ORDER[provided] > _ORDER[expected]:
+        logger.warning(
+            "Size '%s' is larger than this problem needs; the calculated size is '%s'.",
+            provided,
+            expected,
+        )
+        send_error(
+            code=SIZE_TOO_LARGE_ERROR_CODE,
+            message="The specified function size is larger than this job requires.",
+            exception="FunctionSizeTooLarge",
+            args={
+                "provided_size": provided,
+                "calculated_size": expected,
+                "solution": (
+                    "No action is required and the job completed normally. To reduce "
+                    "cost, use a smaller function size for jobs of this kind."
+                ),
+            },
+        )
 ```
 
 ## Step 3: Execute by using Qiskit primitives
@@ -304,10 +452,11 @@ Next, calculate the function size from the simulation inputs, and pass the retur
 ```python
 # Calculate the workload size
 function_size = calculate_function_size(
-    num_qubits=2 * len(initial_state),
-    num_steps=simulation["step_count"],
-    num_observables=len(observables),
+    initial_state=initial_state,
+    simulation=simulation,
+    observables=observables,
 )
+
 print(f"Workload size: {function_size}")
 ```
 
